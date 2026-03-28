@@ -1,0 +1,21 @@
+{
+  "name": "@promptline/codex-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/codex-adapter/src/index.js",
+  "types": "dist/codex-adapter/src/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@promptline/domain": "workspace:*",
+    "@promptline/git-integration": "workspace:*",
+    "@promptline/storage": "workspace:*",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

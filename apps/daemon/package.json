@@ -1,0 +1,22 @@
+{
+  "name": "@promptline/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/apps/daemon/src/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/apps/daemon/src/server.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "@promptline/api-contracts": "workspace:*",
+    "@promptline/codex-adapter": "workspace:*",
+    "@promptline/domain": "workspace:*",
+    "@promptline/git-integration": "workspace:*",
+    "@promptline/storage": "workspace:*",
+    "fastify": "^5.6.1"
+  }
+}

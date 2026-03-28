@@ -1,0 +1,16 @@
+{
+  "name": "@promptline/git-integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/git-integration/src/index.js",
+  "types": "dist/git-integration/src/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@promptline/domain": "workspace:*",
+    "diff": "^8.0.2"
+  }
+}

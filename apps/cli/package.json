@@ -1,0 +1,22 @@
+{
+  "name": "@promptline/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/apps/cli/src/index.js",
+  "bin": {
+    "pl": "dist/apps/cli/src/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@promptline/api-contracts": "workspace:*",
+    "@promptline/codex-adapter": "workspace:*",
+    "@promptline/domain": "workspace:*",
+    "@promptline/storage": "workspace:*",
+    "commander": "^14.0.1"
+  }
+}
