@@ -5,18 +5,20 @@
   "type": "module",
   "packageManager": "pnpm@10.27.0",
   "scripts": {
+    "dev": "concurrently -k -n daemon,web -c cyan,magenta \"pnpm dev:daemon\" \"pnpm dev:web\"",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "vitest run",
     "dev:daemon": "pnpm --filter @promptline/daemon dev",
-    "dev:cli": "pnpm --filter @promptline/cli dev",
+    "dev:cli": "tsx apps/cli/src/index.ts",
+    "dev:cli:watch": "pnpm --filter @promptline/cli dev",
     "dev:web": "pnpm --filter @promptline/web dev"
   },
   "devDependencies": {
     "@types/node": "^24.7.2",
+    "concurrently": "^9.2.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }
 }
-
