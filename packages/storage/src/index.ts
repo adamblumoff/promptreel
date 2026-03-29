@@ -259,6 +259,10 @@ export class PromptlineStore {
     const result = prompts.map((prompt) => {
       const artifacts = artifactsByPrompt.get(prompt.id) ?? [];
       const files = new Set<string>();
+      const primaryArtifact =
+        artifacts.find((artifact) => artifact.id === prompt.primaryArtifactId)
+        ?? artifacts.find((artifact) => artifact.role === "primary")
+        ?? null;
       for (const artifact of artifacts) {
         if (!artifact.fileStatsJson) {
           continue;
@@ -272,7 +276,12 @@ export class PromptlineStore {
         ...prompt,
         artifactCount: artifacts.length,
         childCount: childCounts.get(prompt.id) ?? 0,
-        filesTouched: [...files]
+        filesTouched: [...files],
+        filesTouchedCount: files.size,
+        primaryArtifactType: primaryArtifact?.type ?? null,
+        primaryArtifactSummary: primaryArtifact?.summary ?? null,
+        hasCodeDiff: artifacts.some((artifact) => artifact.type === "code_diff"),
+        isLiveDerived: prompt.status === "in_progress"
       };
     });
     db.close();

@@ -136,6 +136,11 @@ export interface PromptEventListItem extends PromptEventRecord {
   artifactCount: number;
   childCount: number;
   filesTouched: string[];
+  filesTouchedCount: number;
+  primaryArtifactType: ArtifactType | null;
+  primaryArtifactSummary: string | null;
+  hasCodeDiff: boolean;
+  isLiveDerived: boolean;
 }
 
 export interface CodeDiffResult {
