@@ -1,4 +1,5 @@
 import type {
+  IngestionStatus,
   LiveDoctorResult,
   PromptEventDetail,
   PromptEventListItem,
@@ -9,6 +10,7 @@ export interface HealthResponse {
   ok: true;
   daemonPid: number;
   homeDir: string;
+  ingestion: IngestionStatus;
 }
 
 export interface RepoListResponse {

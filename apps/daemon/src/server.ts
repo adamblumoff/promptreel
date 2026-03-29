@@ -11,11 +11,13 @@ import type {
   RepoCreateResponse,
   RepoListResponse
 } from "@promptline/api-contracts";
+import { CodexSessionTailer } from "@promptline/codex-adapter";
 import { PromptlineStore } from "@promptline/storage";
 
 export function buildServer() {
   const app = Fastify({ logger: false });
   const store = new PromptlineStore();
+  const tailer = new CodexSessionTailer(store);
   const notFound = (message: string) => {
     const error = new Error(message) as Error & { statusCode?: number };
     error.statusCode = 404;
@@ -29,7 +31,8 @@ export function buildServer() {
   app.get("/api/health", async (): Promise<HealthResponse> => ({
     ok: true,
     daemonPid: process.pid,
-    homeDir: store.homeDir
+    homeDir: store.homeDir,
+    ingestion: tailer.getStatus()
   }));
 
   app.get("/api/repos", async (): Promise<RepoListResponse> => ({
@@ -79,18 +82,20 @@ export function buildServer() {
     }
   );
 
-  return { app, store };
+  return { app, store, tailer };
 }
 
 export async function startDaemon() {
-  const { app, store } = buildServer();
+  const { app, store, tailer } = buildServer();
   const port = Number(process.env.PROMPTLINE_PORT ?? "4312");
+  tailer.start();
   await app.listen({
     host: "127.0.0.1",
     port
   });
   store.setDaemonState(process.pid);
   const shutdown = async () => {
+    tailer.stop();
     store.clearDaemonState();
     await app.close();
     process.exit(0);

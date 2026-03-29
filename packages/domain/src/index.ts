@@ -168,6 +168,28 @@ export interface LiveDoctorResult {
   message: string;
 }
 
+export interface RepoIngestionStatus {
+  repoId: string;
+  mode: "watching" | "error" | "idle";
+  sessionFileCount: number;
+  recentlyUpdatedSessionCount: number;
+  openPromptCount: number;
+  lastImportAt: string | null;
+  lastImportResult: {
+    importedFiles: number;
+    importedPrompts: number;
+  } | null;
+  lastError: string | null;
+}
+
+export interface IngestionStatus {
+  watcher: "running" | "stopped";
+  pollingIntervalMs: number;
+  sessionsRoot: string;
+  lastScanAt: string | null;
+  repoStatuses: RepoIngestionStatus[];
+}
+
 export function createId(prefix: string): string {
   return `${prefix}_${randomUUID()}`;
 }

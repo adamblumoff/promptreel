@@ -13,6 +13,7 @@ import type {
   WorkspaceSnapshot
 } from "@promptline/domain";
 import {
+  IngestionStatus,
   choosePrimaryArtifactType,
   createId,
   extractPlan,
@@ -42,6 +43,17 @@ type SessionLine = {
   payload?: Record<string, unknown>;
 };
 
+export interface ImportCodexSessionsOptions {
+  tailOpenPrompt?: boolean;
+}
+
+export interface CodexSessionFileMatch {
+  filePath: string;
+  sessionId: string;
+  cwd: string;
+  mtimeMs: number | null;
+}
+
 function stableId(prefix: string, seed: string): string {
   return `${prefix}_${hashValue(seed).slice(0, 24)}`;
 }
@@ -60,6 +72,13 @@ function walkFiles(root: string): string[] {
     }
   }
   return results;
+}
+
+function readSessionLines(filePath: string): SessionLine[] {
+  return readFileSync(filePath, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as SessionLine);
 }
 
 function isUserMessage(line: SessionLine): string | null {
@@ -133,31 +152,25 @@ function createHistoricalSnapshots(
 export function importCodexSessionsForRepo(
   store: PromptlineStore,
   repo: RepoRegistration,
-  sessionsRoot = join(homedir(), ".codex", "sessions")
+  sessionsRoot = join(homedir(), ".codex", "sessions"),
+  options: ImportCodexSessionsOptions = {}
 ): { importedFiles: number; importedPrompts: number } {
-  const files = walkFiles(sessionsRoot).filter((filePath) => filePath.endsWith(".jsonl")).sort();
+  const files = discoverCodexSessionFilesForRepo(repo, sessionsRoot);
   let importedFiles = 0;
   let importedPrompts = 0;
 
-  for (const filePath of files) {
+  for (const file of files) {
+    const filePath = file.filePath;
     const cursorKey = `codex-session:${filePath}`;
-    const mtimeMs = getFileMtimeMs(filePath);
+    const mtimeMs = file.mtimeMs;
     const cursor = store.getIngestCursor(repo.id, cursorKey);
     if (cursor && cursor.cursorValue === String(mtimeMs)) {
       continue;
     }
-    const lines = readFileSync(filePath, "utf8")
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as SessionLine);
-    const meta = lines.find((line) => line.type === "session_meta");
-    const cwd = String(meta?.payload?.cwd ?? "");
-    if (!cwd || cwd.toLowerCase() !== repo.rootPath.toLowerCase()) {
-      continue;
-    }
+    const lines = readSessionLines(filePath);
 
     importedFiles += 1;
-    const sessionId = String(meta?.payload?.id ?? "");
+    const sessionId = file.sessionId;
     let currentStart = -1;
     let promptIndex = 0;
 
@@ -183,9 +196,17 @@ export function importCodexSessionsForRepo(
         threadId: sessionId || null,
         parentPromptEventId: null,
         startedAt: userLine?.timestamp ?? nowIso(),
-        endedAt: window.at(-1)?.timestamp ?? userLine?.timestamp ?? nowIso(),
-        boundaryReason: endExclusive < lines.length ? "next_user_prompt" : "import_end",
-        status: "imported",
+        endedAt:
+          options.tailOpenPrompt && endExclusive === lines.length
+            ? null
+            : window.at(-1)?.timestamp ?? userLine?.timestamp ?? nowIso(),
+        boundaryReason:
+          options.tailOpenPrompt && endExclusive === lines.length
+            ? null
+            : endExclusive < lines.length
+              ? "next_user_prompt"
+              : "import_end",
+        status: options.tailOpenPrompt && endExclusive === lines.length ? "in_progress" : "imported",
         promptText,
         promptSummary: summarizePrompt(promptText),
         primaryArtifactId: null,
@@ -314,6 +335,126 @@ export function importCodexSessionsForRepo(
   }
 
   return { importedFiles, importedPrompts };
+}
+
+export function discoverCodexSessionFilesForRepo(
+  repo: RepoRegistration,
+  sessionsRoot = join(homedir(), ".codex", "sessions")
+): CodexSessionFileMatch[] {
+  const files = walkFiles(sessionsRoot).filter((filePath) => filePath.endsWith(".jsonl")).sort();
+  const results: CodexSessionFileMatch[] = [];
+  for (const filePath of files) {
+    const lines = readSessionLines(filePath);
+    const meta = lines.find((line) => line.type === "session_meta");
+    const cwd = String(meta?.payload?.cwd ?? "");
+    if (!cwd || cwd.toLowerCase() !== repo.rootPath.toLowerCase()) {
+      continue;
+    }
+    results.push({
+      filePath,
+      sessionId: String(meta?.payload?.id ?? ""),
+      cwd,
+      mtimeMs: getFileMtimeMs(filePath)
+    });
+  }
+  return results;
+}
+
+export class CodexSessionTailer {
+  private readonly statusByRepo = new Map<string, IngestionStatus["repoStatuses"][number]>();
+  private timer: NodeJS.Timeout | null = null;
+  private lastScanAt: string | null = null;
+  private scanning = false;
+
+  constructor(
+    private readonly store: PromptlineStore,
+    private readonly pollingIntervalMs = 3_000,
+    private readonly sessionsRoot = join(homedir(), ".codex", "sessions")
+  ) {}
+
+  start(): void {
+    if (this.timer) {
+      return;
+    }
+    this.scanOnce();
+    this.timer = setInterval(() => {
+      this.scanOnce();
+    }, this.pollingIntervalMs);
+  }
+
+  stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  getStatus(): IngestionStatus {
+    const repos = this.store.listRepos();
+    return {
+      watcher: this.timer ? "running" : "stopped",
+      pollingIntervalMs: this.pollingIntervalMs,
+      sessionsRoot: this.sessionsRoot,
+      lastScanAt: this.lastScanAt,
+      repoStatuses: repos.map((repo) => this.statusByRepo.get(repo.id) ?? {
+        repoId: repo.id,
+        mode: "idle",
+        sessionFileCount: 0,
+        recentlyUpdatedSessionCount: 0,
+        openPromptCount: 0,
+        lastImportAt: null,
+        lastImportResult: null,
+        lastError: null
+      })
+    };
+  }
+
+  private scanOnce(): void {
+    if (this.scanning) {
+      return;
+    }
+    this.scanning = true;
+    try {
+      const repos = this.store.listRepos();
+      for (const repo of repos) {
+        try {
+          const matches = discoverCodexSessionFilesForRepo(repo, this.sessionsRoot);
+          const result = importCodexSessionsForRepo(this.store, repo, this.sessionsRoot, {
+            tailOpenPrompt: true
+          });
+          const recentCutoff = Date.now() - this.pollingIntervalMs * 3;
+          const openPromptCount = this.store
+            .listPrompts(repo.id)
+            .filter((prompt) => prompt.status === "in_progress").length;
+          this.statusByRepo.set(repo.id, {
+            repoId: repo.id,
+            mode: "watching",
+            sessionFileCount: matches.length,
+            recentlyUpdatedSessionCount: matches.filter((match) => (match.mtimeMs ?? 0) >= recentCutoff).length,
+            openPromptCount,
+            lastImportAt: nowIso(),
+            lastImportResult: result,
+            lastError: null
+          });
+        } catch (error) {
+          const previous = this.statusByRepo.get(repo.id);
+          this.statusByRepo.set(repo.id, {
+            repoId: repo.id,
+            mode: "error",
+            sessionFileCount: previous?.sessionFileCount ?? 0,
+            recentlyUpdatedSessionCount: previous?.recentlyUpdatedSessionCount ?? 0,
+            openPromptCount: previous?.openPromptCount ?? 0,
+            lastImportAt: previous?.lastImportAt ?? null,
+            lastImportResult: previous?.lastImportResult ?? null,
+            lastError: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+      this.lastScanAt = nowIso();
+    } finally {
+      this.scanning = false;
+    }
+  }
 }
 
 class CodexAppServerClient {

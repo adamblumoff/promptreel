@@ -30,3 +30,5 @@ pnpm dev:web
 - `pnpm dev` runs the daemon and web app together from source.
 - `pnpm dev:cli -- repo list` runs the CLI from source without building first.
 - Keep `pnpm dev` running in one terminal, then use `pnpm dev:cli -- ...` in another terminal for repo add/import/live checks.
+- The daemon automatically watches `~/.codex/sessions` for registered repos, so active and resumed Codex conversations should appear in the Prompt Stream without a manual import loop.
+- Check `http://127.0.0.1:4312/api/health` to see watcher status, discovered session files, and open prompt counts.
