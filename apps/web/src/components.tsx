@@ -13,14 +13,46 @@ type AppShellProps = {
   main: ReactNode;
   contextRail: ReactNode;
   isSidebarCollapsed: boolean;
+  onOpenSidebarDrawer: () => void;
 };
 
-export function AppShell({ sidebar, main, contextRail, isSidebarCollapsed }: AppShellProps) {
+export function AppShell({ sidebar, main, contextRail, isSidebarCollapsed, onOpenSidebarDrawer }: AppShellProps) {
   return (
-    <div className={isSidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
+    <div className={isSidebarCollapsed ? "page-shell sidebar-collapsed" : "page-shell"}>
+      <header className="global-header">
+        <div className="global-header-left">
+          <button
+            aria-label="Toggle workspace drawer"
+            className="icon-button"
+            onClick={onOpenSidebarDrawer}
+            type="button"
+          >
+            <span />
+            <span />
+            <span />
+          </button>
+          <div className="brand-lockup">
+            <div className="brand-mark">P</div>
+            <strong>Promptline</strong>
+          </div>
+        </div>
+        <div className="global-search">Type / to search workspaces, threads, and prompt history</div>
+        <div className="global-header-right">
+          <button aria-label="Notifications" className="icon-button" type="button">
+            <span className="dot" />
+          </button>
+          <button aria-label="Profile" className="avatar-button" type="button">
+            AB
+          </button>
+        </div>
+      </header>
+
       {sidebar}
-      {main}
-      {contextRail}
+
+      <div className="app-shell">
+        {main}
+        {contextRail}
+      </div>
     </div>
   );
 }
@@ -64,37 +96,30 @@ export function WorkspaceSidebar({
           isDrawerOpen ? "drawer-open" : ""
         ].filter(Boolean).join(" ")}
       >
-        <div className="brand-block sidebar-brand">
-          <div className="sidebar-brand-copy">
-            <p className="eyebrow">Promptline</p>
+        <div className="sidebar-header">
+          <div>
+            <p className="eyebrow">Workspace Switcher</p>
+            <h2>Repositories</h2>
             {!isCollapsed && (
-              <>
-                <h1>Workspace Threads</h1>
-                <p className="intro-copy">
-                  Every Codex thread grouped by the folder it ran in, with prompt history one level deeper.
-                </p>
-              </>
+              <p className="subtle">
+                Only exact Windows execution folders with a direct `.git` directory are listed here.
+              </p>
             )}
           </div>
           <div className="sidebar-controls">
-            {!isCollapsed && (
-              <button className="sidebar-toggle" onClick={onRescan} type="button">
-                {isRescanning ? "Rescanning..." : "Rescan"}
-              </button>
-            )}
+            <button className="sidebar-toggle" onClick={onRescan} type="button">
+              {isRescanning ? "Rescanning..." : "Rescan"}
+            </button>
+            <button className="sidebar-toggle" onClick={onToggleCollapse} type="button">
+              {isCollapsed ? "Expand" : "Collapse"}
+            </button>
             <button className="sidebar-toggle mobile-only" onClick={onCloseDrawer} type="button">
               Close
-            </button>
-            <button className="sidebar-toggle desktop-only" onClick={onToggleCollapse} type="button">
-              {isCollapsed ? "Expand" : "Collapse"}
             </button>
           </div>
         </div>
 
-        <section className="rail-section project-section">
-          <div className="section-head">
-            <p className="eyebrow">{isCollapsed ? "Folders" : "Workspace Folders"}</p>
-          </div>
+        <section className="sidebar-section">
           <div className={isCollapsed ? "project-pill-list" : "project-list"}>
             {workspaces.length > 0 ? (
               workspaces.map((workspace) => (
@@ -103,7 +128,7 @@ export function WorkspaceSidebar({
                   className={workspace.id === selectedWorkspaceId ? "project-button active" : "project-button"}
                   key={workspace.id}
                   onClick={() => onSelectWorkspace(workspace.id)}
-                  title={isCollapsed ? `${workspace.slug}\n${workspace.pathLabel}` : workspace.pathLabel}
+                  title={workspace.pathLabel}
                   type="button"
                 >
                   {isCollapsed ? (
@@ -114,7 +139,7 @@ export function WorkspaceSidebar({
                     <>
                       <div className="project-button-heading">
                         <strong>{workspace.slug}</strong>
-                        <span className={`project-open-count tone-${workspace.statusTone}`}>
+                        <span className={`status-pill status-${workspace.mode === "watching" ? "in_progress" : "completed"}`}>
                           {workspace.openThreadLabel}
                         </span>
                       </div>
@@ -122,11 +147,8 @@ export function WorkspaceSidebar({
                         {workspace.pathLabel}
                       </span>
                       <div className="workspace-meta-row">
-                        <span className="project-activity">{workspace.threadCountLabel}</span>
-                        <span className="project-activity">{workspace.activityLabel}</span>
-                        <span className={`evidence-chip ${workspace.gitRootPath ? "" : "muted"}`}>
-                          {workspace.gitBadgeLabel}
-                        </span>
+                        <span>{workspace.threadCountLabel}</span>
+                        <span>{workspace.activityLabel}</span>
                       </div>
                     </>
                   )}
@@ -134,26 +156,10 @@ export function WorkspaceSidebar({
               ))
             ) : (
               <div className="rail-note">
-                <strong>No Codex threads found yet</strong>
+                <strong>No eligible repos found</strong>
                 {!isCollapsed && (
-                  <p>
-                    Promptline only lists Windows session folders whose exact `cwd` contains a local `.git` directory.
-                  </p>
+                  <p>Promptline will populate this list when Codex writes a session whose exact cwd contains `.git`.</p>
                 )}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="rail-section rail-footer">
-          <div className="compact-status">
-            <span className={`status-dot ${workspaces.some((workspace) => workspace.mode === "watching") ? "live" : "idle"}`} />
-            {!isCollapsed && (
-              <div>
-                <strong>
-                  {workspaces.some((workspace) => workspace.mode === "watching") ? "Watcher running" : "Waiting for eligible threads"}
-                </strong>
-                <p>Sidebar counts come directly from discovered workspace data.</p>
               </div>
             )}
           </div>
@@ -200,39 +206,73 @@ export function MainColumn({
   isThreadsLoading,
   isPromptsLoading
 }: MainColumnProps) {
+  const selectedThread = threadRows.find((thread) => thread.id === selectedThreadId) ?? null;
+  const title = selectedWorkspace?.slug ?? "No workspace selected";
+  const threadHeadline = selectedThread?.title ?? "Select a thread to inspect its prompt history";
+
   return (
     <main className="main-column">
-      <header className="main-header">
-        <div className="main-heading">
-          <div className="main-heading-topline">
-            <button className="mobile-project-button" onClick={onOpenSidebarDrawer} type="button">
-              Folders
+      <section className="repo-bar">
+        <div className="repo-bar-copy">
+          <div className="repo-breadcrumb">
+            <button className="icon-button repo-menu-button" onClick={onOpenSidebarDrawer} type="button">
+              <span />
+              <span />
+              <span />
             </button>
-            <p className="eyebrow">Selected Workspace</p>
+            <span className="repo-owner">adamb</span>
+            <span className="repo-separator">/</span>
+            <strong>{selectedWorkspace?.slug ?? "workspace"}</strong>
           </div>
-          <h2>{selectedWorkspace?.slug ?? "No workspace selected"}</h2>
-          <p className="subtle header-copy">
-            {selectedWorkspace?.folderPath ?? "Pick a workspace folder to view discovered Codex threads."}
-          </p>
+          <nav className="repo-nav" aria-label="Repository sections">
+            <span className="repo-nav-item">Code</span>
+            <span className="repo-nav-item">Issues</span>
+            <span className="repo-nav-item active">Pull requests</span>
+            <span className="repo-nav-item">Actions</span>
+            <span className="repo-nav-item">Projects</span>
+            <span className="repo-nav-item">Insights</span>
+          </nav>
         </div>
-        <div className="header-badges">
-          <div className="count-badge">{threadRows.length} threads</div>
-          <div className="count-badge">{promptRows.length} prompt events</div>
-          {selectedWorkspaceStatus && (
-            <div className={`count-badge tone-${selectedWorkspaceStatus.tone}`}>
-              {selectedWorkspaceStatus.openThreadCount} open
-            </div>
-          )}
+      </section>
+
+      <section className="hero-panel">
+        <div className="hero-copy">
+          <p className="eyebrow">Pull request style thread review</p>
+          <h1>{threadHeadline}</h1>
+          <div className="hero-meta">
+            <span className={`hero-state ${selectedWorkspaceStatus?.mode === "watching" ? "watching" : "idle"}`}>
+              {selectedWorkspaceStatus?.mode === "watching" ? "Watching" : "Idle"}
+            </span>
+            <span>{title}</span>
+            <span>{selectedWorkspace?.folderPath ?? "Select a workspace to inspect Codex history."}</span>
+          </div>
         </div>
-      </header>
+        <div className="hero-actions">
+          <span className="count-badge">{threadRows.length} threads</span>
+          <span className="count-badge">{promptRows.length} prompt events</span>
+          <span className="count-badge">
+            {selectedWorkspaceStatus?.openThreadCount ?? 0} open
+          </span>
+        </div>
+      </section>
 
-      {selectedWorkspaceStatus && <AttachmentBanner status={selectedWorkspaceStatus} />}
+      <section className="content-tabs">
+        <button className="content-tab active" type="button">
+          Threads <span>{threadRows.length}</span>
+        </button>
+        <button className="content-tab" type="button">
+          Prompt events <span>{promptRows.length}</span>
+        </button>
+        <button className="content-tab" type="button">
+          Workspace health <span>{selectedWorkspaceStatus?.sessionFileCount ?? 0}</span>
+        </button>
+      </section>
 
-      <section className="thread-section">
-        <div className="section-head section-stack">
+      <section className="content-panel">
+        <div className="panel-header">
           <div>
             <p className="eyebrow">Threads</p>
-            <h3>Discovered Codex threads for this folder</h3>
+            <h3>Threads in this repository</h3>
           </div>
           {isThreadsLoading && <p className="subtle loading-inline">Refreshing thread list...</p>}
         </div>
@@ -243,76 +283,47 @@ export function MainColumn({
         />
       </section>
 
-      <section className="stream-toolbar">
-        <div className="toolbar-group">
-          <button
-            className={filter === "all" ? "toolbar-chip active" : "toolbar-chip"}
-            onClick={() => onFilterChange("all")}
-            type="button"
-          >
-            All
-          </button>
-          <button
-            className={filter === "open" ? "toolbar-chip active" : "toolbar-chip"}
-            onClick={() => onFilterChange("open")}
-            type="button"
-          >
-            Open
-          </button>
-          <button
-            className={filter === "imported" ? "toolbar-chip active" : "toolbar-chip"}
-            onClick={() => onFilterChange("imported")}
-            type="button"
-          >
-            Imported
-          </button>
+      <section className="content-panel">
+        <div className="panel-header">
+          <div>
+            <p className="eyebrow">Prompt Events</p>
+            <h3>Conversation history for the selected thread</h3>
+          </div>
+          <div className="toolbar-group">
+            <button
+              className={filter === "all" ? "toolbar-chip active" : "toolbar-chip"}
+              onClick={() => onFilterChange("all")}
+              type="button"
+            >
+              All
+            </button>
+            <button
+              className={filter === "open" ? "toolbar-chip active" : "toolbar-chip"}
+              onClick={() => onFilterChange("open")}
+              type="button"
+            >
+              Open
+            </button>
+            <button
+              className={filter === "imported" ? "toolbar-chip active" : "toolbar-chip"}
+              onClick={() => onFilterChange("imported")}
+              type="button"
+            >
+              Imported
+            </button>
+          </div>
         </div>
-        <div className="toolbar-meta">
-          <span>Newest first</span>
-          <span>Inline detail</span>
-          {isPromptsLoading && <span>Refreshing...</span>}
-        </div>
+        {isPromptsLoading && <p className="subtle loading-inline">Refreshing prompt events...</p>}
+        <PromptStream
+          detailErrorById={detailErrorById}
+          detailLoadingById={detailLoadingById}
+          expandedPromptId={expandedPromptId}
+          onTogglePrompt={onTogglePrompt}
+          promptDetails={promptDetails}
+          promptRows={promptRows}
+        />
       </section>
-
-      <PromptStream
-        detailErrorById={detailErrorById}
-        detailLoadingById={detailLoadingById}
-        expandedPromptId={expandedPromptId}
-        onTogglePrompt={onTogglePrompt}
-        promptDetails={promptDetails}
-        promptRows={promptRows}
-      />
     </main>
-  );
-}
-
-type AttachmentBannerProps = {
-  status: WorkspaceStatusViewModel;
-};
-
-export function AttachmentBanner({ status }: AttachmentBannerProps) {
-  return (
-    <section className={`attachment-banner tone-${status.tone}`}>
-      <div className="banner-copy">
-        <p className="eyebrow">Live Attachment</p>
-        <h3>{status.headline}</h3>
-        <p className="subtle">
-          {status.mode === "watching"
-            ? `${status.openThreadCount} open thread${status.openThreadCount === 1 ? "" : "s"} across ${status.recentlyUpdatedSessionCount} recently updated session file${status.recentlyUpdatedSessionCount === 1 ? "" : "s"}.`
-            : status.mode === "error"
-              ? status.lastError ?? "Watcher error"
-              : "Promptline will attach as soon as Codex starts writing session activity for this folder."}
-        </p>
-      </div>
-      <div className="banner-stats">
-        <span>{status.lastImportLabel}</span>
-        {status.lastImportResult && (
-          <span>
-            {status.lastImportResult.importedPrompts} windows from {status.lastImportResult.importedFiles} files
-          </span>
-        )}
-      </div>
-    </section>
   );
 }
 
@@ -326,8 +337,8 @@ export function ThreadList({ threadRows, selectedThreadId, onSelectThread }: Thr
   if (threadRows.length === 0) {
     return (
       <div className="empty-inline">
-        <strong>No threads in this folder yet</strong>
-        <p className="subtle">As soon as Codex records session activity for this execution path, the thread list will appear here.</p>
+        <strong>No threads in this repository yet</strong>
+        <p className="subtle">As soon as an eligible Codex session writes prompt windows here, the thread list will appear.</p>
       </div>
     );
   }
@@ -336,22 +347,22 @@ export function ThreadList({ threadRows, selectedThreadId, onSelectThread }: Thr
     <div className="thread-list">
       {threadRows.map((thread) => (
         <button
-          className={thread.id === selectedThreadId ? `thread-button active tone-${thread.tone}` : `thread-button tone-${thread.tone}`}
+          className={thread.id === selectedThreadId ? "thread-button active" : "thread-button"}
           key={thread.id}
           onClick={() => onSelectThread(thread.id)}
           type="button"
         >
-          <div className="thread-heading">
+          <div className="thread-main">
             <strong>{thread.title}</strong>
+            <p className="subtle">
+              {thread.promptCountLabel} · {thread.openLabel} · {thread.activityLabel}
+            </p>
+          </div>
+          <div className="thread-side">
             <span className={`status-pill ${thread.status === "open" ? "status-in_progress" : "status-completed"}`}>
               {thread.status}
             </span>
-          </div>
-          <p className="subtle">{thread.folderPath ?? "Unknown folder"}</p>
-          <div className="thread-meta">
-            <span>{thread.promptCountLabel}</span>
-            <span>{thread.openLabel}</span>
-            <span>{thread.activityLabel}</span>
+            <code>{thread.id.slice(-7)}</code>
           </div>
         </button>
       ))}
@@ -408,7 +419,7 @@ type PromptRowProps = {
 
 export function PromptRow({ prompt, detail, isExpanded, isLoading, error, onToggle }: PromptRowProps) {
   return (
-    <article className={`prompt-row tone-${prompt.tone} ${isExpanded ? "expanded" : ""}`}>
+    <article className={isExpanded ? "prompt-row expanded" : "prompt-row"}>
       <button
         aria-controls={`prompt-detail-${prompt.id}`}
         aria-expanded={isExpanded}
@@ -416,19 +427,18 @@ export function PromptRow({ prompt, detail, isExpanded, isLoading, error, onTogg
         onClick={onToggle}
         type="button"
       >
-        <div className="prompt-row-leading">
+        <div className="prompt-row-main">
+          <div className="prompt-row-title">
+            <strong>{prompt.promptSummary}</strong>
+            {prompt.isLiveDerived && <span className="status-pill status-in_progress">Live</span>}
+          </div>
+          <p className="subtle">
+            {prompt.timestampLabel} · {prompt.primaryLabel} · {prompt.filesLabel} · {prompt.artifactLabel}
+          </p>
+        </div>
+        <div className="prompt-row-side">
           <span className={`status-pill status-${prompt.status}`}>{prompt.statusLabel}</span>
-          <span className="prompt-row-time">{prompt.timestampLabel}</span>
-        </div>
-        <div className="prompt-row-summary">
-          <strong>{prompt.promptSummary}</strong>
-          <span>{prompt.primaryLabel}</span>
-        </div>
-        <div className="prompt-row-meta">
-          <span>{prompt.filesLabel}</span>
-          <span>{prompt.artifactLabel}</span>
-          <span>{prompt.childLabel}</span>
-          {prompt.isLiveDerived && <span className="evidence-chip live">Live</span>}
+          <code>{prompt.id.slice(-7)}</code>
         </div>
       </button>
 
@@ -529,19 +539,14 @@ export function ContextRail({ selectedWorkspaceStatus }: ContextRailProps) {
     <aside className="context-rail">
       <HealthCard status={selectedWorkspaceStatus} />
       <ExplainerCard
-        eyebrow="Grouping Rule"
-        title="Folder metadata defines the workspace"
-        body="Promptline only shows Windows session folders whose exact cwd contains a local .git directory, then groups each Codex thread under that folder."
-      />
-      <ExplainerCard
-        eyebrow="Thread Scope"
-        title="One folder, many threads"
-        body="Each folder can contain multiple Codex threads. The thread list lets you switch between them before drilling into individual prompt events."
+        eyebrow="Visibility Rule"
+        title="Exact `.git` cwd only"
+        body="Promptline only exposes workspaces whose exact Windows execution folder contains a `.git` directory."
       />
       <ExplainerCard
         eyebrow="Prompt Detail"
-        title="Prompt, artifacts, evidence"
-        body="Each prompt event still expands inline so you can inspect the reasoning trail without losing your place in the thread."
+        title="Detail stays one click away"
+        body="Prompt rows stay compact in the list, then expand inline with prompt text, touched files, artifacts, and git links."
       />
     </aside>
   );
@@ -554,7 +559,7 @@ type HealthCardProps = {
 export function HealthCard({ status }: HealthCardProps) {
   return (
     <section className="context-card">
-      <p className="eyebrow">Codex Attachment Status</p>
+      <p className="eyebrow">Workspace Health</p>
       <h3>{status?.headline ?? "Waiting for workspace selection"}</h3>
       {status ? (
         <dl className="metric-grid">
@@ -563,20 +568,20 @@ export function HealthCard({ status }: HealthCardProps) {
             <dd>{status.mode}</dd>
           </div>
           <div>
-            <dt>Session files</dt>
-            <dd>{status.sessionFileCount}</dd>
-          </div>
-          <div>
             <dt>Threads</dt>
             <dd>{status.threadCount}</dd>
           </div>
           <div>
-            <dt>Open threads</dt>
+            <dt>Open</dt>
             <dd>{status.openThreadCount}</dd>
+          </div>
+          <div>
+            <dt>Session files</dt>
+            <dd>{status.sessionFileCount}</dd>
           </div>
         </dl>
       ) : (
-        <p className="subtle">Select a workspace folder to see live watcher health.</p>
+        <p className="subtle">Select a repository to see watcher health and import status.</p>
       )}
     </section>
   );
@@ -604,14 +609,9 @@ export function EmptyState() {
       <p className="eyebrow">No Prompt Events Yet</p>
       <h3>This thread has not produced prompt windows yet.</h3>
       <p className="subtle">
-        Promptline discovers Codex session files from `~/.codex/sessions`, keeps only exact Windows cwd folders with a
-        direct `.git` directory, and stores prompt history inside each thread.
+        Promptline will populate this section as soon as the selected thread writes prompt events into the local
+        session history.
       </p>
-      <ol className="empty-steps">
-        <li>Keep `pnpm dev` running while you work in Codex.</li>
-        <li>Rescan if you started a new session recently and want to refresh immediately.</li>
-        <li>Switch threads above if this folder has more than one Codex conversation.</li>
-      </ol>
     </section>
   );
 }

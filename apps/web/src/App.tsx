@@ -253,6 +253,7 @@ export function App() {
 
   const threads = selectedWorkspaceId ? (threadsByWorkspaceId[selectedWorkspaceId] ?? []) : [];
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
+  const selectedThreadKey = selectedThread?.threadId ?? selectedThread?.sessionId ?? "";
   const promptCacheKey =
     selectedWorkspaceId && selectedThreadId
       ? createThreadCacheKey(selectedWorkspaceId, selectedThreadId)
@@ -260,7 +261,7 @@ export function App() {
   const cachedPrompts = promptCacheKey ? promptsByThreadKey[promptCacheKey] : undefined;
 
   useEffect(() => {
-    if (!selectedWorkspaceId || !selectedThreadId || !isDocumentVisible) {
+    if (!selectedWorkspaceId || !selectedThreadId || !selectedThreadKey || !isDocumentVisible) {
       return;
     }
 
@@ -278,7 +279,7 @@ export function App() {
       }
 
       try {
-        const data = await fetchPrompts(selectedWorkspaceId, selectedThreadId, {
+        const data = await fetchPrompts(selectedWorkspaceId, selectedThreadKey, {
           signal: controller.signal
         });
         if (!active) {
@@ -317,7 +318,14 @@ export function App() {
       controller?.abort();
       window.clearInterval(interval);
     };
-  }, [cachedPrompts, isDocumentVisible, selectedThread?.openPromptCount, selectedThreadId, selectedWorkspaceId]);
+  }, [
+    cachedPrompts,
+    isDocumentVisible,
+    selectedThread?.openPromptCount,
+    selectedThreadId,
+    selectedThreadKey,
+    selectedWorkspaceId
+  ]);
 
   const prompts = promptCacheKey ? (promptsByThreadKey[promptCacheKey] ?? []) : [];
 
@@ -473,6 +481,7 @@ export function App() {
   return (
     <AppShell
       isSidebarCollapsed={sidebarCollapsed}
+      onOpenSidebarDrawer={() => setSidebarDrawerOpen(true)}
       sidebar={
         <WorkspaceSidebar
           workspaces={workspaceSidebarItems}
