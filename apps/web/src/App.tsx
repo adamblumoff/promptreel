@@ -270,6 +270,7 @@ export function App() {
 
   return (
     <AppShell
+      isSidebarCollapsed={sidebarCollapsed}
       sidebar={
         <ProjectSidebar
           projects={projectSidebarItems}

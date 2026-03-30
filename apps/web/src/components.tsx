@@ -11,11 +11,12 @@ type AppShellProps = {
   sidebar: ReactNode;
   main: ReactNode;
   contextRail: ReactNode;
+  isSidebarCollapsed: boolean;
 };
 
-export function AppShell({ sidebar, main, contextRail }: AppShellProps) {
+export function AppShell({ sidebar, main, contextRail, isSidebarCollapsed }: AppShellProps) {
   return (
-    <div className="app-shell">
+    <div className={isSidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
       {sidebar}
       {main}
       {contextRail}
