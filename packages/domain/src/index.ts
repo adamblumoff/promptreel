@@ -1,7 +1,8 @@
 import { createHash, randomUUID, type BinaryLike } from "node:crypto";
 import { basename } from "node:path";
 
-export type RepoStatus = "active" | "missing";
+export type WorkspaceStatus = "active" | "missing";
+export type WorkspaceSource = "auto_discovered" | "manual";
 export type RawEventSource = "codex-session" | "codex-app-server";
 export type ArtifactType =
   | "final_output"
@@ -24,6 +25,7 @@ export type PromptBoundaryReason =
   | "thread_idle"
   | "import_end";
 export type PromptEventStatus = "in_progress" | "completed" | "imported";
+export type ThreadStatus = "open" | "closed";
 export type GitSurvivalState =
   | "uncommitted"
   | "survived"
@@ -32,6 +34,27 @@ export type GitSurvivalState =
   | "reverted"
   | "abandoned";
 
+export interface WorkspaceGroup {
+  id: string;
+  slug: string;
+  folderPath: string | null;
+  gitRootPath: string | null;
+  gitDir: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  status: WorkspaceStatus;
+  source: WorkspaceSource;
+}
+
+export interface WorkspaceListItem extends WorkspaceGroup {
+  threadCount: number;
+  openThreadCount: number;
+  lastActivityAt: string | null;
+  sessionFileCount: number;
+  recentlyUpdatedSessionCount: number;
+  mode: "watching" | "error" | "idle";
+}
+
 export interface RepoRegistration {
   id: string;
   slug: string;
@@ -39,12 +62,26 @@ export interface RepoRegistration {
   gitDir: string;
   createdAt: string;
   lastSeenAt: string;
-  status: RepoStatus;
+  status: WorkspaceStatus;
+}
+
+export interface ThreadSummary {
+  id: string;
+  workspaceId: string;
+  sessionId: string | null;
+  threadId: string | null;
+  folderPath: string | null;
+  startedAt: string;
+  lastActivityAt: string;
+  promptCount: number;
+  openPromptCount: number;
+  lastPromptSummary: string;
+  status: ThreadStatus;
 }
 
 export interface RawEventRecord {
   id: string;
-  repoId: string;
+  workspaceId: string;
   source: RawEventSource;
   sessionId: string | null;
   threadId: string | null;
@@ -73,7 +110,7 @@ export interface WorkspaceSnapshotData {
 
 export interface WorkspaceSnapshot {
   id: string;
-  repoId: string;
+  workspaceId: string;
   capturedAt: string;
   headSha: string | null;
   branchName: string | null;
@@ -111,7 +148,8 @@ export interface GitLinkRecord {
 
 export interface PromptEventRecord {
   id: string;
-  repoId: string;
+  workspaceId: string;
+  executionPath: string | null;
   sessionId: string | null;
   threadId: string | null;
   parentPromptEventId: string | null;
@@ -132,11 +170,25 @@ export interface PromptEventDetail extends PromptEventRecord {
   gitLinks: GitLinkRecord[];
 }
 
-export interface PromptEventListItem extends PromptEventRecord {
+export interface PromptEventListItem {
+  id: string;
+  workspaceId: string;
+  executionPath: string | null;
+  sessionId: string | null;
+  threadId: string | null;
+  parentPromptEventId: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  boundaryReason: PromptBoundaryReason | null;
+  status: PromptEventStatus;
   artifactCount: number;
   childCount: number;
   filesTouched: string[];
   filesTouchedCount: number;
+  promptSummary: string;
+  primaryArtifactId: string | null;
+  baselineSnapshotId: string | null;
+  endSnapshotId: string | null;
   primaryArtifactType: ArtifactType | null;
   primaryArtifactSummary: string | null;
   hasCodeDiff: boolean;
@@ -173,12 +225,14 @@ export interface LiveDoctorResult {
   message: string;
 }
 
-export interface RepoIngestionStatus {
-  repoId: string;
+export interface WorkspaceIngestionStatus {
+  workspaceId: string;
+  folderPath: string | null;
   mode: "watching" | "error" | "idle";
+  threadCount: number;
+  openThreadCount: number;
   sessionFileCount: number;
   recentlyUpdatedSessionCount: number;
-  openPromptCount: number;
   lastImportAt: string | null;
   lastImportResult: {
     importedFiles: number;
@@ -192,26 +246,55 @@ export interface IngestionStatus {
   pollingIntervalMs: number;
   sessionsRoot: string;
   lastScanAt: string | null;
-  repoStatuses: RepoIngestionStatus[];
+  workspaceStatuses: WorkspaceIngestionStatus[];
+  repoStatuses?: Array<{
+    repoId: string;
+    mode: "watching" | "error" | "idle";
+    sessionFileCount: number;
+    recentlyUpdatedSessionCount: number;
+    openPromptCount: number;
+    lastImportAt: string | null;
+    lastImportResult: {
+      importedFiles: number;
+      importedPrompts: number;
+    } | null;
+    lastError: string | null;
+  }>;
 }
 
 export function createId(prefix: string): string {
   return `${prefix}_${randomUUID()}`;
 }
 
+export function slugifyPath(pathValue: string | null): string {
+  if (!pathValue) {
+    return "unknown-folder";
+  }
+  const raw = basename(pathValue).toLowerCase();
+  return raw.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "folder";
+}
+
 export function slugifyRepoPath(repoPath: string): string {
-  const raw = basename(repoPath).toLowerCase();
-  return raw.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "repo";
+  return slugifyPath(repoPath);
 }
 
 export function hashValue(value: BinaryLike): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export function repoRegistrationId(repoPath: string): string {
-  const slug = slugifyRepoPath(repoPath);
-  const hash = hashValue(repoPath).slice(0, 10);
+export function workspaceGroupId(folderPath: string | null): string {
+  const stableValue = folderPath ?? "__unknown_folder__";
+  const slug = slugifyPath(folderPath);
+  const hash = hashValue(stableValue).slice(0, 10);
   return `${slug}--${hash}`;
+}
+
+export function repoRegistrationId(repoPath: string): string {
+  return workspaceGroupId(repoPath);
+}
+
+export function threadSummaryId(workspaceId: string, threadKey: string): string {
+  return `${workspaceId}::${hashValue(threadKey).slice(0, 12)}`;
 }
 
 export function summarizePrompt(text: string): string {
@@ -261,8 +344,8 @@ export function choosePrimaryArtifactType(
   return null;
 }
 
-export function looksLikeTestCommand(command: string): boolean {
-  return /\b(test|vitest|jest|playwright|pytest|cargo test|pnpm test|npm test)\b/i.test(command);
+export function looksLikeTestCommand(commandSummary: string): boolean {
+  return /\b(test|vitest|jest|playwright|pytest|cargo test|go test)\b/i.test(commandSummary);
 }
 
 export function nowIso(): string {

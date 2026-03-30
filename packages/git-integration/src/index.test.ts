@@ -3,7 +3,7 @@ import {
   mergeCodeDiffs,
   parseApplyPatchToCodeDiff,
   parseUnifiedDiffToCodeDiff
-} from "./index";
+} from "./index.js";
 
 describe("git integration diff parsers", () => {
   test("parses apply_patch add operations", () => {

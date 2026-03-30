@@ -3,7 +3,10 @@ import type {
   LiveDoctorResult,
   PromptEventDetail,
   PromptEventListItem,
-  RepoRegistration
+  RepoRegistration,
+  ThreadSummary,
+  WorkspaceGroup,
+  WorkspaceListItem
 } from "@promptline/domain";
 
 export interface HealthResponse {
@@ -13,8 +16,20 @@ export interface HealthResponse {
   ingestion: IngestionStatus;
 }
 
+export interface WorkspaceListResponse {
+  workspaces: WorkspaceListItem[];
+}
+
 export interface RepoListResponse {
-  repos: RepoRegistration[];
+  repos: WorkspaceListItem[];
+}
+
+export interface WorkspaceCreateRequest {
+  path: string;
+}
+
+export interface WorkspaceCreateResponse {
+  workspace: WorkspaceGroup;
 }
 
 export interface RepoCreateRequest {
@@ -22,7 +37,11 @@ export interface RepoCreateRequest {
 }
 
 export interface RepoCreateResponse {
-  repo: RepoRegistration;
+  repo: WorkspaceGroup;
+}
+
+export interface ThreadListResponse {
+  threads: ThreadSummary[];
 }
 
 export interface PromptEventListResponse {
@@ -47,4 +66,9 @@ export interface PlanTraceResponse {
 
 export interface LiveDoctorResponse {
   result: LiveDoctorResult;
+}
+
+export interface RescanSessionsResponse {
+  ok: true;
+  ingestion: IngestionStatus;
 }

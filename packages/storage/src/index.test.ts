@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
 import type { ArtifactRecord, PromptEventRecord } from "@promptline/domain";
-import { PromptlineStore } from "./index";
+import {
+  PromptlineStore,
+  isEligibleWindowsGitWorkspace,
+  toEligibleWorkspacePath
+} from "./index";
 
 describe("PromptlineStore", () => {
   test("registers repos idempotently under the Promptline home", () => {
@@ -17,10 +21,30 @@ describe("PromptlineStore", () => {
     const first = store.addRepo(repoPath);
     const second = store.addRepo(repoPath);
     const repos = store.listRepos();
+    const workspaces = store.listWorkspaces();
 
     expect(first.id).toBe(second.id);
     expect(repos).toHaveLength(1);
+    expect(workspaces).toHaveLength(1);
     expect(store.repoDir(first.id)).toContain(".pl");
+  });
+
+  test("only exposes exact Windows directories with a direct .git folder", () => {
+    const root = mkdtempSync(join(tmpdir(), "promptline-store-workspace-"));
+    const repoPath = join(root, "repo");
+    const nestedPath = join(repoPath, "packages", "ui");
+    mkdirSync(nestedPath, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repoPath, stdio: "ignore" });
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    const workspace = store.ensureWorkspaceGroup(nestedPath);
+    const workspaces = store.listWorkspaces();
+
+    expect(workspace.folderPath).toBe(nestedPath);
+    expect(isEligibleWindowsGitWorkspace(repoPath)).toBe(true);
+    expect(isEligibleWindowsGitWorkspace(nestedPath)).toBe(false);
+    expect(toEligibleWorkspacePath(nestedPath)).toBeNull();
+    expect(workspaces).toEqual([]);
   });
 
   test("reimport replaces prompt-scoped artifacts, links, and git links", () => {
@@ -49,7 +73,8 @@ describe("PromptlineStore", () => {
     });
     const prompt: PromptEventRecord = {
       id: "prompt_test",
-      repoId: repo.id,
+      workspaceId: repo.id,
+      executionPath: repoPath,
       sessionId: "session-1",
       threadId: "session-1",
       parentPromptEventId: null,
@@ -138,9 +163,11 @@ describe("PromptlineStore", () => {
     const detail = store.getPromptDetail(repo.id, prompt.id);
     const prompts = store.listPrompts(repo.id);
 
+    expect(detail?.executionPath).toBe(repoPath);
     expect(detail?.artifacts.map((artifact) => artifact.id)).toEqual(["artifact_new_primary"]);
     expect(detail?.artifactLinks).toEqual([]);
     expect(detail?.gitLinks).toEqual([]);
     expect(prompts[0]?.filesTouched).toEqual(["src/new.ts"]);
+    expect(store.listThreads(repo.id)).toHaveLength(1);
   });
 });

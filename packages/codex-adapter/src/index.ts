@@ -7,14 +7,15 @@ import type {
   ArtifactLinkRecord,
   ArtifactRecord,
   CodeDiffResult,
+  IngestionStatus,
   LiveDoctorResult,
   PromptEventRecord,
   RawEventRecord,
   RepoRegistration,
-  WorkspaceSnapshot
+  WorkspaceSnapshot,
+  WorkspaceIngestionStatus
 } from "@promptline/domain";
 import {
-  IngestionStatus,
   choosePrimaryArtifactType,
   createId,
   extractPlan,
@@ -22,7 +23,8 @@ import {
   looksLikeTestCommand,
   nowIso,
   summarizePrompt,
-  type GitLinkRecord
+  type GitLinkRecord,
+  workspaceGroupId
 } from "@promptline/domain";
 import {
   buildCodeDiff,
@@ -34,7 +36,11 @@ import {
   parseUnifiedDiffToCodeDiff,
   repoRelativePath
 } from "@promptline/git-integration";
-import { PromptlineStore, getFileMtimeMs } from "@promptline/storage";
+import {
+  PromptlineStore,
+  getFileMtimeMs,
+  toEligibleWorkspacePath
+} from "@promptline/storage";
 
 interface JsonRpcResponse {
   id: number;
@@ -65,14 +71,37 @@ type HistoricalRecoveredDiff = {
   sourceFormat: "codex_apply_patch" | "unified_diff";
 };
 
+type SessionMeta = {
+  sessionId: string;
+  threadId: string | null;
+  cwd: string | null;
+  normalizedCwd: string | null;
+  source: string | null;
+};
+
+type WorkspaceImportCount = {
+  importedFiles: number;
+  importedPrompts: number;
+};
+
 export interface ImportCodexSessionsOptions {
   tailOpenPrompt?: boolean;
+}
+
+export interface ImportCodexSessionsResult {
+  importedFiles: number;
+  importedPrompts: number;
+  byWorkspace: Record<string, WorkspaceImportCount>;
 }
 
 export interface CodexSessionFileMatch {
   filePath: string;
   sessionId: string;
-  cwd: string;
+  threadId: string | null;
+  cwd: string | null;
+  normalizedCwd: string | null;
+  source: string | null;
+  workspaceId: string;
   mtimeMs: number | null;
 }
 
@@ -101,6 +130,28 @@ function readSessionLines(filePath: string): SessionLine[] {
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => JSON.parse(line) as SessionLine);
+}
+
+function readSessionMeta(lines: SessionLine[]): SessionMeta {
+  const meta = lines.find((line) => line.type === "session_meta");
+  const cwd = typeof meta?.payload?.cwd === "string" ? meta.payload.cwd : null;
+  const normalizedCwd = normalizeSessionCwd(cwd);
+  return {
+    sessionId: typeof meta?.payload?.id === "string" ? meta.payload.id : "",
+    threadId:
+      typeof meta?.payload?.threadId === "string"
+        ? meta.payload.threadId
+        : typeof meta?.payload?.thread_id === "string"
+          ? meta.payload.thread_id
+          : null,
+    cwd,
+    normalizedCwd,
+    source: typeof meta?.payload?.source === "string" ? meta.payload.source : null
+  };
+}
+
+function normalizeSessionCwd(cwd: string | null): string | null {
+  return toEligibleWorkspacePath(cwd);
 }
 
 function isUserMessage(line: SessionLine): string | null {
@@ -282,7 +333,7 @@ function summarizeToolEvent(event: SessionToolEvent): string {
   return `${event.name} ${event.arguments ?? event.input ?? ""}`.trim();
 }
 
-function normalizeRecoveredDiffPaths(diff: CodeDiffResult, repoPath: string): CodeDiffResult {
+function normalizeRecoveredDiffPaths(diff: CodeDiffResult, repoPath: string | null): CodeDiffResult {
   return {
     ...diff,
     files: diff.files.map((file) => ({
@@ -292,8 +343,8 @@ function normalizeRecoveredDiffPaths(diff: CodeDiffResult, repoPath: string): Co
   };
 }
 
-function normalizeRecoveredFilePath(filePath: string, repoPath: string): string {
-  if (!isAbsolute(filePath)) {
+function normalizeRecoveredFilePath(filePath: string, repoPath: string | null): string {
+  if (!repoPath || !isAbsolute(filePath)) {
     return filePath.replace(/\\/g, "/");
   }
   const normalizedAbsolutePath = normalize(filePath);
@@ -321,21 +372,22 @@ function safeParseJsonRecord(value: string | null): Record<string, unknown> | nu
 
 function createHistoricalSnapshots(
   store: PromptlineStore,
-  repoId: string,
-  repoPath: string,
+  workspaceId: string,
+  executionPath: string | null,
   seed: string
 ): WorkspaceSnapshot[] {
+  const snapshotPath = executionPath ?? process.cwd();
   const note = JSON.stringify(
-    createPlaceholderSnapshot(repoPath, "historical import cannot reconstruct exact workspace state"),
+    createPlaceholderSnapshot(snapshotPath, "historical import cannot reconstruct exact workspace state"),
     null,
     2
   );
-  const baselineBlobId = store.writeBlob(repoId, note);
-  const endBlobId = store.writeBlob(repoId, note);
+  const baselineBlobId = store.writeBlob(workspaceId, note);
+  const endBlobId = store.writeBlob(workspaceId, note);
   return [
     {
       id: stableId("snapshot", `${seed}:baseline`),
-      repoId,
+      workspaceId,
       capturedAt: nowIso(),
       headSha: null,
       branchName: null,
@@ -345,7 +397,7 @@ function createHistoricalSnapshots(
     },
     {
       id: stableId("snapshot", `${seed}:end`),
-      repoId,
+      workspaceId,
       capturedAt: nowIso(),
       headSha: null,
       branchName: null,
@@ -356,28 +408,43 @@ function createHistoricalSnapshots(
   ];
 }
 
-export function importCodexSessionsForRepo(
+function accumulateWorkspaceResult(
+  target: Record<string, WorkspaceImportCount>,
+  workspaceId: string,
+  addition: WorkspaceImportCount
+): void {
+  const existing = target[workspaceId] ?? { importedFiles: 0, importedPrompts: 0 };
+  target[workspaceId] = {
+    importedFiles: existing.importedFiles + addition.importedFiles,
+    importedPrompts: existing.importedPrompts + addition.importedPrompts
+  };
+}
+
+function importSessionFiles(
   store: PromptlineStore,
-  repo: RepoRegistration,
-  sessionsRoot = join(homedir(), ".codex", "sessions"),
+  files: CodexSessionFileMatch[],
   options: ImportCodexSessionsOptions = {}
-): { importedFiles: number; importedPrompts: number } {
-  const files = discoverCodexSessionFilesForRepo(repo, sessionsRoot);
-  let importedFiles = 0;
-  let importedPrompts = 0;
+): ImportCodexSessionsResult {
+  const totals: ImportCodexSessionsResult = {
+    importedFiles: 0,
+    importedPrompts: 0,
+    byWorkspace: {}
+  };
 
   for (const file of files) {
-    const filePath = file.filePath;
-    const cursorKey = `codex-session:v2:${filePath}`;
-    const mtimeMs = file.mtimeMs;
-    const cursor = store.getIngestCursor(repo.id, cursorKey);
-    if (cursor && cursor.cursorValue === String(mtimeMs)) {
+    const workspace = store.ensureWorkspaceGroup(file.normalizedCwd, {
+      gitRootPath: file.normalizedCwd,
+      gitDir: file.normalizedCwd ? join(file.normalizedCwd, ".git") : null,
+      source: "auto_discovered"
+    });
+    const cursorKey = `codex-session:v3:${file.filePath}`;
+    const cursor = store.getIngestCursor(workspace.id, cursorKey);
+    if (cursor && cursor.cursorValue === String(file.mtimeMs)) {
       continue;
     }
-    const lines = readSessionLines(filePath);
 
-    importedFiles += 1;
-    const sessionId = file.sessionId;
+    const lines = readSessionLines(file.filePath);
+    let importedPrompts = 0;
     let currentStart = -1;
     let promptIndex = 0;
 
@@ -393,14 +460,15 @@ export function importCodexSessionsForRepo(
         return;
       }
 
-      const promptSeed = `${filePath}:${promptIndex}`;
+      const promptSeed = `${file.filePath}:${promptIndex}`;
       const promptId = stableId("prompt", promptSeed);
-      const snapshots = createHistoricalSnapshots(store, repo.id, repo.rootPath, promptSeed);
+      const snapshots = createHistoricalSnapshots(store, workspace.id, file.normalizedCwd, promptSeed);
       const prompt: PromptEventRecord = {
         id: promptId,
-        repoId: repo.id,
-        sessionId,
-        threadId: sessionId || null,
+        workspaceId: workspace.id,
+        executionPath: file.normalizedCwd,
+        sessionId: file.sessionId || null,
+        threadId: (file.threadId ?? file.sessionId) || null,
         parentPromptEventId: null,
         startedAt: userLine?.timestamp ?? nowIso(),
         endedAt:
@@ -431,7 +499,7 @@ export function importCodexSessionsForRepo(
         .trim();
 
       if (finalText) {
-        const blobId = store.writeBlob(repo.id, finalText);
+        const blobId = store.writeBlob(workspace.id, finalText);
         artifacts.push({
           id: stableId("artifact", `${promptSeed}:final_output`),
           promptEventId: promptId,
@@ -446,10 +514,9 @@ export function importCodexSessionsForRepo(
 
       const plan = finalText ? extractPlan(finalText) : null;
       if (plan) {
-        const planArtifactId = stableId("artifact", `${promptSeed}:plan`);
-        const blobId = store.writeBlob(repo.id, JSON.stringify(plan, null, 2));
+        const blobId = store.writeBlob(workspace.id, JSON.stringify(plan, null, 2));
         artifacts.push({
-          id: planArtifactId,
+          id: stableId("artifact", `${promptSeed}:plan`),
           promptEventId: promptId,
           type: "plan",
           role: "secondary",
@@ -462,13 +529,13 @@ export function importCodexSessionsForRepo(
 
       const recoveredDiff = recoverHistoricalCodeDiff(toolEvents);
       if (recoveredDiff) {
-        const normalizedDiff = normalizeRecoveredDiffPaths(recoveredDiff.diff, repo.rootPath);
+        const normalizedDiff = normalizeRecoveredDiffPaths(recoveredDiff.diff, file.normalizedCwd);
         const diffArtifact = buildCodeDiffArtifact(promptId, normalizedDiff, {
           source: recoveredDiff.source,
           sourceFormat: recoveredDiff.sourceFormat
         });
         diffArtifact.id = stableId("artifact", `${promptSeed}:code_diff`);
-        diffArtifact.blobId = store.writeBlob(repo.id, recoveredDiff.diff.patch);
+        diffArtifact.blobId = store.writeBlob(workspace.id, recoveredDiff.diff.patch);
         artifacts.push(diffArtifact);
       }
 
@@ -482,7 +549,7 @@ export function importCodexSessionsForRepo(
           type: artifactType,
           role: "evidence",
           summary: summarizePrompt(commandSummary),
-          blobId: store.writeBlob(repo.id, commandSummary),
+          blobId: store.writeBlob(workspace.id, commandSummary),
           fileStatsJson: null,
           metadataJson: JSON.stringify({ name: call.name, arguments: call.arguments })
         });
@@ -500,13 +567,13 @@ export function importCodexSessionsForRepo(
       const rawEvents = window.map((line, index) => ({
         record: {
           id: stableId("raw", `${promptSeed}:${index}`),
-          repoId: repo.id,
+          workspaceId: workspace.id,
           source: "codex-session" as const,
-          sessionId,
-          threadId: sessionId || null,
+          sessionId: file.sessionId || null,
+          threadId: (file.threadId ?? file.sessionId) || null,
           eventType: `${line.type}:${String(line.payload?.type ?? "none")}`,
           occurredAt: line.timestamp ?? nowIso(),
-          ingestPath: filePath,
+          ingestPath: file.filePath,
           payloadBlobId: ""
         },
         payload: line
@@ -522,13 +589,13 @@ export function importCodexSessionsForRepo(
           type: "command_run",
           role: "evidence",
           summary: "Function call output",
-          blobId: store.writeBlob(repo.id, outputs.join("\n\n")),
+          blobId: store.writeBlob(workspace.id, outputs.join("\n\n")),
           fileStatsJson: null,
           metadataJson: null
         });
       }
 
-      store.persistPromptBundle(repo.id, {
+      store.persistPromptBundle(workspace.id, {
         prompt,
         snapshots,
         artifacts,
@@ -549,37 +616,80 @@ export function importCodexSessionsForRepo(
       }
     });
     flushWindow(lines.length);
-    store.setIngestCursor(repo.id, cursorKey, String(mtimeMs ?? 0));
+
+    store.setIngestCursor(workspace.id, cursorKey, String(file.mtimeMs ?? 0));
+    totals.importedFiles += 1;
+    totals.importedPrompts += importedPrompts;
+    accumulateWorkspaceResult(totals.byWorkspace, workspace.id, {
+      importedFiles: 1,
+      importedPrompts
+    });
   }
 
-  return { importedFiles, importedPrompts };
+  return totals;
 }
 
-export function discoverCodexSessionFilesForRepo(
-  repo: RepoRegistration,
+export function discoverCodexSessionFiles(
   sessionsRoot = join(homedir(), ".codex", "sessions")
 ): CodexSessionFileMatch[] {
   const files = walkFiles(sessionsRoot).filter((filePath) => filePath.endsWith(".jsonl")).sort();
   const results: CodexSessionFileMatch[] = [];
   for (const filePath of files) {
     const lines = readSessionLines(filePath);
-    const meta = lines.find((line) => line.type === "session_meta");
-    const cwd = String(meta?.payload?.cwd ?? "");
-    if (!cwd || cwd.toLowerCase() !== repo.rootPath.toLowerCase()) {
+    const meta = readSessionMeta(lines);
+    if (!meta.normalizedCwd) {
       continue;
     }
     results.push({
       filePath,
-      sessionId: String(meta?.payload?.id ?? ""),
-      cwd,
+      sessionId: meta.sessionId,
+      threadId: meta.threadId,
+      cwd: meta.cwd,
+      normalizedCwd: meta.normalizedCwd,
+      source: meta.source,
+      workspaceId: workspaceGroupId(meta.normalizedCwd),
       mtimeMs: getFileMtimeMs(filePath)
     });
   }
   return results;
 }
 
+export function importCodexSessions(
+  store: PromptlineStore,
+  sessionsRoot = join(homedir(), ".codex", "sessions"),
+  options: ImportCodexSessionsOptions = {}
+): ImportCodexSessionsResult {
+  const files = discoverCodexSessionFiles(sessionsRoot);
+  return importSessionFiles(store, files, options);
+}
+
+export function importCodexSessionsForRepo(
+  store: PromptlineStore,
+  repo: RepoRegistration,
+  sessionsRoot = join(homedir(), ".codex", "sessions"),
+  options: ImportCodexSessionsOptions = {}
+): { importedFiles: number; importedPrompts: number } {
+  const files = discoverCodexSessionFiles(sessionsRoot).filter(
+    (file) => file.normalizedCwd?.toLowerCase() === normalize(repo.rootPath).toLowerCase()
+  );
+  const result = importSessionFiles(store, files, options);
+  return {
+    importedFiles: result.importedFiles,
+    importedPrompts: result.importedPrompts
+  };
+}
+
+export function discoverCodexSessionFilesForRepo(
+  repo: RepoRegistration,
+  sessionsRoot = join(homedir(), ".codex", "sessions")
+): CodexSessionFileMatch[] {
+  return discoverCodexSessionFiles(sessionsRoot).filter(
+    (file) => file.normalizedCwd?.toLowerCase() === normalize(repo.rootPath).toLowerCase()
+  );
+}
+
 export class CodexSessionTailer {
-  private readonly statusByRepo = new Map<string, IngestionStatus["repoStatuses"][number]>();
+  private readonly statusByWorkspace = new Map<string, WorkspaceIngestionStatus>();
   private timer: NodeJS.Timeout | null = null;
   private lastScanAt: string | null = null;
   private scanning = false;
@@ -594,7 +704,6 @@ export class CodexSessionTailer {
     if (this.timer) {
       return;
     }
-    this.scanOnce();
     this.timer = setInterval(() => {
       this.scanOnce();
     }, this.pollingIntervalMs);
@@ -607,23 +716,49 @@ export class CodexSessionTailer {
     }
   }
 
+  scanNow(): IngestionStatus {
+    this.scanOnce();
+    return this.getStatus();
+  }
+
   getStatus(): IngestionStatus {
-    const repos = this.store.listRepos();
+    const workspaces = this.store.listWorkspaces();
+    const workspaceStatuses = workspaces.map((workspace) => {
+      const existing = this.statusByWorkspace.get(workspace.id);
+      if (existing) {
+        return existing;
+      }
+      const threads = this.store.listThreads(workspace.id);
+      return {
+        workspaceId: workspace.id,
+        folderPath: workspace.folderPath,
+        mode: "idle" as const,
+        threadCount: threads.length,
+        openThreadCount: threads.filter((thread) => thread.status === "open").length,
+        sessionFileCount: 0,
+        recentlyUpdatedSessionCount: 0,
+        lastImportAt: null,
+        lastImportResult: null,
+        lastError: null
+      };
+    });
+
     return {
       watcher: this.timer ? "running" : "stopped",
       pollingIntervalMs: this.pollingIntervalMs,
       sessionsRoot: this.sessionsRoot,
       lastScanAt: this.lastScanAt,
-      repoStatuses: repos.map((repo) => this.statusByRepo.get(repo.id) ?? {
-        repoId: repo.id,
-        mode: "idle",
-        sessionFileCount: 0,
-        recentlyUpdatedSessionCount: 0,
-        openPromptCount: 0,
-        lastImportAt: null,
-        lastImportResult: null,
-        lastError: null
-      })
+      workspaceStatuses,
+      repoStatuses: workspaceStatuses.map((status) => ({
+        repoId: status.workspaceId,
+        mode: status.mode,
+        sessionFileCount: status.sessionFileCount,
+        recentlyUpdatedSessionCount: status.recentlyUpdatedSessionCount,
+        openPromptCount: status.openThreadCount,
+        lastImportAt: status.lastImportAt,
+        lastImportResult: status.lastImportResult,
+        lastError: status.lastError
+      }))
     };
   }
 
@@ -633,41 +768,66 @@ export class CodexSessionTailer {
     }
     this.scanning = true;
     try {
-      const repos = this.store.listRepos();
-      for (const repo of repos) {
+      const matches = discoverCodexSessionFiles(this.sessionsRoot);
+      const recentCutoff = Date.now() - this.pollingIntervalMs * 3;
+      const groupedMatches = new Map<string, CodexSessionFileMatch[]>();
+      for (const match of matches) {
+        const bucket = groupedMatches.get(match.workspaceId) ?? [];
+        bucket.push(match);
+        groupedMatches.set(match.workspaceId, bucket);
+        const folderPath = match.normalizedCwd;
+        if (!folderPath) {
+          continue;
+        }
+        this.store.ensureWorkspaceGroup(folderPath, {
+          gitRootPath: folderPath,
+          gitDir: join(folderPath, ".git"),
+          source: "auto_discovered"
+        });
+      }
+
+      const workspaces = this.store.listWorkspaces();
+      for (const workspace of workspaces) {
+        const workspaceMatches = groupedMatches.get(workspace.id) ?? [];
         try {
-          const matches = discoverCodexSessionFilesForRepo(repo, this.sessionsRoot);
-          const result = importCodexSessionsForRepo(this.store, repo, this.sessionsRoot, {
+          const result = importSessionFiles(this.store, workspaceMatches, {
             tailOpenPrompt: true
           });
-          const recentCutoff = Date.now() - this.pollingIntervalMs * 3;
-          const openPromptCount = this.store
-            .listPrompts(repo.id)
-            .filter((prompt) => prompt.status === "in_progress").length;
-          this.statusByRepo.set(repo.id, {
-            repoId: repo.id,
-            mode: "watching",
-            sessionFileCount: matches.length,
-            recentlyUpdatedSessionCount: matches.filter((match) => (match.mtimeMs ?? 0) >= recentCutoff).length,
-            openPromptCount,
-            lastImportAt: nowIso(),
-            lastImportResult: result,
+          const threads = this.store.listThreads(workspace.id);
+          const previous = this.statusByWorkspace.get(workspace.id);
+          this.statusByWorkspace.set(workspace.id, {
+            workspaceId: workspace.id,
+            folderPath: workspace.folderPath,
+            mode: workspaceMatches.length > 0 ? "watching" : "idle",
+            threadCount: threads.length,
+            openThreadCount: threads.filter((thread) => thread.status === "open").length,
+            sessionFileCount: workspaceMatches.length,
+            recentlyUpdatedSessionCount: workspaceMatches.filter((match) => (match.mtimeMs ?? 0) >= recentCutoff).length,
+            lastImportAt: workspaceMatches.length > 0 ? nowIso() : previous?.lastImportAt ?? null,
+            lastImportResult: result.byWorkspace[workspace.id]
+              ?? (workspaceMatches.length > 0
+                ? { importedFiles: 0, importedPrompts: 0 }
+                : previous?.lastImportResult ?? null),
             lastError: null
           });
         } catch (error) {
-          const previous = this.statusByRepo.get(repo.id);
-          this.statusByRepo.set(repo.id, {
-            repoId: repo.id,
+          const previous = this.statusByWorkspace.get(workspace.id);
+          const threads = this.store.listThreads(workspace.id);
+          this.statusByWorkspace.set(workspace.id, {
+            workspaceId: workspace.id,
+            folderPath: workspace.folderPath,
             mode: "error",
-            sessionFileCount: previous?.sessionFileCount ?? 0,
-            recentlyUpdatedSessionCount: previous?.recentlyUpdatedSessionCount ?? 0,
-            openPromptCount: previous?.openPromptCount ?? 0,
+            threadCount: previous?.threadCount ?? threads.length,
+            openThreadCount: previous?.openThreadCount ?? threads.filter((thread) => thread.status === "open").length,
+            sessionFileCount: workspaceMatches.length,
+            recentlyUpdatedSessionCount: workspaceMatches.filter((match) => (match.mtimeMs ?? 0) >= recentCutoff).length,
             lastImportAt: previous?.lastImportAt ?? null,
             lastImportResult: previous?.lastImportResult ?? null,
             lastError: error instanceof Error ? error.message : String(error)
           });
         }
       }
+
       this.lastScanAt = nowIso();
     } finally {
       this.scanning = false;
@@ -807,7 +967,7 @@ export async function runLiveDoctor(
         rawEvents.push({
           record: {
             id: createId("raw"),
-            repoId: repo.id,
+            workspaceId: repo.id,
             source: "codex-app-server",
             sessionId: null,
             threadId,
@@ -860,7 +1020,8 @@ export async function runLiveDoctor(
     const promptEventId = createId("prompt");
     const prompt: PromptEventRecord = {
       id: promptEventId,
-      repoId: repo.id,
+      workspaceId: repo.id,
+      executionPath: repo.rootPath,
       sessionId: null,
       threadId,
       parentPromptEventId: null,
@@ -893,9 +1054,8 @@ export async function runLiveDoctor(
     }
 
     if (planSteps.length > 0) {
-      const planArtifactId = createId("artifact");
       artifacts.push({
-        id: planArtifactId,
+        id: createId("artifact"),
         promptEventId,
         type: "plan",
         role: "secondary",

@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
-import type { Health, Repo } from "./types";
+import type { Workspace } from "./types";
 import type {
-  ProjectSidebarItemViewModel,
   PromptDetailViewModel,
   PromptRowViewModel,
-  RepoIngestionStatusViewModel
+  ThreadRowViewModel,
+  WorkspaceSidebarItemViewModel,
+  WorkspaceStatusViewModel
 } from "./view-models";
 
 type AppShellProps = {
@@ -24,27 +25,29 @@ export function AppShell({ sidebar, main, contextRail, isSidebarCollapsed }: App
   );
 }
 
-type ProjectSidebarProps = {
-  projects: ProjectSidebarItemViewModel[];
-  selectedProjectId: string;
-  onSelectProject: (projectId: string) => void;
-  health: Health | null;
+type WorkspaceSidebarProps = {
+  workspaces: WorkspaceSidebarItemViewModel[];
+  selectedWorkspaceId: string;
+  onSelectWorkspace: (workspaceId: string) => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
   isDrawerOpen: boolean;
   onCloseDrawer: () => void;
+  isRescanning: boolean;
+  onRescan: () => void;
 };
 
-export function ProjectSidebar({
-  projects,
-  selectedProjectId,
-  onSelectProject,
-  health,
+export function WorkspaceSidebar({
+  workspaces,
+  selectedWorkspaceId,
+  onSelectWorkspace,
   isCollapsed,
   onToggleCollapse,
   isDrawerOpen,
-  onCloseDrawer
-}: ProjectSidebarProps) {
+  onCloseDrawer,
+  isRescanning,
+  onRescan
+}: WorkspaceSidebarProps) {
   return (
     <>
       <button
@@ -66,14 +69,19 @@ export function ProjectSidebar({
             <p className="eyebrow">Promptline</p>
             {!isCollapsed && (
               <>
-                <h1>Prompt Stream</h1>
+                <h1>Workspace Threads</h1>
                 <p className="intro-copy">
-                  Review software work by the prompt that caused it, not the commit that happened to contain it.
+                  Every Codex thread grouped by the folder it ran in, with prompt history one level deeper.
                 </p>
               </>
             )}
           </div>
           <div className="sidebar-controls">
+            {!isCollapsed && (
+              <button className="sidebar-toggle" onClick={onRescan} type="button">
+                {isRescanning ? "Rescanning..." : "Rescan"}
+              </button>
+            )}
             <button className="sidebar-toggle mobile-only" onClick={onCloseDrawer} type="button">
               Close
             </button>
@@ -85,43 +93,53 @@ export function ProjectSidebar({
 
         <section className="rail-section project-section">
           <div className="section-head">
-            <p className="eyebrow">{isCollapsed ? "Projects" : "Registered Projects"}</p>
+            <p className="eyebrow">{isCollapsed ? "Folders" : "Workspace Folders"}</p>
           </div>
           <div className={isCollapsed ? "project-pill-list" : "project-list"}>
-            {projects.length > 0 ? (
-              projects.map((project) => (
+            {workspaces.length > 0 ? (
+              workspaces.map((workspace) => (
                 <button
-                  aria-pressed={project.id === selectedProjectId}
-                  className={project.id === selectedProjectId ? "project-button active" : "project-button"}
-                  key={project.id}
-                  onClick={() => onSelectProject(project.id)}
-                  title={isCollapsed ? `${project.slug}\n${project.rootPath}` : project.rootPath}
+                  aria-pressed={workspace.id === selectedWorkspaceId}
+                  className={workspace.id === selectedWorkspaceId ? "project-button active" : "project-button"}
+                  key={workspace.id}
+                  onClick={() => onSelectWorkspace(workspace.id)}
+                  title={isCollapsed ? `${workspace.slug}\n${workspace.pathLabel}` : workspace.pathLabel}
                   type="button"
                 >
                   {isCollapsed ? (
-                    <span className={`project-pill tone-${project.statusTone}`}>
-                      {project.slug.slice(0, 2).toUpperCase()}
+                    <span className={`project-pill tone-${workspace.statusTone}`}>
+                      {workspace.slug.slice(0, 2).toUpperCase()}
                     </span>
                   ) : (
                     <>
                       <div className="project-button-heading">
-                        <strong>{project.slug}</strong>
-                        <span className={`project-open-count tone-${project.statusTone}`}>
-                          {project.openPromptLabel}
+                        <strong>{workspace.slug}</strong>
+                        <span className={`project-open-count tone-${workspace.statusTone}`}>
+                          {workspace.openThreadLabel}
                         </span>
                       </div>
-                      <span className="project-root-path" title={project.rootPath}>
-                        {project.rootPath}
+                      <span className="project-root-path" title={workspace.pathLabel}>
+                        {workspace.pathLabel}
                       </span>
-                      <span className="project-activity">{project.activityLabel}</span>
+                      <div className="workspace-meta-row">
+                        <span className="project-activity">{workspace.threadCountLabel}</span>
+                        <span className="project-activity">{workspace.activityLabel}</span>
+                        <span className={`evidence-chip ${workspace.gitRootPath ? "" : "muted"}`}>
+                          {workspace.gitBadgeLabel}
+                        </span>
+                      </div>
                     </>
                   )}
                 </button>
               ))
             ) : (
               <div className="rail-note">
-                <strong>No projects registered</strong>
-                {!isCollapsed && <p>Run `pnpm dev:cli -- repo add .` to attach this workspace.</p>}
+                <strong>No Codex threads found yet</strong>
+                {!isCollapsed && (
+                  <p>
+                    Promptline only lists Windows session folders whose exact `cwd` contains a local `.git` directory.
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -129,11 +147,13 @@ export function ProjectSidebar({
 
         <section className="rail-section rail-footer">
           <div className="compact-status">
-            <span className={`status-dot ${health?.ingestion.watcher === "running" ? "live" : "idle"}`} />
+            <span className={`status-dot ${workspaces.some((workspace) => workspace.mode === "watching") ? "live" : "idle"}`} />
             {!isCollapsed && (
               <div>
-                <strong>{health?.ingestion.watcher === "running" ? "Watcher running" : "Watcher stopped"}</strong>
-                <p>{health?.ingestion.sessionsRoot ?? "Waiting for daemon health"}</p>
+                <strong>
+                  {workspaces.some((workspace) => workspace.mode === "watching") ? "Watcher running" : "Waiting for eligible threads"}
+                </strong>
+                <p>Sidebar counts come directly from discovered workspace data.</p>
               </div>
             )}
           </div>
@@ -144,8 +164,11 @@ export function ProjectSidebar({
 }
 
 type MainColumnProps = {
-  selectedProject: Repo | null;
-  selectedProjectStatus: RepoIngestionStatusViewModel | null;
+  selectedWorkspace: Workspace | null;
+  selectedWorkspaceStatus: WorkspaceStatusViewModel | null;
+  threadRows: ThreadRowViewModel[];
+  selectedThreadId: string;
+  onSelectThread: (threadId: string) => void;
   promptRows: PromptRowViewModel[];
   promptDetails: Record<string, PromptDetailViewModel>;
   detailLoadingById: Record<string, boolean>;
@@ -155,11 +178,16 @@ type MainColumnProps = {
   onFilterChange: (filter: "all" | "open" | "imported") => void;
   onTogglePrompt: (promptId: string) => void;
   onOpenSidebarDrawer: () => void;
+  isThreadsLoading: boolean;
+  isPromptsLoading: boolean;
 };
 
 export function MainColumn({
-  selectedProject,
-  selectedProjectStatus,
+  selectedWorkspace,
+  selectedWorkspaceStatus,
+  threadRows,
+  selectedThreadId,
+  onSelectThread,
   promptRows,
   promptDetails,
   detailLoadingById,
@@ -168,7 +196,9 @@ export function MainColumn({
   filter,
   onFilterChange,
   onTogglePrompt,
-  onOpenSidebarDrawer
+  onOpenSidebarDrawer,
+  isThreadsLoading,
+  isPromptsLoading
 }: MainColumnProps) {
   return (
     <main className="main-column">
@@ -176,26 +206,42 @@ export function MainColumn({
         <div className="main-heading">
           <div className="main-heading-topline">
             <button className="mobile-project-button" onClick={onOpenSidebarDrawer} type="button">
-              Projects
+              Folders
             </button>
-            <p className="eyebrow">Selected Project</p>
+            <p className="eyebrow">Selected Workspace</p>
           </div>
-          <h2>{selectedProject?.slug ?? "No project selected"}</h2>
+          <h2>{selectedWorkspace?.slug ?? "No workspace selected"}</h2>
           <p className="subtle header-copy">
-            {selectedProject?.rootPath ?? "Pick a project to view its prompt stream."}
+            {selectedWorkspace?.folderPath ?? "Pick a workspace folder to view discovered Codex threads."}
           </p>
         </div>
         <div className="header-badges">
+          <div className="count-badge">{threadRows.length} threads</div>
           <div className="count-badge">{promptRows.length} prompt events</div>
-          {selectedProjectStatus && (
-            <div className={`count-badge tone-${selectedProjectStatus.tone}`}>
-              {selectedProjectStatus.openPromptCount} open
+          {selectedWorkspaceStatus && (
+            <div className={`count-badge tone-${selectedWorkspaceStatus.tone}`}>
+              {selectedWorkspaceStatus.openThreadCount} open
             </div>
           )}
         </div>
       </header>
 
-      {selectedProjectStatus && <AttachmentBanner status={selectedProjectStatus} />}
+      {selectedWorkspaceStatus && <AttachmentBanner status={selectedWorkspaceStatus} />}
+
+      <section className="thread-section">
+        <div className="section-head section-stack">
+          <div>
+            <p className="eyebrow">Threads</p>
+            <h3>Discovered Codex threads for this folder</h3>
+          </div>
+          {isThreadsLoading && <p className="subtle loading-inline">Refreshing thread list...</p>}
+        </div>
+        <ThreadList
+          selectedThreadId={selectedThreadId}
+          threadRows={threadRows}
+          onSelectThread={onSelectThread}
+        />
+      </section>
 
       <section className="stream-toolbar">
         <div className="toolbar-group">
@@ -224,6 +270,7 @@ export function MainColumn({
         <div className="toolbar-meta">
           <span>Newest first</span>
           <span>Inline detail</span>
+          {isPromptsLoading && <span>Refreshing...</span>}
         </div>
       </section>
 
@@ -240,7 +287,7 @@ export function MainColumn({
 }
 
 type AttachmentBannerProps = {
-  status: RepoIngestionStatusViewModel;
+  status: WorkspaceStatusViewModel;
 };
 
 export function AttachmentBanner({ status }: AttachmentBannerProps) {
@@ -251,10 +298,10 @@ export function AttachmentBanner({ status }: AttachmentBannerProps) {
         <h3>{status.headline}</h3>
         <p className="subtle">
           {status.mode === "watching"
-            ? `${status.openPromptCount} open prompt${status.openPromptCount === 1 ? "" : "s"} across ${status.recentlyUpdatedSessionCount} recently updated session file${status.recentlyUpdatedSessionCount === 1 ? "" : "s"}.`
+            ? `${status.openThreadCount} open thread${status.openThreadCount === 1 ? "" : "s"} across ${status.recentlyUpdatedSessionCount} recently updated session file${status.recentlyUpdatedSessionCount === 1 ? "" : "s"}.`
             : status.mode === "error"
               ? status.lastError ?? "Watcher error"
-              : "Promptline will attach as soon as Codex starts writing session activity for this repo."}
+              : "Promptline will attach as soon as Codex starts writing session activity for this folder."}
         </p>
       </div>
       <div className="banner-stats">
@@ -266,6 +313,49 @@ export function AttachmentBanner({ status }: AttachmentBannerProps) {
         )}
       </div>
     </section>
+  );
+}
+
+type ThreadListProps = {
+  threadRows: ThreadRowViewModel[];
+  selectedThreadId: string;
+  onSelectThread: (threadId: string) => void;
+};
+
+export function ThreadList({ threadRows, selectedThreadId, onSelectThread }: ThreadListProps) {
+  if (threadRows.length === 0) {
+    return (
+      <div className="empty-inline">
+        <strong>No threads in this folder yet</strong>
+        <p className="subtle">As soon as Codex records session activity for this execution path, the thread list will appear here.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="thread-list">
+      {threadRows.map((thread) => (
+        <button
+          className={thread.id === selectedThreadId ? `thread-button active tone-${thread.tone}` : `thread-button tone-${thread.tone}`}
+          key={thread.id}
+          onClick={() => onSelectThread(thread.id)}
+          type="button"
+        >
+          <div className="thread-heading">
+            <strong>{thread.title}</strong>
+            <span className={`status-pill ${thread.status === "open" ? "status-in_progress" : "status-completed"}`}>
+              {thread.status}
+            </span>
+          </div>
+          <p className="subtle">{thread.folderPath ?? "Unknown folder"}</p>
+          <div className="thread-meta">
+            <span>{thread.promptCountLabel}</span>
+            <span>{thread.openLabel}</span>
+            <span>{thread.activityLabel}</span>
+          </div>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -366,6 +456,11 @@ export function PromptRow({ prompt, detail, isExpanded, isLoading, error, onTogg
               </section>
 
               <section className="prompt-detail-card">
+                <p className="eyebrow">Execution Folder</p>
+                <p className="subtle">{detail.executionPathLabel}</p>
+              </section>
+
+              <section className="prompt-detail-card">
                 <p className="eyebrow">Primary Artifact</p>
                 <p className="subtle">{detail.primaryArtifactSummary}</p>
               </section>
@@ -426,41 +521,41 @@ export function PromptRow({ prompt, detail, isExpanded, isLoading, error, onTogg
 }
 
 type ContextRailProps = {
-  selectedRepoStatus: RepoIngestionStatusViewModel | null;
+  selectedWorkspaceStatus: WorkspaceStatusViewModel | null;
 };
 
-export function ContextRail({ selectedRepoStatus }: ContextRailProps) {
+export function ContextRail({ selectedWorkspaceStatus }: ContextRailProps) {
   return (
     <aside className="context-rail">
-      <HealthCard status={selectedRepoStatus} />
+      <HealthCard status={selectedWorkspaceStatus} />
       <ExplainerCard
-        eyebrow="What Promptline Tracks"
-        title="Prompt, artifact, evidence, durability"
-        body="Promptline groups prompts by the work they caused: plans, diffs, commands, tests, and the live state around them."
+        eyebrow="Grouping Rule"
+        title="Folder metadata defines the workspace"
+        body="Promptline only shows Windows session folders whose exact cwd contains a local .git directory, then groups each Codex thread under that folder."
       />
       <ExplainerCard
-        eyebrow="Coming Next"
-        title="Code Story"
-        body="Trace any file by prompt, not just by commit, and see why a line exists in the first place."
+        eyebrow="Thread Scope"
+        title="One folder, many threads"
+        body="Each folder can contain multiple Codex threads. The thread list lets you switch between them before drilling into individual prompt events."
       />
       <ExplainerCard
-        eyebrow="Coming Next"
-        title="Plan Trace"
-        body="Line up a plan with the prompts, diffs, and tests that eventually implemented each step."
+        eyebrow="Prompt Detail"
+        title="Prompt, artifacts, evidence"
+        body="Each prompt event still expands inline so you can inspect the reasoning trail without losing your place in the thread."
       />
     </aside>
   );
 }
 
 type HealthCardProps = {
-  status: RepoIngestionStatusViewModel | null;
+  status: WorkspaceStatusViewModel | null;
 };
 
 export function HealthCard({ status }: HealthCardProps) {
   return (
     <section className="context-card">
       <p className="eyebrow">Codex Attachment Status</p>
-      <h3>{status?.headline ?? "Waiting for project selection"}</h3>
+      <h3>{status?.headline ?? "Waiting for workspace selection"}</h3>
       {status ? (
         <dl className="metric-grid">
           <div>
@@ -472,16 +567,16 @@ export function HealthCard({ status }: HealthCardProps) {
             <dd>{status.sessionFileCount}</dd>
           </div>
           <div>
-            <dt>Recently updated</dt>
-            <dd>{status.recentlyUpdatedSessionCount}</dd>
+            <dt>Threads</dt>
+            <dd>{status.threadCount}</dd>
           </div>
           <div>
-            <dt>Open prompts</dt>
-            <dd>{status.openPromptCount}</dd>
+            <dt>Open threads</dt>
+            <dd>{status.openThreadCount}</dd>
           </div>
         </dl>
       ) : (
-        <p className="subtle">Register and select a project to see live watcher health.</p>
+        <p className="subtle">Select a workspace folder to see live watcher health.</p>
       )}
     </section>
   );
@@ -507,15 +602,15 @@ export function EmptyState() {
   return (
     <section className="empty-state">
       <p className="eyebrow">No Prompt Events Yet</p>
-      <h3>The stream is ready and watching.</h3>
+      <h3>This thread has not produced prompt windows yet.</h3>
       <p className="subtle">
-        Promptline automatically tails `~/.codex/sessions` for registered projects. Once Codex writes activity for
-        this workspace, prompt events will appear here with inline detail and live attachment status.
+        Promptline discovers Codex session files from `~/.codex/sessions`, keeps only exact Windows cwd folders with a
+        direct `.git` directory, and stores prompt history inside each thread.
       </p>
       <ol className="empty-steps">
-        <li>Register the project once with `pnpm dev:cli -- repo add .`.</li>
         <li>Keep `pnpm dev` running while you work in Codex.</li>
-        <li>Watch the banner and context rail for open prompts and fresh imports.</li>
+        <li>Rescan if you started a new session recently and want to refresh immediately.</li>
+        <li>Switch threads above if this folder has more than one Codex conversation.</li>
       </ol>
     </section>
   );

@@ -1,29 +1,40 @@
-import { useEffect, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchHealth,
   fetchPromptDetail,
   fetchPrompts,
-  fetchRepos
+  fetchThreads,
+  fetchWorkspaces,
+  rescanSessions
 } from "./api";
-import type { Health, PromptDetail, PromptListItem, Repo } from "./types";
+import type {
+  Health,
+  PromptDetail,
+  PromptListItem,
+  ThreadSummary,
+  Workspace
+} from "./types";
 import {
   AppShell,
   ContextRail,
   MainColumn,
-  ProjectSidebar
+  WorkspaceSidebar
 } from "./components";
 import {
-  buildProjectSidebarItems,
-  getSelectedProject,
-  getSelectedRepoStatus,
-  resolveSelectedProjectId,
-  sortProjectsAlphabetically,
+  buildWorkspaceSidebarItems,
+  getSelectedWorkspace,
+  getSelectedWorkspaceStatus,
+  resolveSelectedThreadId,
+  resolveSelectedWorkspaceId,
+  sortWorkspacesByActivity,
+  toPromptDetailViewModel,
   toPromptRowViewModel,
+  toThreadRowViewModel,
   type PromptDetailViewModel
 } from "./view-models";
-import { toPromptDetailViewModel } from "./view-models";
 
-const SELECTED_PROJECT_STORAGE_KEY = "promptline:selected-project-id";
+const SELECTED_WORKSPACE_STORAGE_KEY = "promptline:selected-workspace-id";
+const SELECTED_THREAD_STORAGE_KEY = "promptline:selected-thread-id";
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "promptline:sidebar-collapsed";
 
 function readStoredValue(key: string): string {
@@ -41,12 +52,24 @@ function readStoredBoolean(key: string, fallback: boolean): boolean {
   return value === null ? fallback : value === "true";
 }
 
+function createThreadCacheKey(workspaceId: string, threadId: string): string {
+  return `${workspaceId}::${threadId}`;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 export function App() {
-  const [repos, setRepos] = useState<Repo[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState(() =>
-    readStoredValue(SELECTED_PROJECT_STORAGE_KEY)
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(() =>
+    readStoredValue(SELECTED_WORKSPACE_STORAGE_KEY)
   );
-  const [prompts, setPrompts] = useState<PromptListItem[]>([]);
+  const [threadsByWorkspaceId, setThreadsByWorkspaceId] = useState<Record<string, ThreadSummary[]>>({});
+  const [selectedThreadId, setSelectedThreadId] = useState(() =>
+    readStoredValue(SELECTED_THREAD_STORAGE_KEY)
+  );
+  const [promptsByThreadKey, setPromptsByThreadKey] = useState<Record<string, PromptListItem[]>>({});
   const [health, setHealth] = useState<Health | null>(null);
   const [filter, setFilter] = useState<"all" | "open" | "imported">("all");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
@@ -57,12 +80,41 @@ export function App() {
   const [promptDetailsById, setPromptDetailsById] = useState<Record<string, PromptDetail>>({});
   const [detailLoadingById, setDetailLoadingById] = useState<Record<string, boolean>>({});
   const [detailErrorById, setDetailErrorById] = useState<Record<string, string | null>>({});
+  const [isRescanning, setIsRescanning] = useState(false);
+  const [threadsLoading, setThreadsLoading] = useState(false);
+  const [promptsLoading, setPromptsLoading] = useState(false);
+  const [isDocumentVisible, setIsDocumentVisible] = useState(() =>
+    typeof document === "undefined" ? true : !document.hidden
+  );
+
+  const detailControllersRef = useRef<Record<string, AbortController | undefined>>({});
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const handleVisibilityChange = () => {
+      setIsDocumentVisible(!document.hidden);
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(SELECTED_PROJECT_STORAGE_KEY, selectedProjectId);
+      window.localStorage.setItem(SELECTED_WORKSPACE_STORAGE_KEY, selectedWorkspaceId);
     }
-  }, [selectedProjectId]);
+  }, [selectedWorkspaceId]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(SELECTED_THREAD_STORAGE_KEY, selectedThreadId);
+    }
+  }, [selectedThreadId]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -71,88 +123,186 @@ export function App() {
   }, [sidebarCollapsed]);
 
   useEffect(() => {
-    let cancelled = false;
+    if (!isDocumentVisible) {
+      return;
+    }
 
-    const refreshRepos = async () => {
+    let active = true;
+    let controller: AbortController | null = null;
+
+    const refreshWorkspaces = async () => {
+      controller?.abort();
+      controller = new AbortController();
       try {
-        const data = sortProjectsAlphabetically(await fetchRepos());
-        if (cancelled) {
+        const data = sortWorkspacesByActivity(await fetchWorkspaces({ signal: controller.signal }));
+        if (!active) {
           return;
         }
-        setRepos(data);
-        setSelectedProjectId((current) => resolveSelectedProjectId(data, current));
-      } catch {
-        if (!cancelled) {
-          setRepos([]);
-          setSelectedProjectId("");
+        startTransition(() => {
+          setWorkspaces(data);
+          setSelectedWorkspaceId((current) => resolveSelectedWorkspaceId(data, current));
+        });
+      } catch (error) {
+        if (!active || isAbortError(error)) {
+          return;
         }
       }
     };
 
-    void refreshRepos();
+    void refreshWorkspaces();
     const interval = window.setInterval(() => {
-      void refreshRepos();
-    }, 5000);
+      void refreshWorkspaces();
+    }, 10_000);
 
     return () => {
-      cancelled = true;
+      active = false;
+      controller?.abort();
       window.clearInterval(interval);
     };
-  }, []);
+  }, [isDocumentVisible]);
 
   useEffect(() => {
-    let cancelled = false;
+    if (!selectedWorkspaceId || !isDocumentVisible) {
+      return;
+    }
+
+    let active = true;
+    let controller: AbortController | null = null;
 
     const refreshHealth = async () => {
+      controller?.abort();
+      controller = new AbortController();
       try {
-        const data = await fetchHealth();
-        if (!cancelled) {
-          setHealth(data);
+        const data = await fetchHealth({ signal: controller.signal });
+        if (!active) {
+          return;
         }
-      } catch {
-        if (!cancelled) {
-          setHealth(null);
+        setHealth(data);
+      } catch (error) {
+        if (!active || isAbortError(error)) {
+          return;
         }
+        setHealth(null);
       }
     };
 
     void refreshHealth();
     const interval = window.setInterval(() => {
       void refreshHealth();
-    }, 3000);
+    }, 15_000);
 
     return () => {
-      cancelled = true;
+      active = false;
+      controller?.abort();
       window.clearInterval(interval);
     };
-  }, []);
+  }, [isDocumentVisible, selectedWorkspaceId]);
+
+  const cachedThreads = selectedWorkspaceId ? threadsByWorkspaceId[selectedWorkspaceId] : undefined;
 
   useEffect(() => {
-    if (!selectedProjectId) {
-      setPrompts([]);
-      setExpandedPromptId(null);
+    if (!selectedWorkspaceId || !isDocumentVisible) {
       return;
     }
 
-    let cancelled = false;
+    let active = true;
+    let controller: AbortController | null = null;
+    const hasCachedThreads = Boolean(cachedThreads);
 
-    const refreshPrompts = async () => {
+    const refreshThreads = async () => {
+      controller?.abort();
+      controller = new AbortController();
+      if (!hasCachedThreads) {
+        setThreadsLoading(true);
+      }
+
       try {
-        const data = await fetchPrompts(selectedProjectId);
-        if (cancelled) {
+        const data = await fetchThreads(selectedWorkspaceId, { signal: controller.signal });
+        if (!active) {
           return;
         }
-        setPrompts(data);
-        setExpandedPromptId((current) => {
-          if (!current) {
-            return current;
-          }
-          return data.some((prompt) => prompt.id === current) ? current : null;
+        startTransition(() => {
+          setThreadsByWorkspaceId((current) => ({
+            ...current,
+            [selectedWorkspaceId]: data
+          }));
+          setSelectedThreadId((current) => resolveSelectedThreadId(data, current));
         });
-      } catch {
-        if (!cancelled) {
-          setPrompts([]);
-          setExpandedPromptId(null);
+      } catch (error) {
+        if (!active || isAbortError(error)) {
+          return;
+        }
+      } finally {
+        if (active) {
+          setThreadsLoading(false);
+        }
+      }
+    };
+
+    void refreshThreads();
+    const interval = window.setInterval(() => {
+      void refreshThreads();
+    }, 5_000);
+
+    return () => {
+      active = false;
+      controller?.abort();
+      window.clearInterval(interval);
+    };
+  }, [cachedThreads, isDocumentVisible, selectedWorkspaceId]);
+
+  const threads = selectedWorkspaceId ? (threadsByWorkspaceId[selectedWorkspaceId] ?? []) : [];
+  const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
+  const promptCacheKey =
+    selectedWorkspaceId && selectedThreadId
+      ? createThreadCacheKey(selectedWorkspaceId, selectedThreadId)
+      : "";
+  const cachedPrompts = promptCacheKey ? promptsByThreadKey[promptCacheKey] : undefined;
+
+  useEffect(() => {
+    if (!selectedWorkspaceId || !selectedThreadId || !isDocumentVisible) {
+      return;
+    }
+
+    let active = true;
+    let controller: AbortController | null = null;
+    const cacheKey = createThreadCacheKey(selectedWorkspaceId, selectedThreadId);
+    const hasCachedPrompts = Boolean(cachedPrompts);
+    const refreshInterval = selectedThread?.openPromptCount ? 2_000 : 5_000;
+
+    const refreshPrompts = async () => {
+      controller?.abort();
+      controller = new AbortController();
+      if (!hasCachedPrompts) {
+        setPromptsLoading(true);
+      }
+
+      try {
+        const data = await fetchPrompts(selectedWorkspaceId, selectedThreadId, {
+          signal: controller.signal
+        });
+        if (!active) {
+          return;
+        }
+        startTransition(() => {
+          setPromptsByThreadKey((current) => ({
+            ...current,
+            [cacheKey]: data
+          }));
+          setExpandedPromptId((current) => {
+            if (!current) {
+              return current;
+            }
+            return data.some((prompt) => prompt.id === current) ? current : null;
+          });
+        });
+      } catch (error) {
+        if (!active || isAbortError(error)) {
+          return;
+        }
+      } finally {
+        if (active) {
+          setPromptsLoading(false);
         }
       }
     };
@@ -160,18 +310,25 @@ export function App() {
     void refreshPrompts();
     const interval = window.setInterval(() => {
       void refreshPrompts();
-    }, 3000);
+    }, refreshInterval);
 
     return () => {
-      cancelled = true;
+      active = false;
+      controller?.abort();
       window.clearInterval(interval);
     };
-  }, [selectedProjectId]);
+  }, [cachedPrompts, isDocumentVisible, selectedThread?.openPromptCount, selectedThreadId, selectedWorkspaceId]);
 
-  async function loadPromptDetail(projectId: string, promptId: string, force = false): Promise<void> {
+  const prompts = promptCacheKey ? (promptsByThreadKey[promptCacheKey] ?? []) : [];
+
+  async function loadPromptDetail(workspaceId: string, promptId: string, force = false): Promise<void> {
     if (!force && promptDetailsById[promptId]) {
       return;
     }
+
+    detailControllersRef.current[promptId]?.abort();
+    const controller = new AbortController();
+    detailControllersRef.current[promptId] = controller;
 
     setDetailLoadingById((current) => ({
       ...current,
@@ -183,26 +340,33 @@ export function App() {
     }));
 
     try {
-      const detail = await fetchPromptDetail(projectId, promptId);
+      const detail = await fetchPromptDetail(workspaceId, promptId, {
+        signal: controller.signal
+      });
       setPromptDetailsById((current) => ({
         ...current,
         [promptId]: detail
       }));
-    } catch {
-      setDetailErrorById((current) => ({
-        ...current,
-        [promptId]: "Prompt detail is unavailable right now."
-      }));
+    } catch (error) {
+      if (!isAbortError(error)) {
+        setDetailErrorById((current) => ({
+          ...current,
+          [promptId]: "Prompt detail is unavailable right now."
+        }));
+      }
     } finally {
       setDetailLoadingById((current) => ({
         ...current,
         [promptId]: false
       }));
+      if (detailControllersRef.current[promptId] === controller) {
+        delete detailControllersRef.current[promptId];
+      }
     }
   }
 
   useEffect(() => {
-    if (!selectedProjectId || !expandedPromptId) {
+    if (!selectedWorkspaceId || !expandedPromptId || !isDocumentVisible) {
       return;
     }
 
@@ -213,7 +377,7 @@ export function App() {
     }
 
     if (!promptDetailsById[expandedPromptId]) {
-      void loadPromptDetail(selectedProjectId, expandedPromptId);
+      void loadPromptDetail(selectedWorkspaceId, expandedPromptId);
     }
 
     if (expandedPrompt.status !== "in_progress") {
@@ -221,17 +385,26 @@ export function App() {
     }
 
     const interval = window.setInterval(() => {
-      void loadPromptDetail(selectedProjectId, expandedPromptId, true);
-    }, 3000);
+      void loadPromptDetail(selectedWorkspaceId, expandedPromptId, true);
+    }, 2_000);
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [expandedPromptId, promptDetailsById, prompts, selectedProjectId]);
+  }, [expandedPromptId, isDocumentVisible, promptDetailsById, prompts, selectedWorkspaceId]);
 
-  const selectedProject = getSelectedProject(repos, selectedProjectId);
-  const selectedProjectStatus = getSelectedRepoStatus(health, selectedProjectId);
-  const projectSidebarItems = buildProjectSidebarItems(repos, health, selectedProjectId);
+  useEffect(() => {
+    return () => {
+      for (const controller of Object.values(detailControllersRef.current)) {
+        controller?.abort();
+      }
+    };
+  }, []);
+
+  const selectedWorkspace = getSelectedWorkspace(workspaces, selectedWorkspaceId);
+  const selectedWorkspaceStatus = getSelectedWorkspaceStatus(selectedWorkspace, health, selectedWorkspaceId);
+  const workspaceSidebarItems = buildWorkspaceSidebarItems(workspaces, selectedWorkspaceId);
+  const threadRows = threads.map(toThreadRowViewModel);
   const promptRows = prompts
     .filter((prompt) => {
       if (filter === "open") {
@@ -244,18 +417,31 @@ export function App() {
     })
     .map(toPromptRowViewModel);
 
-  const promptDetails = Object.fromEntries(
-    Object.entries(promptDetailsById).map(([promptId, prompt]) => [promptId, toPromptDetailViewModel(prompt)])
-  ) as Record<string, PromptDetailViewModel>;
+  const promptDetails = useMemo(() => (
+    Object.fromEntries(
+      Object.entries(promptDetailsById).map(([promptId, prompt]) => [promptId, toPromptDetailViewModel(prompt)])
+    ) as Record<string, PromptDetailViewModel>
+  ), [promptDetailsById]);
 
-  const handleSelectProject = (projectId: string) => {
-    setSelectedProjectId(projectId);
-    setExpandedPromptId(null);
+  const handleSelectWorkspace = (workspaceId: string) => {
+    const nextThreads = threadsByWorkspaceId[workspaceId] ?? [];
+    startTransition(() => {
+      setSelectedWorkspaceId(workspaceId);
+      setSelectedThreadId(resolveSelectedThreadId(nextThreads, ""));
+      setExpandedPromptId(null);
+    });
     setSidebarDrawerOpen(false);
   };
 
+  const handleSelectThread = (threadId: string) => {
+    startTransition(() => {
+      setSelectedThreadId(threadId);
+      setExpandedPromptId(null);
+    });
+  };
+
   const handleTogglePrompt = (promptId: string) => {
-    if (!selectedProjectId) {
+    if (!selectedWorkspaceId) {
       return;
     }
 
@@ -265,28 +451,50 @@ export function App() {
     }
 
     setExpandedPromptId(promptId);
-    void loadPromptDetail(selectedProjectId, promptId);
+    void loadPromptDetail(selectedWorkspaceId, promptId);
+  };
+
+  const handleRescan = async () => {
+    setIsRescanning(true);
+    try {
+      const controller = new AbortController();
+      const ingestion = await rescanSessions({ signal: controller.signal });
+      setHealth((current) => current ? { ...current, ingestion } : current);
+      const refreshed = sortWorkspacesByActivity(await fetchWorkspaces({ signal: controller.signal }));
+      startTransition(() => {
+        setWorkspaces(refreshed);
+        setSelectedWorkspaceId((current) => resolveSelectedWorkspaceId(refreshed, current));
+      });
+    } finally {
+      setIsRescanning(false);
+    }
   };
 
   return (
     <AppShell
       isSidebarCollapsed={sidebarCollapsed}
       sidebar={
-        <ProjectSidebar
-          projects={projectSidebarItems}
-          selectedProjectId={selectedProjectId}
-          onSelectProject={handleSelectProject}
-          health={health}
+        <WorkspaceSidebar
+          workspaces={workspaceSidebarItems}
+          selectedWorkspaceId={selectedWorkspaceId}
+          onSelectWorkspace={handleSelectWorkspace}
           isCollapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed((current) => !current)}
           isDrawerOpen={sidebarDrawerOpen}
           onCloseDrawer={() => setSidebarDrawerOpen(false)}
+          isRescanning={isRescanning}
+          onRescan={() => {
+            void handleRescan();
+          }}
         />
       }
       main={
         <MainColumn
-          selectedProject={selectedProject}
-          selectedProjectStatus={selectedProjectStatus}
+          selectedWorkspace={selectedWorkspace}
+          selectedWorkspaceStatus={selectedWorkspaceStatus}
+          threadRows={threadRows}
+          selectedThreadId={selectedThreadId}
+          onSelectThread={handleSelectThread}
           promptRows={promptRows}
           expandedPromptId={expandedPromptId}
           promptDetails={promptDetails}
@@ -296,9 +504,11 @@ export function App() {
           onFilterChange={setFilter}
           onTogglePrompt={handleTogglePrompt}
           onOpenSidebarDrawer={() => setSidebarDrawerOpen(true)}
+          isThreadsLoading={threadsLoading}
+          isPromptsLoading={promptsLoading}
         />
       }
-      contextRail={<ContextRail selectedRepoStatus={selectedProjectStatus} />}
+      contextRail={<ContextRail selectedWorkspaceStatus={selectedWorkspaceStatus} />}
     />
   );
 }

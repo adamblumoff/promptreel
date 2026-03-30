@@ -1,7 +1,33 @@
-export type Repo = {
+export type Workspace = {
   id: string;
   slug: string;
-  rootPath: string;
+  folderPath: string | null;
+  gitRootPath: string | null;
+  gitDir: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  status: "active" | "missing";
+  source: "auto_discovered" | "manual";
+  threadCount: number;
+  openThreadCount: number;
+  lastActivityAt: string | null;
+  sessionFileCount: number;
+  recentlyUpdatedSessionCount: number;
+  mode: "watching" | "error" | "idle";
+};
+
+export type ThreadSummary = {
+  id: string;
+  workspaceId: string;
+  sessionId: string | null;
+  threadId: string | null;
+  folderPath: string | null;
+  startedAt: string;
+  lastActivityAt: string;
+  promptCount: number;
+  openPromptCount: number;
+  lastPromptSummary: string;
+  status: "open" | "closed";
 };
 
 export type PromptStatus = "in_progress" | "completed" | "imported";
@@ -30,7 +56,8 @@ export type GitSurvivalState =
 
 export type PromptListItem = {
   id: string;
-  repoId: string;
+  workspaceId: string;
+  executionPath: string | null;
   sessionId: string | null;
   threadId: string | null;
   parentPromptEventId: string | null;
@@ -38,7 +65,6 @@ export type PromptListItem = {
   endedAt: string | null;
   boundaryReason: "next_user_prompt" | "turn_completed" | "thread_idle" | "import_end" | null;
   status: PromptStatus;
-  promptText: string;
   promptSummary: string;
   primaryArtifactId: string | null;
   baselineSnapshotId: string | null;
@@ -81,17 +107,20 @@ export type GitLink = {
 };
 
 export type PromptDetail = Omit<PromptListItem, "filesTouched" | "filesTouchedCount" | "childCount" | "artifactCount" | "primaryArtifactType" | "primaryArtifactSummary" | "hasCodeDiff" | "isLiveDerived"> & {
+  promptText: string;
   artifacts: Artifact[];
   artifactLinks: ArtifactLink[];
   gitLinks: GitLink[];
 };
 
-export type RepoIngestionStatus = {
-  repoId: string;
+export type WorkspaceIngestionStatus = {
+  workspaceId: string;
+  folderPath: string | null;
   mode: "watching" | "error" | "idle";
+  threadCount: number;
+  openThreadCount: number;
   sessionFileCount: number;
   recentlyUpdatedSessionCount: number;
-  openPromptCount: number;
   lastImportAt: string | null;
   lastImportResult: {
     importedFiles: number;
@@ -109,6 +138,6 @@ export type Health = {
     pollingIntervalMs: number;
     sessionsRoot: string;
     lastScanAt: string | null;
-    repoStatuses: RepoIngestionStatus[];
+    workspaceStatuses: WorkspaceIngestionStatus[];
   };
 };

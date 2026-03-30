@@ -5,9 +5,9 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
 import { SAMPLE_CODEX_SESSION } from "@promptline/test-fixtures";
 import { PromptlineStore } from "@promptline/storage";
-import { importCodexSessionsForRepo } from "./index";
+import { importCodexSessions } from "./index";
 
-describe("importCodexSessionsForRepo", () => {
+describe("importCodexSessions", () => {
   test("segments prompt-to-idle windows from Codex session jsonl", () => {
     const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-");
 
@@ -19,16 +19,16 @@ describe("importCodexSessionsForRepo", () => {
     );
 
     const store = new PromptlineStore(join(root, ".pl"));
-    const repo = store.addRepo(repoPath);
-    const result = importCodexSessionsForRepo(store, repo, join(root, "sessions"));
-    const prompts = store.listPrompts(repo.id);
+    const result = importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompts = store.listPrompts(workspace.id);
 
     expect(result.importedFiles).toBe(1);
     expect(result.importedPrompts).toBe(2);
     expect(prompts).toHaveLength(2);
     expect(prompts[0].promptSummary.length).toBeGreaterThan(0);
 
-    const detail = store.getPromptDetail(repo.id, prompts[1].id);
+    const detail = store.getPromptDetail(workspace.id, prompts[1].id);
     expect(detail?.artifacts.some((artifact) => artifact.type === "plan")).toBe(true);
   });
 
@@ -47,9 +47,9 @@ describe("importCodexSessionsForRepo", () => {
     );
 
     const store = new PromptlineStore(join(root, ".pl"));
-    const repo = store.addRepo(repoPath);
-    importCodexSessionsForRepo(store, repo, join(root, "sessions"), { tailOpenPrompt: true });
-    const prompts = store.listPrompts(repo.id);
+    importCodexSessions(store, join(root, "sessions"), { tailOpenPrompt: true });
+    const workspace = store.listWorkspaces()[0]!;
+    const prompts = store.listPrompts(workspace.id);
 
     expect(prompts).toHaveLength(1);
     expect(prompts[0]?.status).toBe("in_progress");
@@ -81,18 +81,17 @@ describe("importCodexSessionsForRepo", () => {
     );
 
     const store = new PromptlineStore(join(root, ".pl"));
-    const repo = store.addRepo(repoPath);
-    importCodexSessionsForRepo(store, repo, join(root, "sessions"));
-
-    const prompts = store.listPrompts(repo.id);
-    const detail = store.getPromptDetail(repo.id, prompts[0]!.id);
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompts = store.listPrompts(workspace.id);
+    const detail = store.getPromptDetail(workspace.id, prompts[0]!.id);
     const diffArtifact = detail?.artifacts.find((artifact) => artifact.type === "code_diff") ?? null;
 
     expect(prompts[0]?.hasCodeDiff).toBe(true);
     expect(prompts[0]?.filesTouched).toEqual(["src/helper.ts"]);
     expect(diffArtifact?.metadataJson).toContain("\"source\":\"apply_patch\"");
     expect(diffArtifact?.metadataJson).toContain("\"sourceFormat\":\"codex_apply_patch\"");
-    expect(store.readBlob(repo.id, diffArtifact?.blobId ?? "")).toBe(patch);
+    expect(store.readBlob(workspace.id, diffArtifact?.blobId ?? "")).toBe(patch);
   });
 
   test("ignores failed apply_patch attempts when a later retry succeeds", () => {
@@ -131,15 +130,14 @@ describe("importCodexSessionsForRepo", () => {
     );
 
     const store = new PromptlineStore(join(root, ".pl"));
-    const repo = store.addRepo(repoPath);
-    importCodexSessionsForRepo(store, repo, join(root, "sessions"));
-
-    const prompt = store.listPrompts(repo.id)[0]!;
-    const detail = store.getPromptDetail(repo.id, prompt.id)!;
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
+    const detail = store.getPromptDetail(workspace.id, prompt.id)!;
     const diffArtifact = detail.artifacts.find((artifact) => artifact.type === "code_diff")!;
 
     expect(prompt.filesTouched).toEqual(["src/retry.ts"]);
-    expect(store.readBlob(repo.id, diffArtifact.blobId ?? "")).toBe(successfulPatch);
+    expect(store.readBlob(workspace.id, diffArtifact.blobId ?? "")).toBe(successfulPatch);
   });
 
   test("falls back to git diff command output when no apply_patch diff exists", () => {
@@ -174,17 +172,16 @@ index 1111111..2222222 100644
     );
 
     const store = new PromptlineStore(join(root, ".pl"));
-    const repo = store.addRepo(repoPath);
-    importCodexSessionsForRepo(store, repo, join(root, "sessions"));
-
-    const prompt = store.listPrompts(repo.id)[0]!;
-    const detail = store.getPromptDetail(repo.id, prompt.id)!;
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
+    const detail = store.getPromptDetail(workspace.id, prompt.id)!;
     const diffArtifact = detail.artifacts.find((artifact) => artifact.type === "code_diff")!;
 
     expect(prompt.hasCodeDiff).toBe(true);
     expect(prompt.filesTouched).toEqual(["src/app.ts"]);
     expect(diffArtifact.metadataJson).toContain("\"source\":\"git_diff_output\"");
-    expect(store.readBlob(repo.id, diffArtifact.blobId ?? "")).toBe(gitDiffOutput);
+    expect(store.readBlob(workspace.id, diffArtifact.blobId ?? "")).toBe(gitDiffOutput);
   });
 
   test("leaves prompts without patch or git diff data unchanged", () => {
@@ -208,10 +205,9 @@ index 1111111..2222222 100644
     );
 
     const store = new PromptlineStore(join(root, ".pl"));
-    const repo = store.addRepo(repoPath);
-    importCodexSessionsForRepo(store, repo, join(root, "sessions"));
-
-    const prompt = store.listPrompts(repo.id)[0]!;
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
 
     expect(prompt.hasCodeDiff).toBe(false);
     expect(prompt.filesTouched).toEqual([]);
@@ -240,14 +236,46 @@ index 1111111..2222222 100644
     );
 
     const store = new PromptlineStore(join(root, ".pl"));
-    const repo = store.addRepo(repoPath);
-    importCodexSessionsForRepo(store, repo, join(root, "sessions"), { tailOpenPrompt: true });
-
-    const prompt = store.listPrompts(repo.id)[0]!;
+    importCodexSessions(store, join(root, "sessions"), { tailOpenPrompt: true });
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
 
     expect(prompt.status).toBe("in_progress");
     expect(prompt.hasCodeDiff).toBe(true);
     expect(prompt.filesTouched).toEqual(["src/open.ts"]);
+  });
+
+  test("ignores nested cwd values unless that exact folder has its own .git directory", () => {
+    const root = mkdtempSync(join(tmpdir(), "promptline-import-grouping-"));
+    const repoPath = join(root, "repo");
+    const nestedPath = join(repoPath, "packages", "ui");
+    const sessionsRoot = join(root, "sessions", "2026", "03", "29");
+    mkdirSync(nestedPath, { recursive: true });
+    mkdirSync(sessionsRoot, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repoPath, stdio: "ignore" });
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "root-workspace.jsonl",
+      [eventMsg("2026-03-29T06:00:01.000Z", "user_message", "Root prompt.")]
+    );
+    writeFileSync(
+      join(sessionsRoot, "nested-workspace.jsonl"),
+      [
+        `{"timestamp":"2026-03-29T06:00:00.000Z","type":"session_meta","payload":{"id":"session-nested","cwd":"${nestedPath.replace(/\\/g, "\\\\")}","source":"vscode"}}`,
+        eventMsg("2026-03-29T06:00:01.000Z", "user_message", "Nested prompt.")
+      ].join("\n"),
+      "utf8"
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+
+    const workspaces = store.listWorkspaces();
+
+    expect(workspaces).toHaveLength(1);
+    expect(workspaces[0]?.folderPath).toBe(repoPath);
   });
 });
 

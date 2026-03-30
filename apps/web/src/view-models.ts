@@ -4,22 +4,33 @@ import type {
   Health,
   PromptDetail,
   PromptListItem,
-  Repo,
-  RepoIngestionStatus
+  ThreadSummary,
+  Workspace,
+  WorkspaceIngestionStatus
 } from "./types";
 
-export type ProjectSidebarItemViewModel = Repo & {
+export type WorkspaceSidebarItemViewModel = Workspace & {
   isSelected: boolean;
-  openPromptCount: number;
-  openPromptLabel: string;
+  threadCountLabel: string;
+  openThreadLabel: string;
   activityLabel: string;
   statusTone: "watching" | "error" | "idle";
+  pathLabel: string;
+  gitBadgeLabel: string;
 };
 
-export type RepoIngestionStatusViewModel = RepoIngestionStatus & {
+export type WorkspaceStatusViewModel = WorkspaceIngestionStatus & {
   headline: string;
   tone: "watching" | "error" | "idle";
   lastImportLabel: string;
+};
+
+export type ThreadRowViewModel = ThreadSummary & {
+  title: string;
+  activityLabel: string;
+  promptCountLabel: string;
+  openLabel: string;
+  tone: "open" | "closed";
 };
 
 export type PromptRowViewModel = PromptListItem & {
@@ -31,6 +42,7 @@ export type PromptRowViewModel = PromptListItem & {
   primaryLabel: string;
   primarySummary: string;
   tone: "live" | "history";
+  executionPathLabel: string;
 };
 
 export type PromptDetailArtifactViewModel = {
@@ -50,6 +62,7 @@ export type PromptDetailGitLinkViewModel = {
 export type PromptDetailViewModel = {
   id: string;
   promptText: string;
+  executionPathLabel: string;
   primaryArtifactSummary: string;
   touchedFiles: string[];
   touchedFilesLabel: string;
@@ -74,72 +87,117 @@ const formatters = {
   })
 };
 
-export function sortProjectsAlphabetically(repos: Repo[]): Repo[] {
-  return [...repos].sort((left, right) => left.slug.localeCompare(right.slug));
+export function sortWorkspacesByActivity(workspaces: Workspace[]): Workspace[] {
+  return [...workspaces].sort((left, right) => {
+    const leftActivity = left.lastActivityAt ?? left.lastSeenAt;
+    const rightActivity = right.lastActivityAt ?? right.lastSeenAt;
+    const activityComparison = rightActivity.localeCompare(leftActivity);
+    if (activityComparison !== 0) {
+      return activityComparison;
+    }
+    return (left.folderPath ?? "").localeCompare(right.folderPath ?? "");
+  });
 }
 
-export function resolveSelectedProjectId(repos: Repo[], selectedProjectId: string): string {
-  if (repos.some((repo) => repo.id === selectedProjectId)) {
-    return selectedProjectId;
+export function resolveSelectedWorkspaceId(workspaces: Workspace[], selectedWorkspaceId: string): string {
+  if (workspaces.some((workspace) => workspace.id === selectedWorkspaceId)) {
+    return selectedWorkspaceId;
   }
-  return repos[0]?.id ?? "";
+  return workspaces[0]?.id ?? "";
 }
 
-export function buildProjectSidebarItems(
-  repos: Repo[],
-  health: Health | null,
-  selectedProjectId: string
-): ProjectSidebarItemViewModel[] {
-  const repoStatuses = new Map(
-    (health?.ingestion.repoStatuses ?? []).map((status) => [status.repoId, status])
-  );
+export function resolveSelectedThreadId(threads: ThreadSummary[], selectedThreadId: string): string {
+  if (threads.some((thread) => thread.id === selectedThreadId)) {
+    return selectedThreadId;
+  }
+  return threads[0]?.id ?? "";
+}
 
-  return sortProjectsAlphabetically(repos).map((repo) => {
-    const status = repoStatuses.get(repo.id);
-    const openPromptCount = status?.openPromptCount ?? 0;
-    const sessionFileCount = status?.sessionFileCount ?? 0;
-    const activityLabel = status
-      ? `${sessionFileCount} session file${sessionFileCount === 1 ? "" : "s"}`
-      : "Waiting for watcher";
-
+export function buildWorkspaceSidebarItems(
+  workspaces: Workspace[],
+  selectedWorkspaceId: string
+): WorkspaceSidebarItemViewModel[] {
+  return sortWorkspacesByActivity(workspaces).map((workspace) => {
+    const pathLabel = workspace.folderPath ?? "Unknown folder";
+    const sessionCount = workspace.sessionFileCount;
+    const activityValue = workspace.lastActivityAt ?? workspace.lastSeenAt;
     return {
-      ...repo,
-      isSelected: repo.id === selectedProjectId,
-      openPromptCount,
-      openPromptLabel: `${openPromptCount} open`,
-      activityLabel,
-      statusTone: status?.mode ?? "idle"
+      ...workspace,
+      isSelected: workspace.id === selectedWorkspaceId,
+      threadCountLabel: `${workspace.threadCount} thread${workspace.threadCount === 1 ? "" : "s"}`,
+      openThreadLabel: `${workspace.openThreadCount} open`,
+      activityLabel: activityValue
+        ? `${sessionCount} session file${sessionCount === 1 ? "" : "s"} · ${formatters.timestamp.format(new Date(activityValue))}`
+        : `${sessionCount} session file${sessionCount === 1 ? "" : "s"}`,
+      statusTone: workspace.mode,
+      pathLabel,
+      gitBadgeLabel: "git"
     };
   });
 }
 
-export function getSelectedProject(repos: Repo[], selectedProjectId: string): Repo | null {
-  return repos.find((repo) => repo.id === selectedProjectId) ?? null;
+export function getSelectedWorkspace(
+  workspaces: Workspace[],
+  selectedWorkspaceId: string
+): Workspace | null {
+  return workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
 }
 
-export function getSelectedRepoStatus(
+export function getSelectedWorkspaceStatus(
+  workspace: Workspace | null,
   health: Health | null,
-  selectedProjectId: string
-): RepoIngestionStatusViewModel | null {
-  const status = health?.ingestion.repoStatuses.find((item) => item.repoId === selectedProjectId);
-  if (!status) {
+  selectedWorkspaceId: string
+): WorkspaceStatusViewModel | null {
+  const status = health?.ingestion.workspaceStatuses.find((item) => item.workspaceId === selectedWorkspaceId);
+  if (!workspace && !status) {
+    return null;
+  }
+
+  const fallbackStatus: WorkspaceIngestionStatus | null = workspace
+    ? {
+        workspaceId: workspace.id,
+        folderPath: workspace.folderPath,
+        mode: workspace.mode,
+        threadCount: workspace.threadCount,
+        openThreadCount: workspace.openThreadCount,
+        sessionFileCount: workspace.sessionFileCount,
+        recentlyUpdatedSessionCount: workspace.recentlyUpdatedSessionCount,
+        lastImportAt: null,
+        lastImportResult: null,
+        lastError: null
+      }
+    : null;
+
+  const resolved = status ?? fallbackStatus;
+  if (!resolved) {
     return null;
   }
 
   const headline =
-    status.mode === "watching"
-      ? `Watching ${status.sessionFileCount} Codex session file${status.sessionFileCount === 1 ? "" : "s"}`
-      : status.mode === "error"
-        ? `Watcher error: ${status.lastError ?? "unknown error"}`
-        : "Watcher is waiting for a registered repo session";
+    resolved.mode === "watching"
+      ? `Watching ${resolved.threadCount} thread${resolved.threadCount === 1 ? "" : "s"}`
+      : resolved.mode === "error"
+        ? `Watcher error: ${resolved.lastError ?? "unknown error"}`
+        : "Waiting for Codex thread activity";
 
   return {
-    ...status,
+    ...resolved,
     headline,
-    tone: status.mode,
-    lastImportLabel: status.lastImportAt
-      ? `Last import ${formatters.timeOnly.format(new Date(status.lastImportAt))}`
+    tone: resolved.mode,
+    lastImportLabel: resolved.lastImportAt
+      ? `Last import ${formatters.timeOnly.format(new Date(resolved.lastImportAt))}`
       : "No imports yet"
+  };
+}
+
+export function toThreadRowViewModel(thread: ThreadSummary): ThreadRowViewModel {
+  return {
+    ...thread,
+    title: thread.lastPromptSummary || "Untitled thread",
+    activityLabel: formatters.timestamp.format(new Date(thread.lastActivityAt)),
+    promptCountLabel: `${thread.promptCount} prompt${thread.promptCount === 1 ? "" : "s"}`,
+    openLabel: `${thread.openPromptCount} open`,
+    tone: thread.status
   };
 }
 
@@ -171,7 +229,8 @@ export function toPromptRowViewModel(prompt: PromptListItem): PromptRowViewModel
     filesLabel,
     primaryLabel,
     primarySummary: prompt.primaryArtifactSummary ?? "No primary artifact preview recorded yet.",
-    tone: prompt.status === "in_progress" ? "live" : "history"
+    tone: prompt.status === "in_progress" ? "live" : "history",
+    executionPathLabel: prompt.executionPath ?? "Unknown folder"
   };
 }
 
@@ -191,6 +250,7 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
   return {
     id: prompt.id,
     promptText: prompt.promptText,
+    executionPathLabel: prompt.executionPath ?? "Unknown folder",
     primaryArtifactSummary: primaryArtifact?.summary ?? "No primary artifact preview recorded yet.",
     touchedFiles,
     touchedFilesLabel:

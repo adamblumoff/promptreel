@@ -9,10 +9,16 @@ import type {
   PromptEventResponse,
   RepoCreateRequest,
   RepoCreateResponse,
-  RepoListResponse
+  RepoListResponse,
+  RescanSessionsResponse,
+  ThreadListResponse,
+  WorkspaceCreateRequest,
+  WorkspaceCreateResponse,
+  WorkspaceListResponse
 } from "@promptline/api-contracts";
 import { CodexSessionTailer } from "@promptline/codex-adapter";
 import { PromptlineStore } from "@promptline/storage";
+import type { WorkspaceListItem } from "@promptline/domain";
 
 export function buildServer() {
   const app = Fastify({ logger: false });
@@ -28,6 +34,26 @@ export function buildServer() {
     origin: true
   });
 
+  const listWorkspaceItems = (): WorkspaceListItem[] => {
+    const statusByWorkspace = new Map(
+      tailer.getStatus().workspaceStatuses.map((status) => [status.workspaceId, status])
+    );
+
+    return store.listWorkspaces().map((workspace) => {
+      const threads = store.listThreads(workspace.id);
+      const status = statusByWorkspace.get(workspace.id);
+      return {
+        ...workspace,
+        threadCount: threads.length,
+        openThreadCount: threads.filter((thread) => thread.status === "open").length,
+        lastActivityAt: threads[0]?.lastActivityAt ?? null,
+        sessionFileCount: status?.sessionFileCount ?? 0,
+        recentlyUpdatedSessionCount: status?.recentlyUpdatedSessionCount ?? 0,
+        mode: status?.mode ?? "idle"
+      };
+    });
+  };
+
   app.get("/api/health", async (): Promise<HealthResponse> => ({
     ok: true,
     daemonPid: process.pid,
@@ -35,22 +61,43 @@ export function buildServer() {
     ingestion: tailer.getStatus()
   }));
 
+  app.get("/api/workspaces", async (): Promise<WorkspaceListResponse> => ({
+    workspaces: listWorkspaceItems()
+  }));
+
   app.get("/api/repos", async (): Promise<RepoListResponse> => ({
-    repos: store.listRepos()
+    repos: listWorkspaceItems()
+  }));
+
+  app.post<{ Body: WorkspaceCreateRequest }>("/api/workspaces", async (request): Promise<WorkspaceCreateResponse> => ({
+    workspace: store.ensureWorkspaceGroup(request.body.path)
   }));
 
   app.post<{ Body: RepoCreateRequest }>("/api/repos", async (request): Promise<RepoCreateResponse> => ({
-    repo: store.addRepo(request.body.path)
+    repo: store.ensureWorkspaceGroup(request.body.path)
   }));
 
-  app.get<{ Querystring: { repoId: string } }>("/api/prompt-events", async (request): Promise<PromptEventListResponse> => ({
-    prompts: store.listPrompts(request.query.repoId)
+  app.post("/api/workspaces/rescan", async (): Promise<RescanSessionsResponse> => ({
+    ok: true,
+    ingestion: tailer.scanNow()
   }));
 
-  app.get<{ Querystring: { repoId: string }; Params: { id: string } }>(
+  app.get<{ Querystring: { workspaceId: string } }>("/api/threads", async (request): Promise<ThreadListResponse> => ({
+    threads: store.listThreads(request.query.workspaceId)
+  }));
+
+  app.get<{ Querystring: { workspaceId?: string; repoId?: string; threadId?: string } }>(
+    "/api/prompt-events",
+    async (request): Promise<PromptEventListResponse> => ({
+      prompts: store.listPrompts(request.query.workspaceId ?? request.query.repoId ?? "", request.query.threadId ?? null)
+    })
+  );
+
+  app.get<{ Querystring: { workspaceId?: string; repoId?: string }; Params: { id: string } }>(
     "/api/prompt-events/:id",
     async (request): Promise<PromptEventResponse> => {
-      const prompt = store.getPromptDetail(request.query.repoId, request.params.id);
+      const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
+      const prompt = store.getPromptDetail(workspaceId, request.params.id);
       if (!prompt) {
         throw notFound("Prompt not found");
       }
@@ -58,18 +105,18 @@ export function buildServer() {
     }
   );
 
-  app.get<{ Querystring: { repoId: string; filePath: string } }>(
+  app.get<{ Querystring: { workspaceId?: string; repoId?: string; filePath: string } }>(
     "/api/files/history",
     async (request): Promise<FileHistoryResponse> => ({
       filePath: request.query.filePath,
-      prompts: store.getFileHistory(request.query.repoId, request.query.filePath)
+      prompts: store.getFileHistory(request.query.workspaceId ?? request.query.repoId ?? "", request.query.filePath)
     })
   );
 
-  app.get<{ Querystring: { repoId: string }; Params: { artifactId: string } }>(
+  app.get<{ Querystring: { workspaceId?: string; repoId?: string }; Params: { artifactId: string } }>(
     "/api/plans/:artifactId/trace",
     async (request): Promise<PlanTraceResponse> => {
-      const trace = store.getPlanTrace(request.query.repoId, request.params.artifactId);
+      const trace = store.getPlanTrace(request.query.workspaceId ?? request.query.repoId ?? "", request.params.artifactId);
       if (!trace) {
         throw notFound("Plan artifact not found");
       }
@@ -88,11 +135,11 @@ export function buildServer() {
 export async function startDaemon() {
   const { app, store, tailer } = buildServer();
   const port = Number(process.env.PROMPTLINE_PORT ?? "4312");
-  tailer.start();
   await app.listen({
     host: "127.0.0.1",
     port
   });
+  tailer.start();
   store.setDaemonState(process.pid);
   const shutdown = async () => {
     tailer.stop();

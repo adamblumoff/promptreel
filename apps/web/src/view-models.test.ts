@@ -1,52 +1,92 @@
 import { describe, expect, test } from "vitest";
-import type { Health, PromptDetail, PromptListItem, Repo } from "./types";
+import type { Health, PromptDetail, PromptListItem, Workspace } from "./types";
 import {
-  buildProjectSidebarItems,
-  getSelectedRepoStatus,
-  resolveSelectedProjectId,
-  sortProjectsAlphabetically,
+  buildWorkspaceSidebarItems,
+  getSelectedWorkspaceStatus,
+  resolveSelectedThreadId,
+  resolveSelectedWorkspaceId,
+  sortWorkspacesByActivity,
   toPromptDetailViewModel,
-  toPromptRowViewModel
+  toPromptRowViewModel,
+  toThreadRowViewModel
 } from "./view-models";
 
-const repos: Repo[] = [
+const workspaces: Workspace[] = [
   {
-    id: "repo-z",
+    id: "workspace-z",
     slug: "zeta",
-    rootPath: "C:/work/zeta"
+    folderPath: "C:/work/zeta",
+    gitRootPath: "C:/work/zeta",
+    gitDir: "C:/work/zeta/.git",
+    createdAt: "2026-03-30T14:00:00.000Z",
+    lastSeenAt: "2026-03-30T14:21:00.000Z",
+    lastActivityAt: "2026-03-30T14:21:00.000Z",
+    status: "active",
+    source: "auto_discovered",
+    threadCount: 2,
+    openThreadCount: 1,
+    sessionFileCount: 2,
+    recentlyUpdatedSessionCount: 1,
+    mode: "watching"
   },
   {
-    id: "repo-a",
+    id: "workspace-a",
     slug: "alpha",
-    rootPath: "C:/work/alpha"
+    folderPath: "C:/work/alpha",
+    gitRootPath: "C:/work/alpha",
+    gitDir: "C:/work/alpha/.git",
+    createdAt: "2026-03-30T14:00:00.000Z",
+    lastSeenAt: "2026-03-30T14:25:00.000Z",
+    lastActivityAt: "2026-03-30T14:25:00.000Z",
+    status: "active",
+    source: "auto_discovered",
+    threadCount: 3,
+    openThreadCount: 0,
+    sessionFileCount: 3,
+    recentlyUpdatedSessionCount: 2,
+    mode: "idle"
   }
 ];
 
 describe("web view models", () => {
-  test("sorts projects alphabetically and falls back to the first project when selection is missing", () => {
-    const sorted = sortProjectsAlphabetically(repos);
+  test("sorts workspaces by activity and falls back to the first workspace when selection is missing", () => {
+    const sorted = sortWorkspacesByActivity(workspaces);
 
-    expect(sorted.map((repo) => repo.slug)).toEqual(["alpha", "zeta"]);
-    expect(resolveSelectedProjectId(sorted, "repo-z")).toBe("repo-z");
-    expect(resolveSelectedProjectId(sorted, "missing")).toBe("repo-a");
+    expect(sorted.map((workspace) => workspace.slug)).toEqual(["alpha", "zeta"]);
+    expect(resolveSelectedWorkspaceId(sorted, "workspace-z")).toBe("workspace-z");
+    expect(resolveSelectedWorkspaceId(sorted, "missing")).toBe("workspace-a");
   });
 
-  test("builds idle sidebar items when health is missing", () => {
-    const items = buildProjectSidebarItems(repos, null, "repo-a");
+  test("builds sidebar items directly from workspace payloads", () => {
+    const items = buildWorkspaceSidebarItems(workspaces, "workspace-a");
 
     expect(items[0]).toMatchObject({
-      id: "repo-a",
+      id: "workspace-a",
       isSelected: true,
-      openPromptCount: 0,
-      activityLabel: "Waiting for watcher",
-      statusTone: "idle"
+      threadCountLabel: "3 threads",
+      statusTone: "idle",
+      gitBadgeLabel: "git"
     });
   });
 
-  test("formats prompt rows with compact labels", () => {
+  test("formats thread and prompt rows with compact labels", () => {
+    const thread = toThreadRowViewModel({
+      id: "thread-1",
+      workspaceId: "workspace-a",
+      sessionId: "session-1",
+      threadId: "thread-1",
+      folderPath: "C:/work/alpha",
+      startedAt: "2026-03-30T14:00:00.000Z",
+      lastActivityAt: "2026-03-30T14:22:00.000Z",
+      promptCount: 4,
+      openPromptCount: 1,
+      lastPromptSummary: "Refactor the stream layout.",
+      status: "open"
+    });
     const row = toPromptRowViewModel({
       id: "prompt-1",
-      repoId: "repo-a",
+      workspaceId: "workspace-a",
+      executionPath: "C:/work/alpha",
       sessionId: "session-1",
       threadId: "thread-1",
       parentPromptEventId: null,
@@ -54,12 +94,11 @@ describe("web view models", () => {
       endedAt: "2026-03-30T14:24:00.000Z",
       boundaryReason: "turn_completed",
       status: "in_progress",
-      promptText: "Open the prompt.",
       promptSummary: "Open the prompt.",
       primaryArtifactId: "artifact-1",
       baselineSnapshotId: null,
       endSnapshotId: null,
-      filesTouched: ["src/app.ts", "src/api.ts"],
+      filesTouched: ["src/app.tsx", "src/api.ts"],
       filesTouchedCount: 2,
       childCount: 3,
       artifactCount: 4,
@@ -69,17 +108,21 @@ describe("web view models", () => {
       isLiveDerived: true
     } satisfies PromptListItem);
 
+    expect(thread.promptCountLabel).toBe("4 prompts");
+    expect(thread.openLabel).toBe("1 open");
     expect(row.statusLabel).toBe("Open now");
     expect(row.filesLabel).toBe("2 files");
     expect(row.artifactLabel).toBe("4 artifacts");
     expect(row.childLabel).toBe("3 child prompts");
     expect(row.primaryLabel).toBe("code diff");
+    expect(row.executionPathLabel).toBe("C:/work/alpha");
   });
 
   test("shapes prompt detail into touched files, artifact summaries, and git summaries", () => {
     const detail = toPromptDetailViewModel({
       id: "prompt-1",
-      repoId: "repo-a",
+      workspaceId: "workspace-a",
+      executionPath: "C:/work/alpha",
       sessionId: "session-1",
       threadId: "thread-1",
       parentPromptEventId: null,
@@ -138,6 +181,7 @@ describe("web view models", () => {
     } satisfies PromptDetail);
 
     expect(detail.primaryArtifactSummary).toBe("Updated the shell and prompt list.");
+    expect(detail.executionPathLabel).toBe("C:/work/alpha");
     expect(detail.touchedFiles).toEqual(["src/App.tsx", "src/components.tsx"]);
     expect(detail.touchedFilesLabel).toBe("2 touched files");
     expect(detail.artifactSummaries[0]).toMatchObject({
@@ -158,13 +202,15 @@ describe("web view models", () => {
         pollingIntervalMs: 3000,
         sessionsRoot: "C:/Users/demo/.codex/sessions",
         lastScanAt: "2026-03-30T14:25:00.000Z",
-        repoStatuses: [
+        workspaceStatuses: [
           {
-            repoId: "repo-a",
+            workspaceId: "workspace-a",
+            folderPath: "C:/work/alpha",
             mode: "watching",
+            threadCount: 3,
+            openThreadCount: 1,
             sessionFileCount: 3,
             recentlyUpdatedSessionCount: 2,
-            openPromptCount: 1,
             lastImportAt: "2026-03-30T14:24:00.000Z",
             lastImportResult: {
               importedFiles: 2,
@@ -176,10 +222,13 @@ describe("web view models", () => {
       }
     };
 
-    expect(getSelectedRepoStatus(health, "repo-a")).toMatchObject({
+    expect(getSelectedWorkspaceStatus(workspaces[1], health, "workspace-a")).toMatchObject({
       tone: "watching",
-      openPromptCount: 1
+      openThreadCount: 1
     });
-    expect(getSelectedRepoStatus(health, "repo-z")).toBeNull();
+    expect(getSelectedWorkspaceStatus(workspaces[0], health, "workspace-z")).toMatchObject({
+      tone: "watching"
+    });
+    expect(resolveSelectedThreadId([], "missing")).toBe("");
   });
 });
