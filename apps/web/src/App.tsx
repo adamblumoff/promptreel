@@ -16,10 +16,10 @@ import type {
 } from "./types";
 import {
   AppShell,
-  ContextRail,
   MainColumn,
   WorkspaceSidebar
 } from "./components";
+import type { ContentTab } from "./components";
 import {
   buildWorkspaceSidebarItems,
   getSelectedWorkspace,
@@ -83,6 +83,7 @@ export function App() {
   const [isRescanning, setIsRescanning] = useState(false);
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [promptsLoading, setPromptsLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<ContentTab>("threads");
   const [isDocumentVisible, setIsDocumentVisible] = useState(() =>
     typeof document === "undefined" ? true : !document.hidden
   );
@@ -437,6 +438,7 @@ export function App() {
       setSelectedWorkspaceId(workspaceId);
       setSelectedThreadId(resolveSelectedThreadId(nextThreads, ""));
       setExpandedPromptId(null);
+      setActiveTab("threads");
     });
     setSidebarDrawerOpen(false);
   };
@@ -515,9 +517,10 @@ export function App() {
           onOpenSidebarDrawer={() => setSidebarDrawerOpen(true)}
           isThreadsLoading={threadsLoading}
           isPromptsLoading={promptsLoading}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
         />
       }
-      contextRail={<ContextRail selectedWorkspaceStatus={selectedWorkspaceStatus} />}
     />
   );
 }

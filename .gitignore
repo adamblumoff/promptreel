@@ -3,7 +3,7 @@ dist/
 .turbo/
 coverage/
 .vite/
+test-results/
 *.log
 *.pid
 pnpm-lock.yaml
-
