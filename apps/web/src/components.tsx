@@ -1,134 +1,239 @@
 import type { ReactNode } from "react";
-import type { Health } from "./types";
+import type { Health, Repo } from "./types";
 import type {
-  PromptCardViewModel,
-  RepoIngestionStatusViewModel,
-  RepoViewModel
+  ProjectSidebarItemViewModel,
+  PromptDetailViewModel,
+  PromptRowViewModel,
+  RepoIngestionStatusViewModel
 } from "./view-models";
 
 type AppShellProps = {
-  leftRail: ReactNode;
+  sidebar: ReactNode;
   main: ReactNode;
   contextRail: ReactNode;
 };
 
-export function AppShell({ leftRail, main, contextRail }: AppShellProps) {
+export function AppShell({ sidebar, main, contextRail }: AppShellProps) {
   return (
     <div className="app-shell">
-      {leftRail}
+      {sidebar}
       {main}
       {contextRail}
     </div>
   );
 }
 
-type LeftRailProps = {
-  repos: RepoViewModel[];
-  selectedRepoId: string;
-  onSelectRepo: (repoId: string) => void;
+type ProjectSidebarProps = {
+  projects: ProjectSidebarItemViewModel[];
+  selectedProjectId: string;
+  onSelectProject: (projectId: string) => void;
   health: Health | null;
+  isCollapsed: boolean;
+  onToggleCollapse: () => void;
+  isDrawerOpen: boolean;
+  onCloseDrawer: () => void;
 };
 
-export function LeftRail({ repos, selectedRepoId, onSelectRepo, health }: LeftRailProps) {
+export function ProjectSidebar({
+  projects,
+  selectedProjectId,
+  onSelectProject,
+  health,
+  isCollapsed,
+  onToggleCollapse,
+  isDrawerOpen,
+  onCloseDrawer
+}: ProjectSidebarProps) {
   return (
-    <aside className="left-rail">
-      <div className="brand-block">
-        <p className="eyebrow">Promptline</p>
-        <h1>Prompt Stream</h1>
-        <p className="intro-copy">
-          Review software work by the prompt that caused it, not the commit that happened to contain it.
-        </p>
-      </div>
-
-      <section className="rail-section">
-        <div className="section-head">
-          <p className="eyebrow">Registered Repos</p>
-        </div>
-        <div className="repo-list">
-          {repos.length > 0 ? (
-            repos.map((repo) => (
-              <button
-                key={repo.id}
-                className={repo.id === selectedRepoId ? "repo-button active" : "repo-button"}
-                onClick={() => onSelectRepo(repo.id)}
-                type="button"
-              >
-                <strong>{repo.slug}</strong>
-                <span title={repo.rootPath}>{repo.rootPath}</span>
-              </button>
-            ))
-          ) : (
-            <div className="rail-note">
-              <strong>No repos registered</strong>
-              <p>Run `pnpm dev:cli -- repo add .` to attach this workspace.</p>
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="rail-section rail-footer">
-        <div className="compact-status">
-          <span className={`status-dot ${health?.ingestion.watcher === "running" ? "live" : "idle"}`} />
-          <div>
-            <strong>{health?.ingestion.watcher === "running" ? "Watcher running" : "Watcher stopped"}</strong>
-            <p>{health?.ingestion.sessionsRoot ?? "Waiting for daemon health"}</p>
+    <>
+      <button
+        aria-hidden={!isDrawerOpen}
+        className={isDrawerOpen ? "sidebar-scrim visible" : "sidebar-scrim"}
+        onClick={onCloseDrawer}
+        tabIndex={isDrawerOpen ? 0 : -1}
+        type="button"
+      />
+      <aside
+        className={[
+          "project-sidebar",
+          isCollapsed ? "collapsed" : "",
+          isDrawerOpen ? "drawer-open" : ""
+        ].filter(Boolean).join(" ")}
+      >
+        <div className="brand-block sidebar-brand">
+          <div className="sidebar-brand-copy">
+            <p className="eyebrow">Promptline</p>
+            {!isCollapsed && (
+              <>
+                <h1>Prompt Stream</h1>
+                <p className="intro-copy">
+                  Review software work by the prompt that caused it, not the commit that happened to contain it.
+                </p>
+              </>
+            )}
+          </div>
+          <div className="sidebar-controls">
+            <button className="sidebar-toggle mobile-only" onClick={onCloseDrawer} type="button">
+              Close
+            </button>
+            <button className="sidebar-toggle desktop-only" onClick={onToggleCollapse} type="button">
+              {isCollapsed ? "Expand" : "Collapse"}
+            </button>
           </div>
         </div>
-      </section>
-    </aside>
+
+        <section className="rail-section project-section">
+          <div className="section-head">
+            <p className="eyebrow">{isCollapsed ? "Projects" : "Registered Projects"}</p>
+          </div>
+          <div className={isCollapsed ? "project-pill-list" : "project-list"}>
+            {projects.length > 0 ? (
+              projects.map((project) => (
+                <button
+                  aria-pressed={project.id === selectedProjectId}
+                  className={project.id === selectedProjectId ? "project-button active" : "project-button"}
+                  key={project.id}
+                  onClick={() => onSelectProject(project.id)}
+                  title={isCollapsed ? `${project.slug}\n${project.rootPath}` : project.rootPath}
+                  type="button"
+                >
+                  {isCollapsed ? (
+                    <span className={`project-pill tone-${project.statusTone}`}>
+                      {project.slug.slice(0, 2).toUpperCase()}
+                    </span>
+                  ) : (
+                    <>
+                      <div className="project-button-heading">
+                        <strong>{project.slug}</strong>
+                        <span className={`project-open-count tone-${project.statusTone}`}>
+                          {project.openPromptLabel}
+                        </span>
+                      </div>
+                      <span className="project-root-path" title={project.rootPath}>
+                        {project.rootPath}
+                      </span>
+                      <span className="project-activity">{project.activityLabel}</span>
+                    </>
+                  )}
+                </button>
+              ))
+            ) : (
+              <div className="rail-note">
+                <strong>No projects registered</strong>
+                {!isCollapsed && <p>Run `pnpm dev:cli -- repo add .` to attach this workspace.</p>}
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="rail-section rail-footer">
+          <div className="compact-status">
+            <span className={`status-dot ${health?.ingestion.watcher === "running" ? "live" : "idle"}`} />
+            {!isCollapsed && (
+              <div>
+                <strong>{health?.ingestion.watcher === "running" ? "Watcher running" : "Watcher stopped"}</strong>
+                <p>{health?.ingestion.sessionsRoot ?? "Waiting for daemon health"}</p>
+              </div>
+            )}
+          </div>
+        </section>
+      </aside>
+    </>
   );
 }
 
 type MainColumnProps = {
-  selectedRepo: RepoViewModel | null;
-  selectedRepoStatus: RepoIngestionStatusViewModel | null;
-  promptCards: PromptCardViewModel[];
+  selectedProject: Repo | null;
+  selectedProjectStatus: RepoIngestionStatusViewModel | null;
+  promptRows: PromptRowViewModel[];
+  promptDetails: Record<string, PromptDetailViewModel>;
+  detailLoadingById: Record<string, boolean>;
+  detailErrorById: Record<string, string | null>;
+  expandedPromptId: string | null;
   filter: "all" | "open" | "imported";
   onFilterChange: (filter: "all" | "open" | "imported") => void;
+  onTogglePrompt: (promptId: string) => void;
+  onOpenSidebarDrawer: () => void;
 };
 
 export function MainColumn({
-  selectedRepo,
-  selectedRepoStatus,
-  promptCards,
+  selectedProject,
+  selectedProjectStatus,
+  promptRows,
+  promptDetails,
+  detailLoadingById,
+  detailErrorById,
+  expandedPromptId,
   filter,
-  onFilterChange
+  onFilterChange,
+  onTogglePrompt,
+  onOpenSidebarDrawer
 }: MainColumnProps) {
   return (
     <main className="main-column">
       <header className="main-header">
         <div className="main-heading">
-          <p className="eyebrow">Selected Repo</p>
-          <h2>{selectedRepo?.slug ?? "No repo selected"}</h2>
+          <div className="main-heading-topline">
+            <button className="mobile-project-button" onClick={onOpenSidebarDrawer} type="button">
+              Projects
+            </button>
+            <p className="eyebrow">Selected Project</p>
+          </div>
+          <h2>{selectedProject?.slug ?? "No project selected"}</h2>
           <p className="subtle header-copy">
-            {selectedRepo?.rootPath ?? "Pick a repo to view its causal prompt stream."}
+            {selectedProject?.rootPath ?? "Pick a project to view its prompt stream."}
           </p>
         </div>
         <div className="header-badges">
-          <div className="count-badge">{promptCards.length} prompt events</div>
-          {selectedRepoStatus && (
-            <div className={`count-badge tone-${selectedRepoStatus.tone}`}>
-              {selectedRepoStatus.openPromptCount} open
+          <div className="count-badge">{promptRows.length} prompt events</div>
+          {selectedProjectStatus && (
+            <div className={`count-badge tone-${selectedProjectStatus.tone}`}>
+              {selectedProjectStatus.openPromptCount} open
             </div>
           )}
         </div>
       </header>
 
-      {selectedRepoStatus && <AttachmentBanner status={selectedRepoStatus} />}
+      {selectedProjectStatus && <AttachmentBanner status={selectedProjectStatus} />}
 
       <section className="stream-toolbar">
         <div className="toolbar-group">
-          <button className={filter === "all" ? "toolbar-chip active" : "toolbar-chip"} onClick={() => onFilterChange("all")} type="button">All</button>
-          <button className={filter === "open" ? "toolbar-chip active" : "toolbar-chip"} onClick={() => onFilterChange("open")} type="button">Open</button>
-          <button className={filter === "imported" ? "toolbar-chip active" : "toolbar-chip"} onClick={() => onFilterChange("imported")} type="button">Imported</button>
+          <button
+            className={filter === "all" ? "toolbar-chip active" : "toolbar-chip"}
+            onClick={() => onFilterChange("all")}
+            type="button"
+          >
+            All
+          </button>
+          <button
+            className={filter === "open" ? "toolbar-chip active" : "toolbar-chip"}
+            onClick={() => onFilterChange("open")}
+            type="button"
+          >
+            Open
+          </button>
+          <button
+            className={filter === "imported" ? "toolbar-chip active" : "toolbar-chip"}
+            onClick={() => onFilterChange("imported")}
+            type="button"
+          >
+            Imported
+          </button>
         </div>
         <div className="toolbar-meta">
           <span>Newest first</span>
-          <span>Polling for changes</span>
+          <span>Inline detail</span>
         </div>
       </section>
 
-      <PromptStream promptCards={promptCards} />
+      <PromptStream
+        detailErrorById={detailErrorById}
+        detailLoadingById={detailLoadingById}
+        expandedPromptId={expandedPromptId}
+        onTogglePrompt={onTogglePrompt}
+        promptDetails={promptDetails}
+        promptRows={promptRows}
+      />
     </main>
   );
 }
@@ -164,71 +269,157 @@ export function AttachmentBanner({ status }: AttachmentBannerProps) {
 }
 
 type PromptStreamProps = {
-  promptCards: PromptCardViewModel[];
+  promptRows: PromptRowViewModel[];
+  promptDetails: Record<string, PromptDetailViewModel>;
+  detailLoadingById: Record<string, boolean>;
+  detailErrorById: Record<string, string | null>;
+  expandedPromptId: string | null;
+  onTogglePrompt: (promptId: string) => void;
 };
 
-export function PromptStream({ promptCards }: PromptStreamProps) {
-  if (promptCards.length === 0) {
+export function PromptStream({
+  promptRows,
+  promptDetails,
+  detailLoadingById,
+  detailErrorById,
+  expandedPromptId,
+  onTogglePrompt
+}: PromptStreamProps) {
+  if (promptRows.length === 0) {
     return <EmptyState />;
   }
 
   return (
     <section className="prompt-stream">
-      {promptCards.map((prompt) => (
-        <PromptCard key={prompt.id} prompt={prompt} />
+      {promptRows.map((prompt) => (
+        <PromptRow
+          detail={promptDetails[prompt.id]}
+          error={detailErrorById[prompt.id] ?? null}
+          isExpanded={expandedPromptId === prompt.id}
+          isLoading={detailLoadingById[prompt.id] ?? false}
+          key={prompt.id}
+          onToggle={() => onTogglePrompt(prompt.id)}
+          prompt={prompt}
+        />
       ))}
     </section>
   );
 }
 
-type PromptCardProps = {
-  prompt: PromptCardViewModel;
+type PromptRowProps = {
+  prompt: PromptRowViewModel;
+  detail: PromptDetailViewModel | undefined;
+  isExpanded: boolean;
+  isLoading: boolean;
+  error: string | null;
+  onToggle: () => void;
 };
 
-export function PromptCard({ prompt }: PromptCardProps) {
+export function PromptRow({ prompt, detail, isExpanded, isLoading, error, onToggle }: PromptRowProps) {
   return (
-    <article className={`prompt-card tone-${prompt.tone}`}>
-      <div className="prompt-topline">
-        <span className={`status-pill status-${prompt.status}`}>{prompt.statusLabel}</span>
-        <span>{prompt.timestampLabel}</span>
-        <span>{prompt.artifactLabel}</span>
-        <span>{prompt.childLabel}</span>
-      </div>
-
-      <div className="prompt-body">
-        <div className="prompt-copy">
-          <p className="eyebrow">Primary Artifact</p>
-          <h3>{prompt.promptSummary}</h3>
-          <p className="prompt-preview">
-            <strong>{prompt.primaryLabel}</strong>
-            <span>{prompt.primarySummary}</span>
-          </p>
+    <article className={`prompt-row tone-${prompt.tone} ${isExpanded ? "expanded" : ""}`}>
+      <button
+        aria-controls={`prompt-detail-${prompt.id}`}
+        aria-expanded={isExpanded}
+        className="prompt-row-button"
+        onClick={onToggle}
+        type="button"
+      >
+        <div className="prompt-row-leading">
+          <span className={`status-pill status-${prompt.status}`}>{prompt.statusLabel}</span>
+          <span className="prompt-row-time">{prompt.timestampLabel}</span>
         </div>
-
-        <div className="prompt-files">
-          <p className="eyebrow">Touched Files</p>
-          <div className="file-row">
-            {prompt.filesTouched.length > 0 ? (
-              prompt.filesTouched.slice(0, 5).map((path) => (
-                <code key={path} title={path}>
-                  {path}
-                </code>
-              ))
-            ) : (
-              <span className="subtle">No file diff artifact recorded.</span>
-            )}
-            {prompt.filesTouched.length > 5 && (
-              <span className="file-overflow">+{prompt.filesTouched.length - 5} more</span>
-            )}
-          </div>
+        <div className="prompt-row-summary">
+          <strong>{prompt.promptSummary}</strong>
+          <span>{prompt.primaryLabel}</span>
         </div>
-      </div>
+        <div className="prompt-row-meta">
+          <span>{prompt.filesLabel}</span>
+          <span>{prompt.artifactLabel}</span>
+          <span>{prompt.childLabel}</span>
+          {prompt.isLiveDerived && <span className="evidence-chip live">Live</span>}
+        </div>
+      </button>
 
-      <div className="prompt-footer">
-        <span className="evidence-chip">{prompt.filesLabel}</span>
-        {prompt.isLiveDerived && <span className="evidence-chip live">Live derived</span>}
-        {prompt.hasCodeDiff && <span className="evidence-chip">Has diff</span>}
-      </div>
+      {isExpanded && (
+        <div className="prompt-detail-panel" id={`prompt-detail-${prompt.id}`}>
+          {isLoading && !detail && (
+            <div className="prompt-detail-state">
+              <strong>Loading prompt detail</strong>
+              <p className="subtle">Pulling artifacts, touched files, and git links for this prompt event.</p>
+            </div>
+          )}
+
+          {error && !detail && (
+            <div className="prompt-detail-state error">
+              <strong>Prompt detail unavailable</strong>
+              <p className="subtle">{error}</p>
+            </div>
+          )}
+
+          {detail && (
+            <div className="prompt-detail-grid">
+              <section className="prompt-detail-card">
+                <p className="eyebrow">Prompt</p>
+                <p className="prompt-detail-text">{detail.promptText}</p>
+              </section>
+
+              <section className="prompt-detail-card">
+                <p className="eyebrow">Primary Artifact</p>
+                <p className="subtle">{detail.primaryArtifactSummary}</p>
+              </section>
+
+              <section className="prompt-detail-card">
+                <div className="detail-section-head">
+                  <p className="eyebrow">Touched Files</p>
+                  <span className="evidence-chip">{detail.touchedFilesLabel}</span>
+                </div>
+                <div className="detail-file-list">
+                  {detail.touchedFiles.length > 0 ? (
+                    detail.touchedFiles.map((path) => <code key={path}>{path}</code>)
+                  ) : (
+                    <p className="subtle">No touched files were recorded for this prompt event.</p>
+                  )}
+                </div>
+              </section>
+
+              <section className="prompt-detail-card">
+                <p className="eyebrow">Artifacts</p>
+                <div className="detail-list">
+                  {detail.artifactSummaries.map((artifact) => (
+                    <div className="detail-list-item" key={artifact.id}>
+                      <strong>{artifact.label}</strong>
+                      <p className="subtle">{artifact.summary}</p>
+                      <div className="prompt-detail-meta">
+                        {artifact.fileCountLabel && <span className="evidence-chip">{artifact.fileCountLabel}</span>}
+                        {artifact.relationCountLabel && (
+                          <span className="evidence-chip">{artifact.relationCountLabel}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="prompt-detail-card">
+                <p className="eyebrow">Git Links</p>
+                {detail.gitSummaries.length > 0 ? (
+                  <div className="detail-list">
+                    {detail.gitSummaries.map((gitLink) => (
+                      <div className="detail-list-item" key={gitLink.id}>
+                        <strong>{gitLink.headline}</strong>
+                        <p className="subtle">{gitLink.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="subtle">No git links were recorded for this prompt event.</p>
+                )}
+              </section>
+            </div>
+          )}
+        </div>
+      )}
     </article>
   );
 }
@@ -268,7 +459,7 @@ export function HealthCard({ status }: HealthCardProps) {
   return (
     <section className="context-card">
       <p className="eyebrow">Codex Attachment Status</p>
-      <h3>{status?.headline ?? "Waiting for repo selection"}</h3>
+      <h3>{status?.headline ?? "Waiting for project selection"}</h3>
       {status ? (
         <dl className="metric-grid">
           <div>
@@ -289,7 +480,7 @@ export function HealthCard({ status }: HealthCardProps) {
           </div>
         </dl>
       ) : (
-        <p className="subtle">Register and select a repo to see live watcher health.</p>
+        <p className="subtle">Register and select a project to see live watcher health.</p>
       )}
     </section>
   );
@@ -317,10 +508,11 @@ export function EmptyState() {
       <p className="eyebrow">No Prompt Events Yet</p>
       <h3>The stream is ready and watching.</h3>
       <p className="subtle">
-        Promptline automatically tails `~/.codex/sessions` for registered repos. Once Codex writes activity for this workspace, prompt events will appear here with live attachment status and artifact context.
+        Promptline automatically tails `~/.codex/sessions` for registered projects. Once Codex writes activity for
+        this workspace, prompt events will appear here with inline detail and live attachment status.
       </p>
       <ol className="empty-steps">
-        <li>Register the repo once with `pnpm dev:cli -- repo add .`.</li>
+        <li>Register the project once with `pnpm dev:cli -- repo add .`.</li>
         <li>Keep `pnpm dev` running while you work in Codex.</li>
         <li>Watch the banner and context rail for open prompts and fresh imports.</li>
       </ol>

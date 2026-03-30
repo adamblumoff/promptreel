@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import WebSocket from "ws";
 import type {
   ArtifactLinkRecord,
   ArtifactRecord,
+  CodeDiffResult,
   LiveDoctorResult,
   PromptEventRecord,
   RawEventRecord,
@@ -27,7 +28,11 @@ import {
   buildCodeDiff,
   buildCodeDiffArtifact,
   captureWorkspaceSnapshot,
-  createPlaceholderSnapshot
+  createPlaceholderSnapshot,
+  mergeCodeDiffs,
+  parseApplyPatchToCodeDiff,
+  parseUnifiedDiffToCodeDiff,
+  repoRelativePath
 } from "@promptline/git-integration";
 import { PromptlineStore, getFileMtimeMs } from "@promptline/storage";
 
@@ -41,6 +46,23 @@ type SessionLine = {
   timestamp: string;
   type: string;
   payload?: Record<string, unknown>;
+};
+
+type SessionToolEvent = {
+  callId: string;
+  kind: "function_call" | "custom_tool_call";
+  occurredAt: string;
+  name: string;
+  status: string | null;
+  input: string | null;
+  arguments: string | null;
+  output: string | null;
+};
+
+type HistoricalRecoveredDiff = {
+  diff: CodeDiffResult;
+  source: "apply_patch" | "git_diff_output";
+  sourceFormat: "codex_apply_patch" | "unified_diff";
 };
 
 export interface ImportCodexSessionsOptions {
@@ -95,21 +117,206 @@ function isAgentMessage(line: SessionLine): string | null {
   return String(line.payload.message ?? "");
 }
 
-function asFunctionCall(line: SessionLine): { name: string; arguments: string } | null {
-  if (line.type !== "response_item" || line.payload?.type !== "function_call") {
-    return null;
+function normalizeSessionToolEvents(window: SessionLine[]): SessionToolEvent[] {
+  const events = new Map<string, SessionToolEvent>();
+  const ordered: SessionToolEvent[] = [];
+
+  const upsert = (
+    callId: string,
+    partial: Partial<SessionToolEvent> & Pick<SessionToolEvent, "kind" | "occurredAt">
+  ): void => {
+    const existing = events.get(callId);
+    if (!existing) {
+      const created: SessionToolEvent = {
+        callId,
+        kind: partial.kind,
+        occurredAt: partial.occurredAt,
+        name: partial.name ?? "",
+        status: partial.status ?? null,
+        input: partial.input ?? null,
+        arguments: partial.arguments ?? null,
+        output: partial.output ?? null
+      };
+      events.set(callId, created);
+      ordered.push(created);
+      return;
+    }
+
+    existing.kind = partial.kind ?? existing.kind;
+    existing.occurredAt = partial.occurredAt ?? existing.occurredAt;
+    if (partial.name !== undefined) {
+      existing.name = partial.name;
+    }
+    if (partial.status !== undefined) {
+      existing.status = partial.status;
+    }
+    if (partial.input !== undefined) {
+      existing.input = partial.input;
+    }
+    if (partial.arguments !== undefined) {
+      existing.arguments = partial.arguments;
+    }
+    if (partial.output !== undefined) {
+      existing.output = partial.output;
+    }
+  };
+
+  for (const line of window) {
+    if (line.type !== "response_item") {
+      continue;
+    }
+    const payloadType = String(line.payload?.type ?? "");
+    const callId = typeof line.payload?.call_id === "string" ? line.payload.call_id : null;
+    if (!callId) {
+      continue;
+    }
+
+    if (payloadType === "function_call") {
+      upsert(callId, {
+        kind: "function_call",
+        occurredAt: line.timestamp ?? nowIso(),
+        name: String(line.payload?.name ?? ""),
+        arguments: String(line.payload?.arguments ?? "")
+      });
+      continue;
+    }
+    if (payloadType === "function_call_output") {
+      upsert(callId, {
+        kind: "function_call",
+        occurredAt: line.timestamp ?? nowIso(),
+        output: String(line.payload?.output ?? "")
+      });
+      continue;
+    }
+    if (payloadType === "custom_tool_call") {
+      upsert(callId, {
+        kind: "custom_tool_call",
+        occurredAt: line.timestamp ?? nowIso(),
+        name: String(line.payload?.name ?? ""),
+        status: typeof line.payload?.status === "string" ? line.payload.status : null,
+        input: String(line.payload?.input ?? "")
+      });
+      continue;
+    }
+    if (payloadType === "custom_tool_call_output") {
+      upsert(callId, {
+        kind: "custom_tool_call",
+        occurredAt: line.timestamp ?? nowIso(),
+        output: String(line.payload?.output ?? "")
+      });
+    }
   }
+
+  return ordered;
+}
+
+function recoverHistoricalCodeDiff(toolEvents: SessionToolEvent[]): HistoricalRecoveredDiff | null {
+  const applyPatchDiffs = toolEvents
+    .filter((event) => isSuccessfulApplyPatchEvent(event))
+    .flatMap((event) => {
+      const parsed = parseApplyPatchToCodeDiff(event.input ?? "");
+      return parsed ? [parsed] : [];
+    });
+
+  if (applyPatchDiffs.length > 0) {
+    return {
+      diff: mergeCodeDiffs(applyPatchDiffs),
+      source: "apply_patch",
+      sourceFormat: "codex_apply_patch"
+    };
+  }
+
+  const gitDiffOutputs = toolEvents
+    .filter((event) => isGitDiffCommandEvent(event))
+    .flatMap((event) => {
+      const parsed = event.output ? parseUnifiedDiffToCodeDiff(event.output) : null;
+      return parsed ? [parsed] : [];
+    });
+
+  if (gitDiffOutputs.length > 0) {
+    return {
+      diff: mergeCodeDiffs(gitDiffOutputs),
+      source: "git_diff_output",
+      sourceFormat: "unified_diff"
+    };
+  }
+
+  return null;
+}
+
+function isSuccessfulApplyPatchEvent(event: SessionToolEvent): boolean {
+  return (
+    event.kind === "custom_tool_call"
+    && event.name === "apply_patch"
+    && Boolean(event.input?.trim())
+    && (event.status === null || event.status === "completed")
+    && !isApplyPatchFailure(event.output)
+  );
+}
+
+function isApplyPatchFailure(output: string | null): boolean {
+  return output?.trimStart().startsWith("apply_patch verification failed") ?? false;
+}
+
+function isGitDiffCommandEvent(event: SessionToolEvent): boolean {
+  if (event.kind !== "function_call") {
+    return false;
+  }
+  const command = extractCommandText(event);
+  return command ? /\bgit\s+diff\b/i.test(command) : false;
+}
+
+function extractCommandText(event: SessionToolEvent): string | null {
+  const parsedArguments = safeParseJsonRecord(event.arguments);
+  if (typeof parsedArguments?.cmd === "string") {
+    return parsedArguments.cmd;
+  }
+  return null;
+}
+
+function summarizeToolEvent(event: SessionToolEvent): string {
+  const command = extractCommandText(event);
+  if (command) {
+    return command;
+  }
+  return `${event.name} ${event.arguments ?? event.input ?? ""}`.trim();
+}
+
+function normalizeRecoveredDiffPaths(diff: CodeDiffResult, repoPath: string): CodeDiffResult {
   return {
-    name: String(line.payload.name ?? ""),
-    arguments: String(line.payload.arguments ?? "")
+    ...diff,
+    files: diff.files.map((file) => ({
+      ...file,
+      path: normalizeRecoveredFilePath(file.path, repoPath)
+    }))
   };
 }
 
-function asFunctionCallOutput(line: SessionLine): string | null {
-  if (line.type !== "response_item" || line.payload?.type !== "function_call_output") {
+function normalizeRecoveredFilePath(filePath: string, repoPath: string): string {
+  if (!isAbsolute(filePath)) {
+    return filePath.replace(/\\/g, "/");
+  }
+  const normalizedAbsolutePath = normalize(filePath);
+  const normalizedRepoPath = normalize(repoPath);
+  if (!normalizedAbsolutePath.toLowerCase().startsWith(normalizedRepoPath.toLowerCase())) {
+    return filePath.replace(/\\/g, "/");
+  }
+  return repoRelativePath(repoPath, normalizedAbsolutePath);
+}
+
+function safeParseJsonRecord(value: string | null): Record<string, unknown> | null {
+  if (!value) {
     return null;
   }
-  return String(line.payload.output ?? "");
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function createHistoricalSnapshots(
@@ -161,7 +368,7 @@ export function importCodexSessionsForRepo(
 
   for (const file of files) {
     const filePath = file.filePath;
-    const cursorKey = `codex-session:${filePath}`;
+    const cursorKey = `codex-session:v2:${filePath}`;
     const mtimeMs = file.mtimeMs;
     const cursor = store.getIngestCursor(repo.id, cursorKey);
     if (cursor && cursor.cursorValue === String(mtimeMs)) {
@@ -216,6 +423,7 @@ export function importCodexSessionsForRepo(
 
       const artifacts: ArtifactRecord[] = [];
       const artifactLinks: ArtifactLinkRecord[] = [];
+      const toolEvents = normalizeSessionToolEvents(window);
       const finalText = window
         .map((line) => isAgentMessage(line))
         .filter((value): value is string => Boolean(value))
@@ -252,11 +460,21 @@ export function importCodexSessionsForRepo(
         });
       }
 
-      const functionCalls = window
-        .map((line) => asFunctionCall(line))
-        .filter((value): value is { name: string; arguments: string } => Boolean(value));
+      const recoveredDiff = recoverHistoricalCodeDiff(toolEvents);
+      if (recoveredDiff) {
+        const normalizedDiff = normalizeRecoveredDiffPaths(recoveredDiff.diff, repo.rootPath);
+        const diffArtifact = buildCodeDiffArtifact(promptId, normalizedDiff, {
+          source: recoveredDiff.source,
+          sourceFormat: recoveredDiff.sourceFormat
+        });
+        diffArtifact.id = stableId("artifact", `${promptSeed}:code_diff`);
+        diffArtifact.blobId = store.writeBlob(repo.id, recoveredDiff.diff.patch);
+        artifacts.push(diffArtifact);
+      }
+
+      const functionCalls = toolEvents.filter((event) => event.kind === "function_call");
       for (const [index, call] of functionCalls.entries()) {
-        const commandSummary = `${call.name} ${call.arguments}`.trim();
+        const commandSummary = summarizeToolEvent(call);
         const artifactType = looksLikeTestCommand(commandSummary) ? "test_run" : "command_run";
         artifacts.push({
           id: stableId("artifact", `${promptSeed}:call:${index}`),
@@ -270,7 +488,7 @@ export function importCodexSessionsForRepo(
         });
       }
 
-      const primaryType = choosePrimaryArtifactType(Boolean(plan), false, Boolean(finalText));
+      const primaryType = choosePrimaryArtifactType(Boolean(plan), Boolean(recoveredDiff), Boolean(finalText));
       if (primaryType) {
         const primary = artifacts.find((artifact) => artifact.type === primaryType);
         if (primary) {
@@ -294,9 +512,9 @@ export function importCodexSessionsForRepo(
         payload: line
       }));
 
-      const outputs = window
-        .map((line) => asFunctionCallOutput(line))
-        .filter((value): value is string => Boolean(value));
+      const outputs = toolEvents
+        .filter((event) => event.kind === "function_call" && Boolean(event.output))
+        .map((event) => event.output ?? "");
       if (outputs.length > 0) {
         artifacts.push({
           id: stableId("artifact", `${promptSeed}:function_output`),
@@ -700,7 +918,10 @@ export async function runLiveDoctor(
         }
       : localDiff;
     if (chosenDiff) {
-      const diffArtifact = buildCodeDiffArtifact(promptEventId, chosenDiff);
+      const diffArtifact = buildCodeDiffArtifact(promptEventId, chosenDiff, {
+        source: latestDiff.trim() ? "app_server_diff" : "snapshot_diff",
+        sourceFormat: "unified_diff"
+      });
       diffArtifact.blobId = store.writeBlob(repo.id, chosenDiff.patch);
       artifacts.push(diffArtifact);
       gitLinks.push({

@@ -11,6 +11,13 @@ import type {
 } from "@promptline/domain";
 import { createId, hashValue, nowIso } from "@promptline/domain";
 
+type FileChange = CodeDiffResult["files"][number];
+
+export interface CodeDiffArtifactMetadata {
+  source?: "apply_patch" | "git_diff_output" | "app_server_diff" | "snapshot_diff";
+  sourceFormat?: "codex_apply_patch" | "unified_diff";
+}
+
 function git(repoPath: string, args: string[]): string {
   try {
     return execFileSync("git", args, {
@@ -127,7 +134,136 @@ export function buildCodeDiff(
   };
 }
 
-export function buildCodeDiffArtifact(promptEventId: string, diff: CodeDiffResult): ArtifactRecord {
+export function parseApplyPatchToCodeDiff(input: string): CodeDiffResult | null {
+  const files: FileChange[] = [];
+  const lines = input.split(/\r?\n/);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.startsWith("*** Add File: ")) {
+      files.push({
+        path: normalizeDiffPath(line.slice("*** Add File: ".length)),
+        changeType: "added"
+      });
+      continue;
+    }
+    if (line.startsWith("*** Delete File: ")) {
+      files.push({
+        path: normalizeDiffPath(line.slice("*** Delete File: ".length)),
+        changeType: "deleted"
+      });
+      continue;
+    }
+    if (!line.startsWith("*** Update File: ")) {
+      continue;
+    }
+
+    const sourcePath = normalizeDiffPath(line.slice("*** Update File: ".length));
+    const moveLine = lines[index + 1] ?? "";
+    if (moveLine.startsWith("*** Move to: ")) {
+      files.push({ path: sourcePath, changeType: "deleted" });
+      files.push({
+        path: normalizeDiffPath(moveLine.slice("*** Move to: ".length)),
+        changeType: "added"
+      });
+      index += 1;
+      continue;
+    }
+
+    files.push({ path: sourcePath, changeType: "modified" });
+  }
+
+  return toCodeDiffResult(input, files);
+}
+
+export function parseUnifiedDiffToCodeDiff(output: string): CodeDiffResult | null {
+  const startIndex = output.search(/^diff --git /m);
+  if (startIndex < 0) {
+    return null;
+  }
+
+  const diffBody = output.slice(startIndex);
+  const files: FileChange[] = [];
+  let current: {
+    oldPath: string;
+    newPath: string;
+    changeType: FileChange["changeType"];
+  } | null = null;
+
+  const flushCurrent = () => {
+    if (!current) {
+      return;
+    }
+    if (current.changeType === "added") {
+      files.push({ path: current.newPath, changeType: "added" });
+    } else if (current.changeType === "deleted") {
+      files.push({ path: current.oldPath, changeType: "deleted" });
+    } else {
+      files.push({ path: current.newPath || current.oldPath, changeType: "modified" });
+    }
+    current = null;
+  };
+
+  for (const line of diffBody.split(/\r?\n/)) {
+    if (line.startsWith("diff --git ")) {
+      flushCurrent();
+      const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+      if (!match) {
+        continue;
+      }
+      current = {
+        oldPath: normalizeDiffPath(match[1] ?? ""),
+        newPath: normalizeDiffPath(match[2] ?? ""),
+        changeType: "modified"
+      };
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    if (line.startsWith("new file mode ")) {
+      current.changeType = "added";
+      continue;
+    }
+    if (line.startsWith("deleted file mode ")) {
+      current.changeType = "deleted";
+      continue;
+    }
+    if (line === "--- /dev/null") {
+      current.changeType = "added";
+      continue;
+    }
+    if (line === "+++ /dev/null") {
+      current.changeType = "deleted";
+      continue;
+    }
+    if (line.startsWith("rename from ")) {
+      current.oldPath = normalizeDiffPath(line.slice("rename from ".length));
+      continue;
+    }
+    if (line.startsWith("rename to ")) {
+      current.newPath = normalizeDiffPath(line.slice("rename to ".length));
+    }
+  }
+
+  flushCurrent();
+  return toCodeDiffResult(output, files);
+}
+
+export function mergeCodeDiffs(diffs: CodeDiffResult[]): CodeDiffResult {
+  const patch = joinPatchSegments(diffs.map((diff) => diff.patch));
+  return {
+    patch,
+    files: mergeFileChanges(diffs.flatMap((diff) => diff.files)),
+    patchIdentity: hashValue(patch)
+  };
+}
+
+export function buildCodeDiffArtifact(
+  promptEventId: string,
+  diff: CodeDiffResult,
+  metadata: CodeDiffArtifactMetadata = {}
+): ArtifactRecord {
   return {
     id: createId("artifact"),
     promptEventId,
@@ -138,11 +274,66 @@ export function buildCodeDiffArtifact(promptEventId: string, diff: CodeDiffResul
     fileStatsJson: JSON.stringify(diff.files),
     metadataJson: JSON.stringify({
       generatedAt: nowIso(),
-      patchIdentity: diff.patchIdentity
+      patchIdentity: diff.patchIdentity,
+      ...metadata
     })
   };
 }
 
 export function repoRelativePath(repoPath: string, absolutePath: string): string {
   return relative(repoPath, absolutePath).replace(/\\/g, "/");
+}
+
+function toCodeDiffResult(patch: string, files: FileChange[]): CodeDiffResult | null {
+  const mergedFiles = mergeFileChanges(files);
+  if (mergedFiles.length === 0) {
+    return null;
+  }
+  return {
+    patch,
+    files: mergedFiles,
+    patchIdentity: hashValue(patch)
+  };
+}
+
+function mergeFileChanges(files: FileChange[]): FileChange[] {
+  const merged: FileChange[] = [];
+  const indexByPath = new Map<string, number>();
+
+  for (const file of files) {
+    const normalizedPath = normalizeDiffPath(file.path);
+    if (!normalizedPath) {
+      continue;
+    }
+    const existingIndex = indexByPath.get(normalizedPath);
+    if (existingIndex === undefined) {
+      indexByPath.set(normalizedPath, merged.length);
+      merged.push({ path: normalizedPath, changeType: file.changeType });
+      continue;
+    }
+    merged[existingIndex] = {
+      path: normalizedPath,
+      changeType: file.changeType
+    };
+  }
+
+  return merged;
+}
+
+function joinPatchSegments(segments: string[]): string {
+  let merged = "";
+  for (const segment of segments.filter((value) => value.length > 0)) {
+    if (merged.length > 0 && !merged.endsWith("\n")) {
+      merged += "\n";
+    }
+    if (merged.length > 0 && !segment.startsWith("\n")) {
+      merged += "\n";
+    }
+    merged += segment;
+  }
+  return merged;
+}
+
+function normalizeDiffPath(path: string): string {
+  return path.trim().replace(/^["']|["']$/g, "").replace(/\\/g, "/");
 }

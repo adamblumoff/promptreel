@@ -156,6 +156,21 @@ export class PromptlineStore {
         }));
       }
 
+      const existingArtifactIds = (
+        db
+          .prepare(`SELECT id FROM artifacts WHERE prompt_event_id = ?`)
+          .all(bundle.prompt.id) as Array<{ id: string }>
+      ).map((row) => row.id);
+      if (existingArtifactIds.length > 0) {
+        db.prepare(
+          `DELETE FROM artifact_links
+           WHERE from_artifact_id IN (${existingArtifactIds.map(() => "?").join(",")})
+              OR to_artifact_id IN (${existingArtifactIds.map(() => "?").join(",")})`
+        ).run(...existingArtifactIds, ...existingArtifactIds);
+        db.prepare(`DELETE FROM artifacts WHERE prompt_event_id = ?`).run(bundle.prompt.id);
+      }
+      db.prepare(`DELETE FROM git_links WHERE prompt_event_id = ?`).run(bundle.prompt.id);
+
       db.prepare(
         `INSERT OR REPLACE INTO prompt_events
          (id, repo_id, session_id, thread_id, parent_prompt_event_id, started_at, ended_at, boundary_reason, status, prompt_text, prompt_summary, primary_artifact_id, baseline_snapshot_id, end_snapshot_id)
