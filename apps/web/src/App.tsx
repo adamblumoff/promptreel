@@ -5,19 +5,21 @@ import {
   fetchPrompts,
   fetchThreads,
   fetchWorkspaces,
-  rescanSessions
+  rescanSessions,
 } from "./api";
 import type {
   Health,
   PromptDetail,
   PromptListItem,
   ThreadSummary,
-  Workspace
+  Workspace,
 } from "./types";
 import {
-  AppShell,
-  MainColumn,
-  WorkspaceSidebar
+  ContentHeader,
+  HealthView,
+  PromptFeed,
+  ThreadBar,
+  TopBar,
 } from "./components";
 import type { ContentTab } from "./components";
 import {
@@ -30,497 +32,340 @@ import {
   toPromptDetailViewModel,
   toPromptRowViewModel,
   toThreadRowViewModel,
-  type PromptDetailViewModel
+  type PromptDetailViewModel,
 } from "./view-models";
 
-const SELECTED_WORKSPACE_STORAGE_KEY = "promptline:selected-workspace-id";
-const SELECTED_THREAD_STORAGE_KEY = "promptline:selected-thread-id";
-const SIDEBAR_COLLAPSED_STORAGE_KEY = "promptline:sidebar-collapsed";
+/* ─── Storage helpers ───────────────────────────────────────────────────── */
 
-function readStoredValue(key: string): string {
-  if (typeof window === "undefined") {
-    return "";
-  }
-  return window.localStorage.getItem(key) ?? "";
+const KEYS = {
+  workspace: "promptline:selected-workspace-id",
+  thread: "promptline:selected-thread-id",
+} as const;
+
+function stored(key: string): string {
+  return (typeof window !== "undefined" && window.localStorage.getItem(key)) || "";
 }
 
-function readStoredBoolean(key: string, fallback: boolean): boolean {
-  if (typeof window === "undefined") {
-    return fallback;
-  }
-  const value = window.localStorage.getItem(key);
-  return value === null ? fallback : value === "true";
+function persist(key: string, value: string) {
+  if (typeof window !== "undefined") window.localStorage.setItem(key, value);
 }
 
-function createThreadCacheKey(workspaceId: string, threadId: string): string {
+function cacheKey(workspaceId: string, threadId: string) {
   return `${workspaceId}::${threadId}`;
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
+function isAbort(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
 }
 
+/* ─── App ───────────────────────────────────────────────────────────────── */
+
 export function App() {
+  /* state */
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(() =>
-    readStoredValue(SELECTED_WORKSPACE_STORAGE_KEY)
-  );
-  const [threadsByWorkspaceId, setThreadsByWorkspaceId] = useState<Record<string, ThreadSummary[]>>({});
-  const [selectedThreadId, setSelectedThreadId] = useState(() =>
-    readStoredValue(SELECTED_THREAD_STORAGE_KEY)
-  );
-  const [promptsByThreadKey, setPromptsByThreadKey] = useState<Record<string, PromptListItem[]>>({});
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(() => stored(KEYS.workspace));
+  const [threadsByWs, setThreadsByWs] = useState<Record<string, ThreadSummary[]>>({});
+  const [selectedThreadId, setSelectedThreadId] = useState(() => stored(KEYS.thread));
+  const [promptsByKey, setPromptsByKey] = useState<Record<string, PromptListItem[]>>({});
   const [health, setHealth] = useState<Health | null>(null);
   const [filter, setFilter] = useState<"all" | "open" | "imported">("all");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
-    readStoredBoolean(SIDEBAR_COLLAPSED_STORAGE_KEY, false)
-  );
-  const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [expandedPromptId, setExpandedPromptId] = useState<string | null>(null);
-  const [promptDetailsById, setPromptDetailsById] = useState<Record<string, PromptDetail>>({});
+  const [detailsById, setDetailsById] = useState<Record<string, PromptDetail>>({});
   const [detailLoadingById, setDetailLoadingById] = useState<Record<string, boolean>>({});
   const [detailErrorById, setDetailErrorById] = useState<Record<string, string | null>>({});
   const [isRescanning, setIsRescanning] = useState(false);
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [promptsLoading, setPromptsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<ContentTab>("threads");
-  const [isDocumentVisible, setIsDocumentVisible] = useState(() =>
+  const [activeTab, setActiveTab] = useState<ContentTab>("prompts");
+  const [visible, setVisible] = useState(() =>
     typeof document === "undefined" ? true : !document.hidden
   );
 
-  const detailControllersRef = useRef<Record<string, AbortController | undefined>>({});
+  const detailControllers = useRef<Record<string, AbortController | undefined>>({});
 
+  /* visibility */
   useEffect(() => {
-    if (typeof document === "undefined") {
-      return;
-    }
-
-    const handleVisibilityChange = () => {
-      setIsDocumentVisible(!document.hidden);
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
+    if (typeof document === "undefined") return;
+    const h = () => setVisible(!document.hidden);
+    document.addEventListener("visibilitychange", h);
+    return () => document.removeEventListener("visibilitychange", h);
   }, []);
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(SELECTED_WORKSPACE_STORAGE_KEY, selectedWorkspaceId);
-    }
-  }, [selectedWorkspaceId]);
+  /* persist selections */
+  useEffect(() => persist(KEYS.workspace, selectedWorkspaceId), [selectedWorkspaceId]);
+  useEffect(() => persist(KEYS.thread, selectedThreadId), [selectedThreadId]);
+
+  /* ── fetch workspaces ─────────────────────────────────────────────────── */
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(SELECTED_THREAD_STORAGE_KEY, selectedThreadId);
-    }
-  }, [selectedThreadId]);
+    if (!visible) return;
+    let live = true;
+    let ctrl: AbortController | null = null;
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(sidebarCollapsed));
-    }
-  }, [sidebarCollapsed]);
-
-  useEffect(() => {
-    if (!isDocumentVisible) {
-      return;
-    }
-
-    let active = true;
-    let controller: AbortController | null = null;
-
-    const refreshWorkspaces = async () => {
-      controller?.abort();
-      controller = new AbortController();
+    const go = async () => {
+      ctrl?.abort();
+      ctrl = new AbortController();
       try {
-        const data = sortWorkspacesByActivity(await fetchWorkspaces({ signal: controller.signal }));
-        if (!active) {
-          return;
-        }
+        const data = sortWorkspacesByActivity(await fetchWorkspaces({ signal: ctrl.signal }));
+        if (!live) return;
         startTransition(() => {
           setWorkspaces(data);
-          setSelectedWorkspaceId((current) => resolveSelectedWorkspaceId(data, current));
+          setSelectedWorkspaceId((c) => resolveSelectedWorkspaceId(data, c));
         });
-      } catch (error) {
-        if (!active || isAbortError(error)) {
-          return;
-        }
-      }
+      } catch (e) { if (!live || isAbort(e)) return; }
     };
 
-    void refreshWorkspaces();
-    const interval = window.setInterval(() => {
-      void refreshWorkspaces();
-    }, 10_000);
+    void go();
+    const id = setInterval(() => void go(), 10_000);
+    return () => { live = false; ctrl?.abort(); clearInterval(id); };
+  }, [visible]);
 
-    return () => {
-      active = false;
-      controller?.abort();
-      window.clearInterval(interval);
-    };
-  }, [isDocumentVisible]);
+  /* ── fetch health ─────────────────────────────────────────────────────── */
 
   useEffect(() => {
-    if (!selectedWorkspaceId || !isDocumentVisible) {
-      return;
-    }
+    if (!selectedWorkspaceId || !visible) return;
+    let live = true;
+    let ctrl: AbortController | null = null;
 
-    let active = true;
-    let controller: AbortController | null = null;
-
-    const refreshHealth = async () => {
-      controller?.abort();
-      controller = new AbortController();
+    const go = async () => {
+      ctrl?.abort();
+      ctrl = new AbortController();
       try {
-        const data = await fetchHealth({ signal: controller.signal });
-        if (!active) {
-          return;
-        }
-        setHealth(data);
-      } catch (error) {
-        if (!active || isAbortError(error)) {
-          return;
-        }
+        const d = await fetchHealth({ signal: ctrl.signal });
+        if (live) setHealth(d);
+      } catch (e) {
+        if (!live || isAbort(e)) return;
         setHealth(null);
       }
     };
 
-    void refreshHealth();
-    const interval = window.setInterval(() => {
-      void refreshHealth();
-    }, 15_000);
+    void go();
+    const id = setInterval(() => void go(), 15_000);
+    return () => { live = false; ctrl?.abort(); clearInterval(id); };
+  }, [visible, selectedWorkspaceId]);
 
-    return () => {
-      active = false;
-      controller?.abort();
-      window.clearInterval(interval);
-    };
-  }, [isDocumentVisible, selectedWorkspaceId]);
+  /* ── fetch threads ────────────────────────────────────────────────────── */
 
-  const cachedThreads = selectedWorkspaceId ? threadsByWorkspaceId[selectedWorkspaceId] : undefined;
+  const cachedThreads = selectedWorkspaceId ? threadsByWs[selectedWorkspaceId] : undefined;
 
   useEffect(() => {
-    if (!selectedWorkspaceId || !isDocumentVisible) {
-      return;
-    }
+    if (!selectedWorkspaceId || !visible) return;
+    let live = true;
+    let ctrl: AbortController | null = null;
+    const hasCached = Boolean(cachedThreads);
 
-    let active = true;
-    let controller: AbortController | null = null;
-    const hasCachedThreads = Boolean(cachedThreads);
-
-    const refreshThreads = async () => {
-      controller?.abort();
-      controller = new AbortController();
-      if (!hasCachedThreads) {
-        setThreadsLoading(true);
-      }
-
+    const go = async () => {
+      ctrl?.abort();
+      ctrl = new AbortController();
+      if (!hasCached) setThreadsLoading(true);
       try {
-        const data = await fetchThreads(selectedWorkspaceId, { signal: controller.signal });
-        if (!active) {
-          return;
-        }
+        const d = await fetchThreads(selectedWorkspaceId, { signal: ctrl.signal });
+        if (!live) return;
         startTransition(() => {
-          setThreadsByWorkspaceId((current) => ({
-            ...current,
-            [selectedWorkspaceId]: data
-          }));
-          setSelectedThreadId((current) => resolveSelectedThreadId(data, current));
+          setThreadsByWs((c) => ({ ...c, [selectedWorkspaceId]: d }));
+          setSelectedThreadId((c) => resolveSelectedThreadId(d, c));
         });
-      } catch (error) {
-        if (!active || isAbortError(error)) {
-          return;
-        }
-      } finally {
-        if (active) {
-          setThreadsLoading(false);
-        }
-      }
+      } catch (e) { if (!live || isAbort(e)) return; }
+      finally { if (live) setThreadsLoading(false); }
     };
 
-    void refreshThreads();
-    const interval = window.setInterval(() => {
-      void refreshThreads();
-    }, 5_000);
+    void go();
+    const id = setInterval(() => void go(), 5_000);
+    return () => { live = false; ctrl?.abort(); clearInterval(id); };
+  }, [cachedThreads, visible, selectedWorkspaceId]);
 
-    return () => {
-      active = false;
-      controller?.abort();
-      window.clearInterval(interval);
-    };
-  }, [cachedThreads, isDocumentVisible, selectedWorkspaceId]);
+  /* ── fetch prompts ────────────────────────────────────────────────────── */
 
-  const threads = selectedWorkspaceId ? (threadsByWorkspaceId[selectedWorkspaceId] ?? []) : [];
-  const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
-  const selectedThreadKey = selectedThread?.threadId ?? selectedThread?.sessionId ?? "";
-  const promptCacheKey =
-    selectedWorkspaceId && selectedThreadId
-      ? createThreadCacheKey(selectedWorkspaceId, selectedThreadId)
-      : "";
-  const cachedPrompts = promptCacheKey ? promptsByThreadKey[promptCacheKey] : undefined;
+  const threads = selectedWorkspaceId ? (threadsByWs[selectedWorkspaceId] ?? []) : [];
+  const selThread = threads.find((t) => t.id === selectedThreadId) ?? null;
+  const selThreadKey = selThread?.threadId ?? selThread?.sessionId ?? "";
+  const pKey = selectedWorkspaceId && selectedThreadId
+    ? cacheKey(selectedWorkspaceId, selectedThreadId)
+    : "";
+  const cachedPrompts = pKey ? promptsByKey[pKey] : undefined;
 
   useEffect(() => {
-    if (!selectedWorkspaceId || !selectedThreadId || !selectedThreadKey || !isDocumentVisible) {
-      return;
-    }
+    if (!selectedWorkspaceId || !selectedThreadId || !selThreadKey || !visible) return;
+    let live = true;
+    let ctrl: AbortController | null = null;
+    const ck = cacheKey(selectedWorkspaceId, selectedThreadId);
+    const hasCached = Boolean(cachedPrompts);
+    const interval = selThread?.openPromptCount ? 2_000 : 5_000;
 
-    let active = true;
-    let controller: AbortController | null = null;
-    const cacheKey = createThreadCacheKey(selectedWorkspaceId, selectedThreadId);
-    const hasCachedPrompts = Boolean(cachedPrompts);
-    const refreshInterval = selectedThread?.openPromptCount ? 2_000 : 5_000;
-
-    const refreshPrompts = async () => {
-      controller?.abort();
-      controller = new AbortController();
-      if (!hasCachedPrompts) {
-        setPromptsLoading(true);
-      }
-
+    const go = async () => {
+      ctrl?.abort();
+      ctrl = new AbortController();
+      if (!hasCached) setPromptsLoading(true);
       try {
-        const data = await fetchPrompts(selectedWorkspaceId, selectedThreadKey, {
-          signal: controller.signal
-        });
-        if (!active) {
-          return;
-        }
+        const d = await fetchPrompts(selectedWorkspaceId, selThreadKey, { signal: ctrl.signal });
+        if (!live) return;
         startTransition(() => {
-          setPromptsByThreadKey((current) => ({
-            ...current,
-            [cacheKey]: data
-          }));
-          setExpandedPromptId((current) => {
-            if (!current) {
-              return current;
-            }
-            return data.some((prompt) => prompt.id === current) ? current : null;
+          setPromptsByKey((c) => ({ ...c, [ck]: d }));
+          setExpandedPromptId((c) => {
+            if (!c) return c;
+            return d.some((p) => p.id === c) ? c : null;
           });
         });
-      } catch (error) {
-        if (!active || isAbortError(error)) {
-          return;
-        }
-      } finally {
-        if (active) {
-          setPromptsLoading(false);
-        }
-      }
+      } catch (e) { if (!live || isAbort(e)) return; }
+      finally { if (live) setPromptsLoading(false); }
     };
 
-    void refreshPrompts();
-    const interval = window.setInterval(() => {
-      void refreshPrompts();
-    }, refreshInterval);
+    void go();
+    const id = setInterval(() => void go(), interval);
+    return () => { live = false; ctrl?.abort(); clearInterval(id); };
+  }, [cachedPrompts, visible, selThread?.openPromptCount, selectedThreadId, selThreadKey, selectedWorkspaceId]);
 
-    return () => {
-      active = false;
-      controller?.abort();
-      window.clearInterval(interval);
-    };
-  }, [
-    cachedPrompts,
-    isDocumentVisible,
-    selectedThread?.openPromptCount,
-    selectedThreadId,
-    selectedThreadKey,
-    selectedWorkspaceId
-  ]);
+  const prompts = pKey ? (promptsByKey[pKey] ?? []) : [];
 
-  const prompts = promptCacheKey ? (promptsByThreadKey[promptCacheKey] ?? []) : [];
+  /* ── load prompt detail ───────────────────────────────────────────────── */
 
-  async function loadPromptDetail(workspaceId: string, promptId: string, force = false): Promise<void> {
-    if (!force && promptDetailsById[promptId]) {
-      return;
-    }
+  async function loadDetail(wsId: string, pid: string, force = false) {
+    if (!force && detailsById[pid]) return;
+    detailControllers.current[pid]?.abort();
+    const ctrl = new AbortController();
+    detailControllers.current[pid] = ctrl;
 
-    detailControllersRef.current[promptId]?.abort();
-    const controller = new AbortController();
-    detailControllersRef.current[promptId] = controller;
-
-    setDetailLoadingById((current) => ({
-      ...current,
-      [promptId]: true
-    }));
-    setDetailErrorById((current) => ({
-      ...current,
-      [promptId]: null
-    }));
+    setDetailLoadingById((c) => ({ ...c, [pid]: true }));
+    setDetailErrorById((c) => ({ ...c, [pid]: null }));
 
     try {
-      const detail = await fetchPromptDetail(workspaceId, promptId, {
-        signal: controller.signal
-      });
-      setPromptDetailsById((current) => ({
-        ...current,
-        [promptId]: detail
-      }));
-    } catch (error) {
-      if (!isAbortError(error)) {
-        setDetailErrorById((current) => ({
-          ...current,
-          [promptId]: "Prompt detail is unavailable right now."
-        }));
-      }
+      const d = await fetchPromptDetail(wsId, pid, { signal: ctrl.signal });
+      setDetailsById((c) => ({ ...c, [pid]: d }));
+    } catch (e) {
+      if (!isAbort(e)) setDetailErrorById((c) => ({ ...c, [pid]: "Prompt detail is unavailable right now." }));
     } finally {
-      setDetailLoadingById((current) => ({
-        ...current,
-        [promptId]: false
-      }));
-      if (detailControllersRef.current[promptId] === controller) {
-        delete detailControllersRef.current[promptId];
-      }
+      setDetailLoadingById((c) => ({ ...c, [pid]: false }));
+      if (detailControllers.current[pid] === ctrl) delete detailControllers.current[pid];
     }
   }
 
   useEffect(() => {
-    if (!selectedWorkspaceId || !expandedPromptId || !isDocumentVisible) {
-      return;
-    }
+    if (!selectedWorkspaceId || !expandedPromptId || !visible) return;
+    const ep = prompts.find((p) => p.id === expandedPromptId);
+    if (!ep) { setExpandedPromptId(null); return; }
+    if (!detailsById[expandedPromptId]) void loadDetail(selectedWorkspaceId, expandedPromptId);
+    if (ep.status !== "in_progress") return;
 
-    const expandedPrompt = prompts.find((prompt) => prompt.id === expandedPromptId);
-    if (!expandedPrompt) {
-      setExpandedPromptId(null);
-      return;
-    }
-
-    if (!promptDetailsById[expandedPromptId]) {
-      void loadPromptDetail(selectedWorkspaceId, expandedPromptId);
-    }
-
-    if (expandedPrompt.status !== "in_progress") {
-      return;
-    }
-
-    const interval = window.setInterval(() => {
-      void loadPromptDetail(selectedWorkspaceId, expandedPromptId, true);
-    }, 2_000);
-
-    return () => {
-      window.clearInterval(interval);
-    };
-  }, [expandedPromptId, isDocumentVisible, promptDetailsById, prompts, selectedWorkspaceId]);
+    const id = setInterval(() => void loadDetail(selectedWorkspaceId, expandedPromptId, true), 2_000);
+    return () => clearInterval(id);
+  }, [expandedPromptId, visible, detailsById, prompts, selectedWorkspaceId]);
 
   useEffect(() => {
-    return () => {
-      for (const controller of Object.values(detailControllersRef.current)) {
-        controller?.abort();
-      }
-    };
+    return () => { for (const c of Object.values(detailControllers.current)) c?.abort(); };
   }, []);
 
+  /* ── derived view models ──────────────────────────────────────────────── */
+
   const selectedWorkspace = getSelectedWorkspace(workspaces, selectedWorkspaceId);
-  const selectedWorkspaceStatus = getSelectedWorkspaceStatus(selectedWorkspace, health, selectedWorkspaceId);
-  const workspaceSidebarItems = buildWorkspaceSidebarItems(workspaces, selectedWorkspaceId);
+  const wsStatus = getSelectedWorkspaceStatus(selectedWorkspace, health, selectedWorkspaceId);
+  const wsSidebarItems = buildWorkspaceSidebarItems(workspaces, selectedWorkspaceId);
   const threadRows = threads.map(toThreadRowViewModel);
+  const selThreadRow = threadRows.find((t) => t.id === selectedThreadId) ?? null;
+
   const promptRows = prompts
-    .filter((prompt) => {
-      if (filter === "open") {
-        return prompt.status === "in_progress";
-      }
-      if (filter === "imported") {
-        return prompt.status !== "in_progress";
-      }
+    .filter((p) => {
+      if (filter === "open") return p.status === "in_progress";
+      if (filter === "imported") return p.status !== "in_progress";
       return true;
     })
     .map(toPromptRowViewModel);
 
-  const promptDetails = useMemo(() => (
-    Object.fromEntries(
-      Object.entries(promptDetailsById).map(([promptId, prompt]) => [promptId, toPromptDetailViewModel(prompt)])
-    ) as Record<string, PromptDetailViewModel>
-  ), [promptDetailsById]);
+  const promptDetails = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(detailsById).map(([id, p]) => [id, toPromptDetailViewModel(p)])
+      ) as Record<string, PromptDetailViewModel>,
+    [detailsById]
+  );
 
-  const handleSelectWorkspace = (workspaceId: string) => {
-    const nextThreads = threadsByWorkspaceId[workspaceId] ?? [];
-    startTransition(() => {
-      setSelectedWorkspaceId(workspaceId);
-      setSelectedThreadId(resolveSelectedThreadId(nextThreads, ""));
-      setExpandedPromptId(null);
-      setActiveTab("threads");
-    });
-    setSidebarDrawerOpen(false);
-  };
+  /* ── handlers ─────────────────────────────────────────────────────────── */
 
-  const handleSelectThread = (threadId: string) => {
+  const handleSelectWorkspace = (id: string) => {
+    const next = threadsByWs[id] ?? [];
     startTransition(() => {
-      setSelectedThreadId(threadId);
+      setSelectedWorkspaceId(id);
+      setSelectedThreadId(resolveSelectedThreadId(next, ""));
       setExpandedPromptId(null);
+      setActiveTab("prompts");
     });
   };
 
-  const handleTogglePrompt = (promptId: string) => {
-    if (!selectedWorkspaceId) {
-      return;
-    }
-
-    if (expandedPromptId === promptId) {
+  const handleSelectThread = (id: string) => {
+    startTransition(() => {
+      setSelectedThreadId(id);
       setExpandedPromptId(null);
-      return;
-    }
+    });
+  };
 
-    setExpandedPromptId(promptId);
-    void loadPromptDetail(selectedWorkspaceId, promptId);
+  const handleTogglePrompt = (id: string) => {
+    if (!selectedWorkspaceId) return;
+    if (expandedPromptId === id) { setExpandedPromptId(null); return; }
+    setExpandedPromptId(id);
+    void loadDetail(selectedWorkspaceId, id);
   };
 
   const handleRescan = async () => {
     setIsRescanning(true);
     try {
-      const controller = new AbortController();
-      const ingestion = await rescanSessions({ signal: controller.signal });
-      setHealth((current) => current ? { ...current, ingestion } : current);
-      const refreshed = sortWorkspacesByActivity(await fetchWorkspaces({ signal: controller.signal }));
+      const ctrl = new AbortController();
+      const ingestion = await rescanSessions({ signal: ctrl.signal });
+      setHealth((c) => (c ? { ...c, ingestion } : c));
+      const ws = sortWorkspacesByActivity(await fetchWorkspaces({ signal: ctrl.signal }));
       startTransition(() => {
-        setWorkspaces(refreshed);
-        setSelectedWorkspaceId((current) => resolveSelectedWorkspaceId(refreshed, current));
+        setWorkspaces(ws);
+        setSelectedWorkspaceId((c) => resolveSelectedWorkspaceId(ws, c));
       });
     } finally {
       setIsRescanning(false);
     }
   };
 
+  /* ── render ───────────────────────────────────────────────────────────── */
+
   return (
-    <AppShell
-      isSidebarCollapsed={sidebarCollapsed}
-      onOpenSidebarDrawer={() => setSidebarDrawerOpen(true)}
-      sidebar={
-        <WorkspaceSidebar
-          workspaces={workspaceSidebarItems}
-          selectedWorkspaceId={selectedWorkspaceId}
-          onSelectWorkspace={handleSelectWorkspace}
-          isCollapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed((current) => !current)}
-          isDrawerOpen={sidebarDrawerOpen}
-          onCloseDrawer={() => setSidebarDrawerOpen(false)}
-          isRescanning={isRescanning}
-          onRescan={() => {
-            void handleRescan();
-          }}
-        />
-      }
-      main={
-        <MainColumn
-          selectedWorkspace={selectedWorkspace}
-          selectedWorkspaceStatus={selectedWorkspaceStatus}
-          threadRows={threadRows}
-          selectedThreadId={selectedThreadId}
-          onSelectThread={handleSelectThread}
-          promptRows={promptRows}
-          expandedPromptId={expandedPromptId}
-          promptDetails={promptDetails}
-          detailLoadingById={detailLoadingById}
-          detailErrorById={detailErrorById}
-          filter={filter}
-          onFilterChange={setFilter}
-          onTogglePrompt={handleTogglePrompt}
-          onOpenSidebarDrawer={() => setSidebarDrawerOpen(true)}
-          isThreadsLoading={threadsLoading}
-          isPromptsLoading={promptsLoading}
+    <div className="min-h-dvh bg-white">
+      <TopBar
+        workspaces={wsSidebarItems}
+        selectedWorkspaceId={selectedWorkspaceId}
+        onSelectWorkspace={handleSelectWorkspace}
+        workspaceStatus={wsStatus}
+        isRescanning={isRescanning}
+        onRescan={() => void handleRescan()}
+      />
+
+      <ThreadBar
+        threads={threadRows}
+        selectedThreadId={selectedThreadId}
+        onSelectThread={handleSelectThread}
+        isLoading={threadsLoading}
+      />
+
+      <main className="max-w-[860px] mx-auto px-5 py-6">
+        <ContentHeader
+          thread={selThreadRow}
           activeTab={activeTab}
           onTabChange={setActiveTab}
+          filter={filter}
+          onFilterChange={setFilter}
+          promptCount={promptRows.length}
         />
-      }
-    />
+
+        {activeTab === "prompts" && (
+          <PromptFeed
+            rows={promptRows}
+            details={promptDetails}
+            loadingById={detailLoadingById}
+            errorById={detailErrorById}
+            expandedId={expandedPromptId}
+            onToggle={handleTogglePrompt}
+            isLoading={promptsLoading}
+          />
+        )}
+
+        {activeTab === "health" && (
+          <HealthView status={wsStatus} />
+        )}
+      </main>
+    </div>
   );
 }

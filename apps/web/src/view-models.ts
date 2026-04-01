@@ -1,6 +1,8 @@
 import type {
   Artifact,
+  ArtifactRole,
   ArtifactType,
+  GitSurvivalState,
   Health,
   PromptDetail,
   PromptListItem,
@@ -47,16 +49,26 @@ export type PromptRowViewModel = PromptListItem & {
 
 export type PromptDetailArtifactViewModel = {
   id: string;
+  type: ArtifactType;
+  role: ArtifactRole;
   label: string;
   summary: string;
   fileCountLabel: string | null;
   relationCountLabel: string | null;
+  files: string[];
 };
 
 export type PromptDetailGitLinkViewModel = {
   id: string;
+  commitSha: string | null;
+  survivalState: GitSurvivalState;
   headline: string;
   detail: string;
+};
+
+export type FileGroupViewModel = {
+  extension: string;
+  files: string[];
 };
 
 export type PromptDetailViewModel = {
@@ -66,6 +78,7 @@ export type PromptDetailViewModel = {
   primaryArtifactSummary: string;
   touchedFiles: string[];
   touchedFilesLabel: string;
+  fileGroups: FileGroupViewModel[];
   artifactSummaries: PromptDetailArtifactViewModel[];
   gitSummaries: PromptDetailGitLinkViewModel[];
 };
@@ -257,25 +270,32 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
       touchedFiles.length > 0
         ? `${touchedFiles.length} touched file${touchedFiles.length === 1 ? "" : "s"}`
         : "No touched files recorded",
+    fileGroups: groupFilesByExtension(touchedFiles),
     artifactSummaries: prompt.artifacts.map((artifact) => {
-      const fileCount = parseArtifactFiles(artifact).length;
+      const artifactFiles = parseArtifactFiles(artifact);
+      const fileCount = artifactFiles.length;
       const relationCount = relationCounts.get(artifact.id) ?? 0;
       return {
         id: artifact.id,
+        type: artifact.type,
+        role: artifact.role,
         label: `${formatArtifactType(artifact.type)} · ${artifact.role}`,
         summary: artifact.summary,
         fileCountLabel: fileCount > 0 ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : null,
         relationCountLabel:
           relationCount > 0
             ? `${relationCount} link${relationCount === 1 ? "" : "s"}`
-            : null
+            : null,
+        files: artifactFiles.map((f) => f.path)
       };
     }),
     gitSummaries: prompt.gitLinks.map((gitLink) => ({
       id: gitLink.id,
+      commitSha: gitLink.commitSha,
+      survivalState: gitLink.survivalState,
       headline: gitLink.commitSha
-        ? `Commit ${gitLink.commitSha.slice(0, 7)} · ${gitLink.survivalState}`
-        : `Patch ${gitLink.patchIdentity.slice(0, 8)} · ${gitLink.survivalState}`,
+        ? `${gitLink.commitSha.slice(0, 7)}`
+        : `${gitLink.patchIdentity.slice(0, 8)}`,
       detail: `Matched ${formatters.timestamp.format(new Date(gitLink.matchedAt))}`
     }))
   };
@@ -305,4 +325,21 @@ function parseArtifactFiles(artifact: Artifact): FileStat[] {
 
 function formatArtifactType(type: ArtifactType): string {
   return type.replace(/_/g, " ");
+}
+
+function groupFilesByExtension(files: string[]): FileGroupViewModel[] {
+  const groups = new Map<string, string[]>();
+  for (const file of files) {
+    const lastDot = file.lastIndexOf(".");
+    const ext = lastDot >= 0 ? file.slice(lastDot) : "(no ext)";
+    const existing = groups.get(ext);
+    if (existing) {
+      existing.push(file);
+    } else {
+      groups.set(ext, [file]);
+    }
+  }
+  return [...groups.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([extension, groupFiles]) => ({ extension, files: groupFiles.sort() }));
 }
