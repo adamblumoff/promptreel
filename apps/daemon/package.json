@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch --include src --include ../../packages/codex-adapter/src --include ../../packages/domain/src --include ../../packages/storage/src --include ../../packages/git-integration/src --include ../../packages/api-contracts/src src/server.ts",
     "start": "node dist/apps/daemon/src/server.js"
   },
   "dependencies": {

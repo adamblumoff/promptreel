@@ -65,6 +65,12 @@ type SessionToolEvent = {
   output: string | null;
 };
 
+type SessionAgentMessage = {
+  occurredAt: string;
+  phase: string | null;
+  text: string;
+};
+
 type HistoricalRecoveredDiff = {
   diff: CodeDiffResult;
   source: "apply_patch" | "git_diff_output";
@@ -166,6 +172,148 @@ function isAgentMessage(line: SessionLine): string | null {
     return null;
   }
   return String(line.payload.message ?? "");
+}
+
+function collectSessionAgentMessages(window: SessionLine[]): SessionAgentMessage[] {
+  return window.flatMap((line) => {
+    const text = isAgentMessage(line)?.trim();
+    if (!text) {
+      return [];
+    }
+    return [{
+      occurredAt: line.timestamp ?? nowIso(),
+      phase: typeof line.payload?.phase === "string" ? line.payload.phase : null,
+      text,
+    }];
+  });
+}
+
+function extractHistoricalFinalText(window: SessionLine[]): string {
+  const messages = collectSessionAgentMessages(window);
+  const finalAnswerMessages = messages.filter((message) => message.phase === "final_answer");
+  if (finalAnswerMessages.length > 0) {
+    return finalAnswerMessages.map((message) => message.text).join("\n\n").trim();
+  }
+
+  const unphasedMessages = messages.filter((message) => message.phase === null);
+  if (unphasedMessages.length > 0) {
+    return unphasedMessages.map((message) => message.text).join("\n\n").trim();
+  }
+
+  return "";
+}
+
+function extractExplicitPlanText(window: SessionLine[]): string | null {
+  for (let index = window.length - 1; index >= 0; index -= 1) {
+    const line = window[index]!;
+    if (line.type !== "event_msg" || line.payload?.type !== "item_completed") {
+      continue;
+    }
+    const item = line.payload?.item;
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      continue;
+    }
+    const planItem = item as Record<string, unknown>;
+    const itemType = typeof planItem.type === "string" ? planItem.type : null;
+    const itemText = typeof planItem.text === "string" ? planItem.text.trim() : "";
+    if (itemType === "Plan" && itemText) {
+      return itemText;
+    }
+  }
+
+  return null;
+}
+
+function looksLikePlanRequest(promptText: string): boolean {
+  const normalized = promptText.toLowerCase();
+  if (/\b(?:implement|execute|follow)\s+(?:this|the)\s+plan\b/.test(normalized)) {
+    return false;
+  }
+
+  return (
+    /\bplan the\b/.test(normalized)
+    || /\b(?:come up with|create|draft|write|make|give|propose|outline|sketch|brainstorm)\b[\s\S]{0,80}\bplan\b/.test(normalized)
+    || /\bneed\b[\s\S]{0,40}\bplan\b/.test(normalized)
+    || /\bproper\b[\s\S]{0,40}\bmarkdown renderer for plans\b/.test(normalized)
+  );
+}
+
+function extractEmbeddedPromptPlanText(promptText: string): string | null {
+  const match = promptText.match(
+    /^\s*(?:please\s+)?(?:implement|follow|execute)\s+this\s+plan:\s*([\s\S]+)$/i
+  );
+  const planText = match?.[1]?.trim() ?? "";
+  return planText ? planText : null;
+}
+
+function buildPlanMarkdownFromSteps(steps: string[]): string {
+  return [
+    "## Plan",
+    "",
+    ...steps.map((step, index) => `${index + 1}. ${step}`)
+  ].join("\n");
+}
+
+function buildPlanArtifactContent(
+  promptText: string,
+  window: SessionLine[],
+  finalText: string
+): { blobContent: string; parsedPlan: ReturnType<typeof extractPlan> } | null {
+  const embeddedPromptPlanText = extractEmbeddedPromptPlanText(promptText);
+  if (embeddedPromptPlanText) {
+    return {
+      blobContent: embeddedPromptPlanText,
+      parsedPlan: extractPlan(embeddedPromptPlanText),
+    };
+  }
+
+  const explicitPlanText = extractExplicitPlanText(window);
+  if (explicitPlanText) {
+    return {
+      blobContent: explicitPlanText,
+      parsedPlan: extractPlan(explicitPlanText),
+    };
+  }
+
+  if (!finalText || !looksLikePlanRequest(promptText)) {
+    return null;
+  }
+
+  const parsedPlan = extractPlan(finalText);
+  if (!parsedPlan) {
+    return null;
+  }
+
+  return {
+    blobContent: finalText,
+    parsedPlan,
+  };
+}
+
+function buildLivePlanArtifactContent(
+  promptText: string,
+  planSteps: string[]
+): { blobContent: string; parsedPlan: ReturnType<typeof extractPlan> } | null {
+  const embeddedPromptPlanText = extractEmbeddedPromptPlanText(promptText);
+  if (embeddedPromptPlanText) {
+    return {
+      blobContent: embeddedPromptPlanText,
+      parsedPlan: extractPlan(embeddedPromptPlanText),
+    };
+  }
+
+  if (planSteps.length === 0) {
+    return null;
+  }
+
+  const blobContent = buildPlanMarkdownFromSteps(planSteps);
+  return {
+    blobContent,
+    parsedPlan: {
+      explanation: null,
+      steps: planSteps,
+    },
+  };
 }
 
 function normalizeSessionToolEvents(window: SessionLine[]): SessionToolEvent[] {
@@ -437,7 +585,7 @@ function importSessionFiles(
       gitDir: file.normalizedCwd ? join(file.normalizedCwd, ".git") : null,
       source: "auto_discovered"
     });
-    const cursorKey = `codex-session:v3:${file.filePath}`;
+    const cursorKey = `codex-session:v4:${file.filePath}`;
     const cursor = store.getIngestCursor(workspace.id, cursorKey);
     if (cursor && cursor.cursorValue === String(file.mtimeMs)) {
       continue;
@@ -492,11 +640,7 @@ function importSessionFiles(
       const artifacts: ArtifactRecord[] = [];
       const artifactLinks: ArtifactLinkRecord[] = [];
       const toolEvents = normalizeSessionToolEvents(window);
-      const finalText = window
-        .map((line) => isAgentMessage(line))
-        .filter((value): value is string => Boolean(value))
-        .join("\n\n")
-        .trim();
+      const finalText = extractHistoricalFinalText(window);
 
       if (finalText) {
         const blobId = store.writeBlob(workspace.id, finalText);
@@ -512,18 +656,20 @@ function importSessionFiles(
         });
       }
 
-      const plan = finalText ? extractPlan(finalText) : null;
-      if (plan) {
-        const blobId = store.writeBlob(workspace.id, JSON.stringify(plan, null, 2));
+      const planArtifactContent = buildPlanArtifactContent(promptText, window, finalText);
+      if (planArtifactContent) {
+        const blobId = store.writeBlob(workspace.id, planArtifactContent.blobContent);
         artifacts.push({
           id: stableId("artifact", `${promptSeed}:plan`),
           promptEventId: promptId,
           type: "plan",
           role: "secondary",
-          summary: plan.steps[0] ?? "Plan",
+          summary:
+            planArtifactContent.parsedPlan?.steps[0]
+            ?? summarizePrompt(planArtifactContent.blobContent.replace(/^#+\s*/m, "")),
           blobId,
           fileStatsJson: null,
-          metadataJson: JSON.stringify(plan)
+          metadataJson: JSON.stringify(planArtifactContent.parsedPlan ?? { explanation: null, steps: [] })
         });
       }
 
@@ -555,7 +701,7 @@ function importSessionFiles(
         });
       }
 
-      const primaryType = choosePrimaryArtifactType(Boolean(plan), Boolean(recoveredDiff), Boolean(finalText));
+      const primaryType = choosePrimaryArtifactType(Boolean(planArtifactContent), Boolean(recoveredDiff), Boolean(finalText));
       if (primaryType) {
         const primary = artifacts.find((artifact) => artifact.type === primaryType);
         if (primary) {
@@ -690,6 +836,7 @@ export function discoverCodexSessionFilesForRepo(
 
 export class CodexSessionTailer {
   private readonly statusByWorkspace = new Map<string, WorkspaceIngestionStatus>();
+  private readonly recentlyUpdatedSessionIdsByWorkspace = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
   private lastScanAt: string | null = null;
   private scanning = false;
@@ -762,6 +909,10 @@ export class CodexSessionTailer {
     };
   }
 
+  getRecentlyUpdatedSessionIds(workspaceId: string): Set<string> {
+    return new Set(this.recentlyUpdatedSessionIdsByWorkspace.get(workspaceId) ?? []);
+  }
+
   private scanOnce(): void {
     if (this.scanning) {
       return;
@@ -789,6 +940,13 @@ export class CodexSessionTailer {
       const workspaces = this.store.listWorkspaces();
       for (const workspace of workspaces) {
         const workspaceMatches = groupedMatches.get(workspace.id) ?? [];
+        const recentlyUpdatedSessionIds = new Set(
+          workspaceMatches
+            .filter((match) => (match.mtimeMs ?? 0) >= recentCutoff)
+            .map((match) => match.sessionId)
+            .filter((sessionId): sessionId is string => Boolean(sessionId))
+        );
+        this.recentlyUpdatedSessionIdsByWorkspace.set(workspace.id, recentlyUpdatedSessionIds);
         try {
           const result = importSessionFiles(this.store, workspaceMatches, {
             tailOpenPrompt: true
@@ -953,7 +1111,6 @@ export async function runLiveDoctor(
     let turnId: string | null = null;
     let finalText = "";
     let latestDiff = "";
-    let planExplanation: string | null = null;
     let planSteps: string[] = [];
     let completed = false;
     let notificationCount = 0;
@@ -984,7 +1141,6 @@ export async function runLiveDoctor(
         } else if (notification.method === "item/agentMessage/delta") {
           finalText += String(notification.params.delta ?? "");
         } else if (notification.method === "turn/plan/updated") {
-          planExplanation = (notification.params.explanation as string | null) ?? null;
           planSteps = Array.isArray(notification.params.plan)
             ? notification.params.plan.map((step) => String((step as { step: string }).step))
             : [];
@@ -1053,16 +1209,19 @@ export async function runLiveDoctor(
       });
     }
 
-    if (planSteps.length > 0) {
+    const livePlanArtifactContent = buildLivePlanArtifactContent(prompt.promptText, planSteps);
+    if (livePlanArtifactContent) {
       artifacts.push({
         id: createId("artifact"),
         promptEventId,
         type: "plan",
         role: "secondary",
-        summary: planSteps[0] ?? "Plan",
-        blobId: store.writeBlob(repo.id, JSON.stringify({ explanation: planExplanation, steps: planSteps }, null, 2)),
+        summary:
+          livePlanArtifactContent.parsedPlan?.steps[0]
+          ?? summarizePrompt(livePlanArtifactContent.blobContent.replace(/^#+\s*/m, "")),
+        blobId: store.writeBlob(repo.id, livePlanArtifactContent.blobContent),
         fileStatsJson: null,
-        metadataJson: JSON.stringify({ explanation: planExplanation, steps: planSteps })
+        metadataJson: JSON.stringify(livePlanArtifactContent.parsedPlan ?? { explanation: null, steps: [] })
       });
     }
 
@@ -1099,7 +1258,7 @@ export async function runLiveDoctor(
       artifacts.push(artifact);
     }
 
-    const primaryType = choosePrimaryArtifactType(planSteps.length > 0, Boolean(chosenDiff), Boolean(finalText.trim()));
+    const primaryType = choosePrimaryArtifactType(Boolean(livePlanArtifactContent), Boolean(chosenDiff), Boolean(finalText.trim()));
     if (primaryType) {
       const primary = artifacts.find((artifact) => artifact.type === primaryType);
       if (primary) {

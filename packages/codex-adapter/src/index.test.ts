@@ -32,6 +32,181 @@ describe("importCodexSessions", () => {
     expect(detail?.artifacts.some((artifact) => artifact.type === "plan")).toBe(true);
   });
 
+  test("imports explicit plan items as dedicated plan artifacts", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-explicit-plan-");
+    const explicitPlan = [
+      "# Shipping Plan",
+      "",
+      "We should land the importer fix first.",
+      "",
+      "## Plan",
+      "1. Parse explicit plan items from the session log.",
+      "2. Prefer final answers over commentary for fallback extraction."
+    ].join("\n");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "explicit-plan.jsonl",
+      [
+        eventMsg(
+          "2026-03-29T00:10:01.000Z",
+          "user_message",
+          "Come up with a plan for the importer fix."
+        ),
+        agentMessage(
+          "2026-03-29T00:10:02.000Z",
+          "commentary",
+          "I’m checking the importer and storage code first."
+        ),
+        itemCompleted(
+          "2026-03-29T00:10:03.000Z",
+          "Plan",
+          explicitPlan
+        ),
+        agentMessage(
+          "2026-03-29T00:10:04.000Z",
+          "final_answer",
+          "I found the root cause and I’m ready to implement."
+        )
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
+    const detail = store.getPromptDetail(workspace.id, prompt.id)!;
+    const planArtifact = detail.artifacts.find((artifact) => artifact.type === "plan");
+    const finalOutputArtifact = detail.artifacts.find((artifact) => artifact.type === "final_output");
+
+    expect(planArtifact).toBeTruthy();
+    expect(store.readBlob(workspace.id, planArtifact?.blobId ?? "")).toBe(explicitPlan);
+    expect(planArtifact?.metadataJson).toContain("Parse explicit plan items from the session log.");
+    expect(store.readBlob(workspace.id, finalOutputArtifact?.blobId ?? "")).toBe(
+      "I found the root cause and I’m ready to implement."
+    );
+  });
+
+  test("imports embedded user-supplied plans from implementation prompts", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-user-plan-");
+    const embeddedPlan = [
+      "# Importer Plan",
+      "",
+      "## Summary",
+      "",
+      "Use the prompt body as the plan source.",
+      "",
+      "## Plan",
+      "1. Parse the embedded markdown after the implementation prefix.",
+      "2. Keep final output separate from the plan document."
+    ].join("\n");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "user-plan-prompt.jsonl",
+      [
+        eventMsg(
+          "2026-03-29T00:15:01.000Z",
+          "user_message",
+          `PLEASE IMPLEMENT THIS PLAN:\n${embeddedPlan}`
+        ),
+        agentMessage(
+          "2026-03-29T00:15:02.000Z",
+          "final_answer",
+          "Implemented the importer change and ran the tests."
+        )
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
+    const detail = store.getPromptDetail(workspace.id, prompt.id)!;
+    const planArtifact = detail.artifacts.find((artifact) => artifact.type === "plan")!;
+    const finalOutputArtifact = detail.artifacts.find((artifact) => artifact.type === "final_output")!;
+
+    expect(store.readBlob(workspace.id, planArtifact.blobId ?? "")).toBe(embeddedPlan);
+    expect(store.readBlob(workspace.id, finalOutputArtifact.blobId ?? "")).toBe(
+      "Implemented the importer change and ran the tests."
+    );
+    expect(planArtifact.summary).toBe("Parse the embedded markdown after the implementation prefix.");
+  });
+
+  test("uses only final-answer agent messages for imported final output and plan fallback", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-final-answer-");
+    const finalAnswer = [
+      "Here is the plan.",
+      "",
+      "1. Fix the importer.",
+      "2. Re-run the backfill."
+    ].join("\n");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "final-answer-only.jsonl",
+      [
+        eventMsg("2026-03-29T00:20:01.000Z", "user_message", "Write a plan for the importer fix."),
+        agentMessage(
+          "2026-03-29T00:20:02.000Z",
+          "commentary",
+          "I’m reading the adapter, storage, and tests now."
+        ),
+        agentMessage(
+          "2026-03-29T00:20:03.000Z",
+          "commentary",
+          "I’ve got the root cause pinned down."
+        ),
+        agentMessage("2026-03-29T00:20:04.000Z", "final_answer", finalAnswer)
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
+    const detail = store.getPromptDetail(workspace.id, prompt.id)!;
+    const finalOutputArtifact = detail.artifacts.find((artifact) => artifact.type === "final_output")!;
+    const planArtifact = detail.artifacts.find((artifact) => artifact.type === "plan")!;
+
+    expect(store.readBlob(workspace.id, finalOutputArtifact.blobId ?? "")).toBe(finalAnswer);
+    expect(store.readBlob(workspace.id, planArtifact.blobId ?? "")).toBe(finalAnswer);
+    expect(planArtifact.metadataJson).not.toContain("root cause pinned down");
+  });
+
+  test("does not invent plan artifacts for non-plan prompts with bullet lists", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-no-plan-fallback-");
+    const finalAnswer = [
+      "Implemented the importer fix.",
+      "",
+      "1. Added explicit plan-item parsing.",
+      "2. Tightened final output extraction.",
+      "3. Re-ran the tests."
+    ].join("\n");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "no-plan-fallback.jsonl",
+      [
+        eventMsg("2026-03-29T00:30:01.000Z", "user_message", "Fix the importer bug."),
+        agentMessage("2026-03-29T00:30:02.000Z", "final_answer", finalAnswer)
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
+    const detail = store.getPromptDetail(workspace.id, prompt.id)!;
+
+    expect(detail.artifacts.some((artifact) => artifact.type === "plan")).toBe(false);
+    expect(detail.artifacts.some((artifact) => artifact.type === "final_output")).toBe(true);
+  });
+
   test("keeps the terminal prompt open while tailing active sessions", () => {
     const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-open-");
 
@@ -55,6 +230,46 @@ describe("importCodexSessions", () => {
     expect(prompts[0]?.status).toBe("in_progress");
     expect(prompts[0]?.endedAt).toBeNull();
     expect(prompts[0]?.boundaryReason).toBeNull();
+  });
+
+  test("keeps embedded plans clean while tailing active sessions", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-open-user-plan-");
+    const embeddedPlan = [
+      "# Clean Tail Plan",
+      "",
+      "## Plan",
+      "1. Prefer the embedded user markdown.",
+      "2. Ignore live explanation chatter."
+    ].join("\n");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "open-user-plan.jsonl",
+      [
+        eventMsg(
+          "2026-03-29T00:40:01.000Z",
+          "user_message",
+          `PLEASE IMPLEMENT THIS PLAN:\n${embeddedPlan}`
+        ),
+        agentMessage(
+          "2026-03-29T00:40:02.000Z",
+          "commentary",
+          "I’ve got the root cause pinned down and I’m moving into the implementation now."
+        )
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"), { tailOpenPrompt: true });
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
+    const detail = store.getPromptDetail(workspace.id, prompt.id)!;
+    const planArtifact = detail.artifacts.find((artifact) => artifact.type === "plan")!;
+
+    expect(prompt.status).toBe("in_progress");
+    expect(store.readBlob(workspace.id, planArtifact.blobId ?? "")).toBe(embeddedPlan);
+    expect(planArtifact.metadataJson).not.toContain("root cause pinned down");
   });
 
   test("recovers code diffs from successful apply_patch custom tool calls", () => {
@@ -308,6 +523,14 @@ function writeCodexSession(
 
 function eventMsg(timestamp: string, type: "user_message" | "agent_message", message: string): string {
   return `{"timestamp":"${timestamp}","type":"event_msg","payload":{"type":"${type}","message":"${escapeJson(message)}"}}`;
+}
+
+function agentMessage(timestamp: string, phase: string, message: string): string {
+  return `{"timestamp":"${timestamp}","type":"event_msg","payload":{"type":"agent_message","phase":"${phase}","message":"${escapeJson(message)}"}}`;
+}
+
+function itemCompleted(timestamp: string, itemType: string, text: string): string {
+  return `{"timestamp":"${timestamp}","type":"event_msg","payload":{"type":"item_completed","item":{"type":"${itemType}","text":"${escapeJson(text)}"}}}`;
 }
 
 function functionCall(timestamp: string, callId: string, name: string, argumentsJson: string): string {
