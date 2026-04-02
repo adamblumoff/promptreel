@@ -69,7 +69,7 @@ export function App() {
   const [selectedThreadId, setSelectedThreadId] = useState(() => stored(KEYS.thread));
   const [promptsByKey, setPromptsByKey] = useState<Record<string, PromptListItem[]>>({});
   const [health, setHealth] = useState<Health | null>(null);
-  const [filter, setFilter] = useState<"all" | "open" | "imported">("all");
+  const [filter, setFilter] = useState<"all" | "active" | "idle">("all");
   const [expandedPromptId, setExpandedPromptId] = useState<string | null>(null);
   const [detailsById, setDetailsById] = useState<Record<string, PromptDetail>>({});
   const [detailLoadingById, setDetailLoadingById] = useState<Record<string, boolean>>({});
@@ -283,8 +283,8 @@ export function App() {
     () =>
       [...prompts
         .filter((p) => {
-          if (filter === "open") return p.status === "in_progress";
-          if (filter === "imported") return p.status !== "in_progress";
+          if (filter === "active") return p.status === "in_progress";
+          if (filter === "idle") return p.status !== "in_progress";
           return true;
         })
         .map(toPromptRowViewModel)]

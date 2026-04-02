@@ -241,8 +241,8 @@ export function ContentHeader({
   thread: ThreadRowViewModel | null;
   activeTab: ContentTab;
   onTabChange: (t: ContentTab) => void;
-  filter: "all" | "open" | "imported";
-  onFilterChange: (f: "all" | "open" | "imported") => void;
+  filter: "all" | "active" | "idle";
+  onFilterChange: (f: "all" | "active" | "idle") => void;
   promptCount: number;
 }) {
   if (!thread) {
@@ -284,7 +284,7 @@ export function ContentHeader({
 
         {activeTab === "prompts" && (
           <div className="flex items-center rounded-md overflow-hidden border border-brd fadein">
-            {(["all", "open", "imported"] as const).map((f) => (
+            {(["all", "active", "idle"] as const).map((f) => (
               <button
                 key={f}
                 type="button"

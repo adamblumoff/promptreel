@@ -109,8 +109,8 @@ describe("web view models", () => {
     } satisfies PromptListItem);
 
     expect(thread.promptCountLabel).toBe("4 prompts");
-    expect(thread.openLabel).toBe("1 open");
-    expect(row.statusLabel).toBe("Open now");
+    expect(thread.openLabel).toBe("1 active");
+    expect(row.statusLabel).toBe("Active now");
     expect(row.filesLabel).toBe("2 files");
     expect(row.artifactLabel).toBe("4 artifacts");
     expect(row.childLabel).toBe("3 child prompts");

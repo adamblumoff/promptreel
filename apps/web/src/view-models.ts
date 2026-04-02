@@ -141,7 +141,7 @@ export function buildWorkspaceSidebarItems(
       ...workspace,
       isSelected: workspace.id === selectedWorkspaceId,
       threadCountLabel: `${workspace.threadCount} thread${workspace.threadCount === 1 ? "" : "s"}`,
-      openThreadLabel: `${workspace.openThreadCount} open`,
+      openThreadLabel: `${workspace.openThreadCount} active`,
       activityLabel: activityValue
         ? `${sessionCount} session file${sessionCount === 1 ? "" : "s"} · ${formatters.timestamp.format(new Date(activityValue))}`
         : `${sessionCount} session file${sessionCount === 1 ? "" : "s"}`,
@@ -212,7 +212,7 @@ export function toThreadRowViewModel(thread: ThreadSummary): ThreadRowViewModel 
     title: thread.lastPromptSummary || "Untitled thread",
     activityLabel: formatters.timestamp.format(new Date(thread.lastActivityAt)),
     promptCountLabel: `${thread.promptCount} prompt${thread.promptCount === 1 ? "" : "s"}`,
-    openLabel: `${thread.openPromptCount} open`,
+    openLabel: `${thread.openPromptCount} active`,
     tone: thread.status
   };
 }
@@ -220,10 +220,8 @@ export function toThreadRowViewModel(thread: ThreadSummary): ThreadRowViewModel 
 export function toPromptRowViewModel(prompt: PromptListItem): PromptRowViewModel {
   const statusLabel =
     prompt.status === "in_progress"
-      ? "Open now"
-      : prompt.status === "completed"
-        ? "Completed"
-        : "Imported";
+      ? "Active now"
+      : "Idle";
 
   const primaryLabel = prompt.primaryArtifactType
     ? formatArtifactType(prompt.primaryArtifactType)
