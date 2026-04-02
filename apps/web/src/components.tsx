@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import type {
   FileGroupViewModel,
   PromptDetailArtifactViewModel,
@@ -12,6 +12,7 @@ import type {
 import type { Workspace } from "./types";
 import { cn } from "@/lib/utils";
 import { DiffViewer } from "./diff-viewer";
+import { MarkdownPlanDocument, normalizePlanDocument } from "./plan-renderer";
 
 /* ════════════════════════════════════════════════════════════════════════════
    TOP BAR
@@ -21,14 +22,12 @@ export function TopBar({
   workspaces,
   selectedWorkspaceId,
   onSelectWorkspace,
-  workspaceStatus,
   isRescanning,
   onRescan,
 }: {
   workspaces: WorkspaceSidebarItemViewModel[];
   selectedWorkspaceId: string;
   onSelectWorkspace: (id: string) => void;
-  workspaceStatus: WorkspaceStatusViewModel | null;
   isRescanning: boolean;
   onRescan: () => void;
 }) {
@@ -101,13 +100,11 @@ export function TopBar({
                       )}>
                         {ws.slug.slice(0, 2).toUpperCase()}
                       </span>
-                  <div className="min-w-0 flex-1">
+                      <div className="min-w-0 flex-1">
                         <p className="text-[13px] font-medium truncate">{ws.slug}</p>
                         <p className="text-[11px] text-t3 truncate">{ws.pathLabel}</p>
                       </div>
-                      {ws.showActivityDot && (
-                        <span className="shrink-0 size-2 rounded-full bg-green breathe" />
-                      )}
+                      {ws.isGenerating && <span className="shrink-0 size-2 rounded-full bg-green breathe" />}
                     </button>
                   ))}
                   {workspaces.length === 0 && (
@@ -122,15 +119,10 @@ export function TopBar({
 
       {/* Right */}
       <div className="flex items-center gap-3">
-        {workspaceStatus && (
-          <span className={cn(
-            "inline-flex items-center gap-1.5 text-[11px] font-medium",
-            workspaceStatus.mode === "watching" ? "text-green" : "text-t3"
-          )}>
-            {workspaceStatus.mode === "watching" && (
-              <span className="size-1.5 rounded-full bg-green breathe" />
-            )}
-            {workspaceStatus.mode === "watching" ? "Watching" : workspaceStatus.mode}
+        {selected?.isGenerating && (
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-green">
+            <span className="size-1.5 rounded-full bg-green breathe" />
+            Generating
           </span>
         )}
         <button
@@ -198,16 +190,16 @@ export function ThreadBar({
                   : "border-brd bg-white text-t2 hover:bg-gz-1 hover:text-t1 hover:border-brd-strong hoverlift-sm"
               )}
             >
-              <span className="flex size-1.5 shrink-0 items-center justify-center">
-                {thread.showActivityDot && (
-                  <span className={cn(
-                    "size-1.5 rounded-full transition-colors",
-                    active ? "bg-green-400" : "bg-green"
-                  )} />
+              <span
+                className={cn(
+                  "size-1.5 shrink-0 rounded-full transition-colors",
+                  thread.isGenerating
+                    ? active ? "bg-green-400 breathe" : "bg-green"
+                    : "bg-amber"
                 )}
-              </span>
+              />
               <span className="max-w-[200px] truncate">{thread.title}</span>
-              {thread.openPromptCount > 0 && (
+              {thread.isGenerating && thread.openPromptCount > 0 && (
                 <span className={cn(
                   "size-4 rounded-full text-[9px] font-bold flex items-center justify-center transition-colors",
                   active
@@ -233,19 +225,13 @@ export type ContentTab = "prompts" | "health";
 
 export function ContentHeader({
   thread,
-  selectedPromptStatus,
   activeTab,
   onTabChange,
-  filter,
-  onFilterChange,
   promptCount,
 }: {
   thread: ThreadRowViewModel | null;
-  selectedPromptStatus: PromptRowViewModel["status"] | null;
   activeTab: ContentTab;
   onTabChange: (t: ContentTab) => void;
-  filter: "all" | "active" | "idle";
-  onFilterChange: (f: "all" | "active" | "idle") => void;
   promptCount: number;
 }) {
   if (!thread) {
@@ -261,7 +247,7 @@ export function ContentHeader({
       <div>
         <h1 className="text-xl font-semibold text-t1 leading-tight mb-2 tracking-tight">{thread.title}</h1>
         <div className="flex items-center gap-3 flex-wrap">
-          <StatusBadge status={selectedPromptStatus} />
+          <StatusBadge isGenerating={thread.isGenerating} />
           <span className="text-[11px] text-t3 tabular-nums">{thread.promptCountLabel}</span>
           <span className="text-[11px] text-t4">&middot;</span>
           <span className="text-[11px] text-t3 tabular-nums">{thread.activityLabel}</span>
@@ -269,39 +255,19 @@ export function ContentHeader({
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-4 border-b border-brd pb-px">
-        <div className="flex items-center gap-0.5">
-          <TabButton active={activeTab === "prompts"} onClick={() => onTabChange("prompts")}>
-            Prompts
-            <span className={cn(
-              "text-[10px] tabular-nums ml-1 countup",
-              activeTab === "prompts" ? "text-t2" : "text-t4"
-            )}>
-              {promptCount}
-            </span>
-          </TabButton>
-          <TabButton active={activeTab === "health"} onClick={() => onTabChange("health")}>
-            Health
-          </TabButton>
-        </div>
-
-        {activeTab === "prompts" && (
-          <div className="flex items-center rounded-md overflow-hidden border border-brd fadein">
-            {(["all", "active", "idle"] as const).map((f) => (
-              <button
-                key={f}
-                type="button"
-                onClick={() => onFilterChange(f)}
-                className={cn(
-                  "h-6 px-2 text-[10px] font-medium border-0 cursor-pointer transition-all duration-150 uppercase tracking-wider",
-                  filter === f ? "bg-t1 text-white" : "bg-white text-t3 hover:text-t2 hover:bg-gz-1"
-                )}
-              >
-                {f}
-              </button>
-            ))}
-          </div>
-        )}
+      <div className="flex items-center gap-0.5 border-b border-brd pb-px">
+        <TabButton active={activeTab === "prompts"} onClick={() => onTabChange("prompts")}>
+          Prompts
+          <span className={cn(
+            "text-[10px] tabular-nums ml-1 countup",
+            activeTab === "prompts" ? "text-t2" : "text-t4"
+          )}>
+            {promptCount}
+          </span>
+        </TabButton>
+        <TabButton active={activeTab === "health"} onClick={() => onTabChange("health")}>
+          Health
+        </TabButton>
       </div>
     </div>
   );
@@ -324,18 +290,17 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   );
 }
 
-function StatusBadge({ status }: { status: PromptRowViewModel["status"] | null }) {
-  const isActive = status === "in_progress";
-  const label = isActive ? "active" : "idle";
+function StatusBadge({ isGenerating }: { isGenerating: boolean }) {
+  const label = isGenerating ? "generating" : "stopped";
 
   return (
     <span className={cn(
       "inline-flex items-center gap-1.5 h-5 px-2 rounded-full text-[10px] font-semibold uppercase tracking-wider",
-      isActive
+      isGenerating
         ? "bg-green-dim text-green"
-        : "bg-gz-2 text-t3"
+        : "bg-amber-dim text-amber"
     )}>
-      {isActive && <span className="size-1.5 rounded-full bg-green breathe" />}
+      <span className={cn("size-1.5 rounded-full", isGenerating ? "bg-green breathe" : "bg-amber")} />
       {label}
     </span>
   );
@@ -478,8 +443,6 @@ function PromptTimelineItem({
   onSelect: () => void;
   index: number;
 }) {
-  const live = prompt.status === "in_progress";
-
   return (
     <div
       style={{ animationDelay: `${Math.min(index * 50, 400)}ms` }}
@@ -490,10 +453,8 @@ function PromptTimelineItem({
           className={cn(
             "size-4 rounded-full border-[3px] transition-colors",
             isSelected
-              ? "border-white bg-t1 shadow-sm"
-              : live
-                ? "border-white bg-green"
-                : "border-white bg-gz-4"
+              ? "border-t1 bg-t1 shadow-sm"
+              : "border-white bg-gz-4"
           )}
         />
       </div>
@@ -510,9 +471,8 @@ function PromptTimelineItem({
       >
         <div className="flex items-start gap-3 mb-2">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 mb-1.5">
+            <div className="mb-1.5">
               <span className="text-[11px] font-mono text-t4 tabular-nums">{prompt.timestampLabel}</span>
-              {live && <span className="size-1.5 rounded-full bg-green breathe" />}
             </div>
             <p className={cn(
               "text-[13px] leading-snug transition-colors duration-150",
@@ -564,8 +524,6 @@ function PromptReviewPane({
             <span className="font-mono tabular-nums">{prompt.timestampLabel}</span>
             <Dot />
             <span>{prompt.executionPathLabel}</span>
-            <Dot />
-            <span>{prompt.statusLabel}</span>
           </div>
         </div>
       )}
@@ -613,9 +571,23 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
 
   return (
     <div className="px-5 py-5 flex flex-col gap-5">
-      {hasDiffPane && (
+      {detail.featuredPlanArtifact && (
         <div className="slidein">
+          <PlanSection
+            promptEventId={detail.id}
+            blobId={detail.featuredPlanBlobId}
+            blobCache={blobCache ?? {}}
+            blobLoadingById={blobLoadingById ?? {}}
+            fallbackSteps={detail.planTraceSteps}
+            hasPlanArtifact
+          />
+        </div>
+      )}
+
+      {hasDiffPane && (
+        <div className="slidein" style={{ animationDelay: detail.featuredPlanArtifact ? "50ms" : undefined }}>
           <DiffSection
+            promptEventId={detail.id}
             blobIds={detail.diffBlobIds}
             blobCache={blobCache ?? {}}
             blobLoadingById={blobLoadingById ?? {}}
@@ -625,23 +597,23 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
       )}
 
       {detail.artifactSummaries.length > 0 && (
-        <div className="slidein" style={{ animationDelay: "50ms" }}>
+        <div className="slidein" style={{ animationDelay: detail.featuredPlanArtifact ? "100ms" : "50ms" }}>
           <ArtifactSection key={detail.id} artifacts={detail.artifactSummaries} />
         </div>
       )}
 
       {detail.fileGroups.length > 0 && (
-        <div className="slidein" style={{ animationDelay: "100ms" }}>
+        <div className="slidein" style={{ animationDelay: detail.featuredPlanArtifact ? "150ms" : "100ms" }}>
           <Section title="Files changed" badge={detail.touchedFilesLabel}>
             {detail.fileGroups.map((g) => (
-              <FileGroupRow key={g.extension} group={g} />
+              <FileGroupRow key={g.extension} promptEventId={detail.id} group={g} />
             ))}
           </Section>
         </div>
       )}
 
       {detail.gitSummaries.length > 0 && (
-        <div className="slidein" style={{ animationDelay: "150ms" }}>
+        <div className="slidein" style={{ animationDelay: detail.featuredPlanArtifact ? "200ms" : "150ms" }}>
           <Section title="Git">
             {detail.gitSummaries.map((gl) => (
               <GitRow key={gl.id} link={gl} />
@@ -653,13 +625,85 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
   );
 }
 
-function DiffSection({ blobIds, blobCache, blobLoadingById, hasCodeDiffArtifacts }: {
+function PlanSection({
+  promptEventId,
+  blobId,
+  blobCache,
+  blobLoadingById,
+  fallbackSteps = [],
+  hasPlanArtifact,
+}: {
+  promptEventId: string;
+  blobId: string | null;
+  blobCache: Record<string, string>;
+  blobLoadingById: Record<string, boolean>;
+  fallbackSteps?: string[];
+  hasPlanArtifact: boolean;
+}) {
+  const [open, setOpen] = usePromptDisclosureState(promptEventId, "plan");
+  const rawContent = blobId ? blobCache[blobId] : null;
+  const isLoading = blobId ? Boolean(blobLoadingById[blobId]) && rawContent === undefined : false;
+  const normalized = normalizePlanDocument(rawContent, fallbackSteps);
+
+  return (
+    <div>
+      <div className="rounded-xl border border-brd bg-white overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="w-full flex items-center gap-3 px-4 py-3 border-0 bg-gz-1 text-left cursor-pointer hover:bg-gz-2 transition-colors"
+        >
+          <svg
+            width="10" height="10" viewBox="0 0 16 16" fill="currentColor"
+            className={cn("shrink-0 text-t4 transition-transform duration-200", open && "rotate-90")}
+          >
+            <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
+          </svg>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Plan</h3>
+            <p className="text-[12px] text-t2">Rendered markdown plan review</p>
+          </div>
+          {normalized && (
+            <span className="text-[10px] text-t3 bg-white px-1.5 py-px rounded border border-brd">markdown</span>
+          )}
+        </button>
+
+        {open && (
+          <div className="p-3 border-t border-brd slidedown">
+            {isLoading && (
+              <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="spinner text-t4">
+                  <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+                <span className="text-[11px] text-t3">Loading plan...</span>
+              </div>
+            )}
+            {!isLoading && normalized && <MarkdownPlanDocument markdown={normalized.markdown} />}
+            {!isLoading && !normalized && hasPlanArtifact && !blobId && (
+              <div className="rounded-xl border border-brd bg-white px-4 py-3">
+                <p className="text-[11px] text-t3">Plan content not stored for this artifact.</p>
+              </div>
+            )}
+            {!isLoading && !normalized && hasPlanArtifact && blobId && (
+              <div className="rounded-xl border border-brd bg-white px-4 py-3">
+                <p className="text-[11px] text-t3">Failed to load plan content.</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DiffSection({ promptEventId, blobIds, blobCache, blobLoadingById, hasCodeDiffArtifacts }: {
+  promptEventId: string;
   blobIds: string[];
   blobCache: Record<string, string>;
   blobLoadingById: Record<string, boolean>;
   hasCodeDiffArtifacts: boolean;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = usePromptDisclosureState(promptEventId, "diff");
   const anyLoading = blobIds.some((id) => blobLoadingById[id]);
   const combinedPatch = blobIds
     .map((id) => blobCache[id])
@@ -853,8 +897,8 @@ function ChipBadge({ label }: { label: string }) {
 
 /* ─── File group (collapsible with animation) ───────────────────────────── */
 
-function FileGroupRow({ group }: { group: FileGroupViewModel }) {
-  const [open, setOpen] = useState(false);
+function FileGroupRow({ promptEventId, group }: { promptEventId: string; group: FileGroupViewModel }) {
+  const [open, setOpen] = usePromptDisclosureState(promptEventId, `file-group:${group.extension}`);
 
   return (
     <div className="bg-white">
@@ -881,6 +925,47 @@ function FileGroupRow({ group }: { group: FileGroupViewModel }) {
       )}
     </div>
   );
+}
+
+const disclosureStatePrefix = "promptline:prompt-disclosure";
+
+function readDisclosureState(storageKey: string, defaultOpen: boolean): boolean {
+  if (typeof window === "undefined") {
+    return defaultOpen;
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(storageKey);
+    if (rawValue === null) {
+      return defaultOpen;
+    }
+    return rawValue === "1";
+  } catch {
+    return defaultOpen;
+  }
+}
+
+function usePromptDisclosureState(promptEventId: string, sectionId: string, defaultOpen = false) {
+  const storageKey = `${disclosureStatePrefix}:${promptEventId}:${sectionId}`;
+  const [open, setOpen] = useState(() => readDisclosureState(storageKey, defaultOpen));
+
+  useEffect(() => {
+    setOpen(readDisclosureState(storageKey, defaultOpen));
+  }, [storageKey, defaultOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(storageKey, open ? "1" : "0");
+    } catch {
+      // Ignore storage errors and fall back to in-memory state.
+    }
+  }, [open, storageKey]);
+
+  return [open, setOpen] as const;
 }
 
 /* ─── Git row ───────────────────────────────────────────────────────────── */
