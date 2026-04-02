@@ -248,18 +248,7 @@ export function ContentHeader({
   }
 
   return (
-    <div className="flex flex-col gap-4 mb-6 slidein">
-      <div>
-        <h1 className="text-xl font-semibold text-t1 leading-tight mb-2 tracking-tight">{thread.title}</h1>
-        <div className="flex items-center gap-3 flex-wrap">
-          <StatusBadge isGenerating={thread.isGenerating} />
-          <span className="text-[11px] text-t3 tabular-nums">{thread.promptCountLabel}</span>
-          <span className="text-[11px] text-t4">&middot;</span>
-          <span className="text-[11px] text-t3 tabular-nums">{thread.activityLabel}</span>
-          <code className="text-[10px] text-t4 font-mono">{thread.id.slice(-8)}</code>
-        </div>
-      </div>
-
+    <div className="mb-6 slidein">
       <div className="flex items-center gap-0.5 border-b border-brd pb-px">
         <TabButton active={activeTab === "prompts"} onClick={() => onTabChange("prompts")}>
           Prompts
@@ -292,22 +281,6 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
     >
       {children}
     </button>
-  );
-}
-
-function StatusBadge({ isGenerating }: { isGenerating: boolean }) {
-  const label = isGenerating ? "generating" : "stopped";
-
-  return (
-    <span className={cn(
-      "inline-flex items-center gap-1.5 h-5 px-2 rounded-full text-[10px] font-semibold uppercase tracking-wider",
-      isGenerating
-        ? "bg-green-dim text-green"
-        : "bg-amber-dim text-amber"
-    )}>
-      <span className={cn("size-1.5 rounded-full", isGenerating ? "bg-green breathe" : "bg-amber")} />
-      {label}
-    </span>
   );
 }
 
