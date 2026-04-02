@@ -37,17 +37,27 @@ export function TopBar({
   workspaces,
   selectedWorkspaceId,
   onSelectWorkspace,
+  threads,
+  selectedThreadId,
+  onSelectThread,
+  isThreadsLoading,
   isRescanning,
   onRescan,
 }: {
   workspaces: WorkspaceSidebarItemViewModel[];
   selectedWorkspaceId: string;
   onSelectWorkspace: (id: string) => void;
+  threads: ThreadRowViewModel[];
+  selectedThreadId: string;
+  onSelectThread: (id: string) => void;
+  isThreadsLoading: boolean;
   isRescanning: boolean;
   onRescan: () => void;
 }) {
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const selected = workspaces.find((w) => w.id === selectedWorkspaceId);
+  const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
+  const [threadDropdownOpen, setThreadDropdownOpen] = useState(false);
+  const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId);
+  const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
 
   return (
     <header className="sticky top-0 z-50 h-13 flex items-center justify-between px-5 bg-white/80 backdrop-blur-xl border-b border-brd">
@@ -68,24 +78,27 @@ export function TopBar({
         <div className="relative">
           <button
             type="button"
-            onClick={() => setDropdownOpen((o) => !o)}
+            onClick={() => {
+              setWorkspaceDropdownOpen((open) => !open);
+              setThreadDropdownOpen(false);
+            }}
             className="flex items-center gap-2 h-8 px-3 rounded-lg border border-brd bg-white text-t2 text-sm cursor-pointer hover:bg-gz-1 hover:text-t1 hoverlift-sm transition-colors"
           >
-            {selected && (
+            {selectedWorkspace && (
               <span className="size-5 rounded bg-gz-3 text-[9px] font-bold flex items-center justify-center text-t2">
-                {selected.slug.slice(0, 2).toUpperCase()}
+                {selectedWorkspace.slug.slice(0, 2).toUpperCase()}
               </span>
             )}
-            <span className="max-w-[180px] truncate">{selected?.slug ?? "Select workspace"}</span>
-            <ChevronDown className={cn("size-3 opacity-40 transition-transform duration-200", dropdownOpen && "rotate-180")} />
+            <span className="max-w-[180px] truncate">{selectedWorkspace?.slug ?? "Select workspace"}</span>
+            <ChevronDown className={cn("size-3 opacity-40 transition-transform duration-200", workspaceDropdownOpen && "rotate-180")} />
           </button>
 
-          {dropdownOpen && (
+          {workspaceDropdownOpen && (
             <>
               <button
                 type="button"
                 className="fixed inset-0 z-40 bg-transparent border-0 cursor-default"
-                onClick={() => setDropdownOpen(false)}
+                onClick={() => setWorkspaceDropdownOpen(false)}
               />
               <div className="absolute left-0 top-full mt-1 z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-brd-strong bg-white shadow-xl shadow-black/8 popout">
                 <div className="p-1.5">
@@ -93,7 +106,10 @@ export function TopBar({
                     <button
                       key={ws.id}
                       type="button"
-                      onClick={() => { onSelectWorkspace(ws.id); setDropdownOpen(false); }}
+                      onClick={() => {
+                        onSelectWorkspace(ws.id);
+                        setWorkspaceDropdownOpen(false);
+                      }}
                       style={{ animationDelay: `${i * 30}ms` }}
                       className={cn(
                         "w-full flex items-center gap-3 px-3 py-2 rounded-lg border-0 cursor-pointer text-left transition-colors fadein pressable",
@@ -125,11 +141,101 @@ export function TopBar({
             </>
           )}
         </div>
+
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => {
+              if (threads.length === 0 && !isThreadsLoading) return;
+              setThreadDropdownOpen((open) => !open);
+              setWorkspaceDropdownOpen(false);
+            }}
+            className={cn(
+              "flex items-center gap-2 h-8 px-3 rounded-lg border border-brd bg-white text-t2 text-sm cursor-pointer transition-colors",
+              threads.length === 0 && !isThreadsLoading
+                ? "opacity-60"
+                : "hover:bg-gz-1 hover:text-t1 hoverlift-sm"
+            )}
+          >
+            <span
+              className={cn(
+                "size-2 shrink-0 rounded-full",
+                selectedThread?.isGenerating ? "bg-green breathe" : "bg-amber"
+              )}
+            />
+            <span className="max-w-[240px] truncate">
+              {selectedThread?.title ?? (isThreadsLoading ? "Loading threads..." : "No threads")}
+            </span>
+            {selectedThread?.isGenerating && selectedThread.openPromptCount > 0 && (
+              <span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-green-dim text-[9px] font-bold text-green">
+                {selectedThread.openPromptCount}
+              </span>
+            )}
+            <ChevronDown className={cn("size-3 opacity-40 transition-transform duration-200", threadDropdownOpen && "rotate-180")} />
+          </button>
+
+          {threadDropdownOpen && (
+            <>
+              <button
+                type="button"
+                className="fixed inset-0 z-40 bg-transparent border-0 cursor-default"
+                onClick={() => setThreadDropdownOpen(false)}
+              />
+              <div className="absolute left-0 top-full mt-1 z-50 w-[28rem] max-h-80 overflow-y-auto rounded-xl border border-brd-strong bg-white shadow-xl shadow-black/8 popout">
+                <div className="p-1.5">
+                  {threads.map((thread, i) => {
+                    const active = thread.id === selectedThreadId;
+                    return (
+                      <button
+                        key={thread.id}
+                        type="button"
+                        onClick={() => {
+                          onSelectThread(thread.id);
+                          setThreadDropdownOpen(false);
+                        }}
+                        style={{ animationDelay: `${i * 30}ms` }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-3 py-2 rounded-lg border-0 cursor-pointer text-left transition-colors fadein pressable",
+                          active
+                            ? "bg-gz-1 text-t1"
+                            : "bg-transparent text-t2 hover:bg-gz-1 hover:text-t1"
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "mt-0.5 size-2 shrink-0 rounded-full",
+                            thread.isGenerating ? "bg-green breathe" : "bg-amber"
+                          )}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[13px] font-medium">{thread.title}</p>
+                          <p className="text-[11px] text-t3">
+                            {thread.promptCountLabel} · {thread.activityLabel}
+                          </p>
+                        </div>
+                        {thread.isGenerating && thread.openPromptCount > 0 && (
+                          <span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-green-dim text-[9px] font-bold text-green">
+                            {thread.openPromptCount}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                  {threads.length === 0 && (
+                    <p className="py-6 text-center text-[13px] text-t3">
+                      {isThreadsLoading ? "Loading threads..." : "No threads yet."}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Right */}
       <div className="flex items-center gap-3">
-        {selected?.isGenerating && (
+        {selectedWorkspace?.isGenerating && (
           <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-green">
             <span className="size-1.5 rounded-full bg-green breathe" />
             Generating
@@ -146,141 +252,6 @@ export function TopBar({
         </button>
       </div>
     </header>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════════════════
-   THREAD BAR
-   Horizontal scrollable row of thread chips with staggered entrance.
-   ════════════════════════════════════════════════════════════════════════════ */
-
-export function ThreadBar({
-  threads,
-  selectedThreadId,
-  onSelectThread,
-  isLoading,
-}: {
-  threads: ThreadRowViewModel[];
-  selectedThreadId: string;
-  onSelectThread: (id: string) => void;
-  isLoading: boolean;
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  if (threads.length === 0) {
-    return (
-      <div className="border-b border-brd px-5 py-4 fadein">
-        <p className="text-[13px] text-t3">
-          {isLoading ? "Loading threads\u2026" : "No threads yet. Threads appear when sessions produce prompt data."}
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="border-b border-brd">
-      <div ref={scrollRef} className="flex gap-1.5 px-5 py-2.5 overflow-x-auto">
-        {threads.map((thread, i) => {
-          const active = thread.id === selectedThreadId;
-          return (
-            <button
-              key={thread.id}
-              type="button"
-              onClick={() => onSelectThread(thread.id)}
-              style={{ animationDelay: `${i * 40}ms` }}
-              className={cn(
-                "shrink-0 flex items-center gap-2 h-9 px-3.5 rounded-full border text-[12px] cursor-pointer transition-all duration-200 threadslide pressable",
-                active
-                  ? "border-t1 bg-t1 text-white font-medium shadow-sm"
-                  : "border-brd bg-white text-t2 hover:bg-gz-1 hover:text-t1 hover:border-brd-strong hoverlift-sm"
-              )}
-            >
-              <span
-                className={cn(
-                  "size-1.5 shrink-0 rounded-full transition-colors",
-                  thread.isGenerating
-                    ? active ? "bg-green-400 breathe" : "bg-green"
-                    : "bg-amber"
-                )}
-              />
-              <span className="max-w-[200px] truncate">{thread.title}</span>
-              {thread.isGenerating && thread.openPromptCount > 0 && (
-                <span className={cn(
-                  "size-4 rounded-full text-[9px] font-bold flex items-center justify-center transition-colors",
-                  active
-                    ? "bg-white/20 text-white"
-                    : "bg-green-dim text-green"
-                )}>
-                  {thread.openPromptCount}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════════════════
-   CONTENT HEADER
-   ════════════════════════════════════════════════════════════════════════════ */
-
-export type ContentTab = "prompts" | "health";
-
-export function ContentHeader({
-  thread,
-  activeTab,
-  onTabChange,
-  promptCount,
-}: {
-  thread: ThreadRowViewModel | null;
-  activeTab: ContentTab;
-  onTabChange: (t: ContentTab) => void;
-  promptCount: number;
-}) {
-  if (!thread) {
-    return (
-      <div className="py-12 text-center fadein">
-        <p className="text-t3 text-[14px]">Select a thread above to view its prompt history.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="mb-6 slidein">
-      <div className="flex items-center gap-0.5 border-b border-brd pb-px">
-        <TabButton active={activeTab === "prompts"} onClick={() => onTabChange("prompts")}>
-          Prompts
-          <span className={cn(
-            "text-[10px] tabular-nums ml-1 countup",
-            activeTab === "prompts" ? "text-t2" : "text-t4"
-          )}>
-            {promptCount}
-          </span>
-        </TabButton>
-        <TabButton active={activeTab === "health"} onClick={() => onTabChange("health")}>
-          Health
-        </TabButton>
-      </div>
-    </div>
-  );
-}
-
-function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "h-9 px-3 text-[13px] font-medium border-0 border-b-2 cursor-pointer transition-all duration-200 bg-transparent flex items-center",
-        active
-          ? "text-t1 border-b-t1"
-          : "text-t3 border-b-transparent hover:text-t2"
-      )}
-    >
-      {children}
-    </button>
   );
 }
 

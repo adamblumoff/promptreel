@@ -16,17 +16,11 @@ import type {
   Workspace,
 } from "./types";
 import {
-  ContentHeader,
-  HealthView,
   PromptFeed,
-  ThreadBar,
   TopBar,
 } from "./components";
-import type { ContentTab } from "./components";
 import {
   buildWorkspaceSidebarItems,
-  getSelectedWorkspace,
-  getSelectedWorkspaceStatus,
   resolveSelectedThreadId,
   resolveSelectedWorkspaceId,
   sortWorkspacesByActivity,
@@ -77,7 +71,6 @@ export function App() {
   const [isRescanning, setIsRescanning] = useState(false);
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [promptsLoading, setPromptsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<ContentTab>("prompts");
   const [promptOrder, setPromptOrder] = useState<"desc" | "asc">("desc");
   const [transcriptOrder, setTranscriptOrder] = useState<"desc" | "asc">(
     () => (stored(KEYS.transcriptOrder) as "desc" | "asc") || "asc"
@@ -277,10 +270,14 @@ export function App() {
 
   /* ── derived view models ──────────────────────────────────────────────── */
 
-  const selectedWorkspace = getSelectedWorkspace(workspaces, selectedWorkspaceId);
-  const wsStatus = getSelectedWorkspaceStatus(selectedWorkspace, health, selectedWorkspaceId);
   const wsSidebarItems = buildWorkspaceSidebarItems(workspaces, selectedWorkspaceId);
-  const threadRows = threads.map(toThreadRowViewModel);
+  const threadRows = useMemo(
+    () =>
+      [...threads]
+        .sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt))
+        .map(toThreadRowViewModel),
+    [threads]
+  );
   const selThreadRow = threadRows.find((t) => t.id === selectedThreadId) ?? null;
 
   const promptRows = useMemo(
@@ -340,12 +337,11 @@ export function App() {
 
   const handleSelectWorkspace = (id: string) => {
     const next = threadsByWs[id] ?? [];
-    startTransition(() => {
-      setSelectedWorkspaceId(id);
-      setSelectedThreadId(resolveSelectedThreadId(next, ""));
-      setExpandedPromptId(null);
-      setActiveTab("prompts");
-    });
+      startTransition(() => {
+        setSelectedWorkspaceId(id);
+        setSelectedThreadId(resolveSelectedThreadId(next, ""));
+        setExpandedPromptId(null);
+      });
   };
 
   const handleSelectThread = (id: string) => {
@@ -398,46 +394,30 @@ export function App() {
         workspaces={wsSidebarItems}
         selectedWorkspaceId={selectedWorkspaceId}
         onSelectWorkspace={handleSelectWorkspace}
+        threads={threadRows}
+        selectedThreadId={selectedThreadId}
+        onSelectThread={handleSelectThread}
+        isThreadsLoading={threadsLoading}
         isRescanning={isRescanning}
         onRescan={() => void handleRescan()}
       />
 
-      <ThreadBar
-        threads={threadRows}
-        selectedThreadId={selectedThreadId}
-        onSelectThread={handleSelectThread}
-        isLoading={threadsLoading}
-      />
-
       <main className="w-full px-5 py-6">
-        <ContentHeader
-          thread={selThreadRow}
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          promptCount={promptRows.length}
+        <PromptFeed
+          rows={promptRows}
+          details={promptDetails}
+          loadingById={detailLoadingById}
+          errorById={detailErrorById}
+          expandedId={expandedPromptId}
+          onToggle={handleTogglePrompt}
+          promptOrder={promptOrder}
+          onTogglePromptOrder={handleTogglePromptOrder}
+          transcriptOrder={transcriptOrder}
+          onToggleTranscriptOrder={handleToggleTranscriptOrder}
+          isLoading={promptsLoading}
+          blobCache={blobCache}
+          blobLoadingById={blobLoadingById}
         />
-
-        {activeTab === "prompts" && (
-          <PromptFeed
-            rows={promptRows}
-            details={promptDetails}
-            loadingById={detailLoadingById}
-            errorById={detailErrorById}
-            expandedId={expandedPromptId}
-            onToggle={handleTogglePrompt}
-            promptOrder={promptOrder}
-            onTogglePromptOrder={handleTogglePromptOrder}
-            transcriptOrder={transcriptOrder}
-            onToggleTranscriptOrder={handleToggleTranscriptOrder}
-            isLoading={promptsLoading}
-            blobCache={blobCache}
-            blobLoadingById={blobLoadingById}
-          />
-        )}
-
-        {activeTab === "health" && (
-          <HealthView status={wsStatus} />
-        )}
       </main>
     </div>
   );
