@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
-  ArrowDownAZ,
-  ArrowUpAZ,
+  ArrowDown,
+  ArrowUp,
   ChevronDown,
   ChevronRight,
   GitCommitHorizontal,
@@ -324,6 +324,8 @@ export function PromptFeed({
   onToggle,
   promptOrder,
   onTogglePromptOrder,
+  transcriptOrder,
+  onToggleTranscriptOrder,
   isLoading,
   blobCache,
   blobLoadingById,
@@ -336,6 +338,8 @@ export function PromptFeed({
   onToggle: (id: string) => void;
   promptOrder: "desc" | "asc";
   onTogglePromptOrder: () => void;
+  transcriptOrder: "desc" | "asc";
+  onToggleTranscriptOrder: () => void;
   isLoading: boolean;
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
@@ -366,15 +370,11 @@ export function PromptFeed({
           </div>
           <div className="flex items-center gap-2">
             {isLoading && <span className="text-[11px] text-t4">Refreshing…</span>}
-            <button
-              type="button"
-              onClick={onTogglePromptOrder}
-              aria-label="toggle ascending/descending"
-              title="toggle ascending/descending"
-              className="size-7 rounded-md border border-brd bg-white text-t3 flex items-center justify-center transition-colors hover:bg-gz-1 hover:text-t1 pressable"
-            >
-              {promptOrder === "desc" ? <ArrowDownAZ className="size-3.5" aria-hidden="true" /> : <ArrowUpAZ className="size-3.5" aria-hidden="true" />}
-            </button>
+            <OrderToggleButton
+              order={promptOrder}
+              onToggle={onTogglePromptOrder}
+              label="toggle ascending/descending"
+            />
           </div>
         </div>
 
@@ -403,6 +403,8 @@ export function PromptFeed({
             detail={details[expandedId]}
             isLoading={loadingById[expandedId] ?? false}
             error={errorById[expandedId] ?? null}
+            transcriptOrder={transcriptOrder}
+            onToggleTranscriptOrder={onToggleTranscriptOrder}
             blobCache={blobCache}
             blobLoadingById={blobLoadingById}
           />
@@ -519,6 +521,8 @@ function PromptReviewPane({
   detail,
   isLoading,
   error,
+  transcriptOrder,
+  onToggleTranscriptOrder,
   blobCache,
   blobLoadingById,
 }: {
@@ -526,6 +530,8 @@ function PromptReviewPane({
   detail: PromptDetailViewModel | undefined;
   isLoading: boolean;
   error: string | null;
+  transcriptOrder: "desc" | "asc";
+  onToggleTranscriptOrder: () => void;
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
 }) {
@@ -570,7 +576,15 @@ function PromptReviewPane({
           <p className="text-[13px] text-red">{error}</p>
         </div>
       )}
-      {detail && <ExpandedDetail detail={detail} blobCache={blobCache} blobLoadingById={blobLoadingById} />}
+      {detail && (
+        <ExpandedDetail
+          detail={detail}
+          transcriptOrder={transcriptOrder}
+          onToggleTranscriptOrder={onToggleTranscriptOrder}
+          blobCache={blobCache}
+          blobLoadingById={blobLoadingById}
+        />
+      )}
     </div>
   );
 }
@@ -712,8 +726,10 @@ function getPromptClampStyle(collapsed: boolean, collapsedLines: number) {
    EXPANDED DETAIL — sections stagger in
    ════════════════════════════════════════════════════════════════════════════ */
 
-function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
+function ExpandedDetail({ detail, transcriptOrder, onToggleTranscriptOrder, blobCache, blobLoadingById }: {
   detail: PromptDetailViewModel;
+  transcriptOrder: "desc" | "asc";
+  onToggleTranscriptOrder: () => void;
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
 }) {
@@ -729,7 +745,12 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
     <div className="px-5 py-5 flex flex-col gap-5">
       {detail.transcript.length > 0 && (
         <div className="slidein">
-          <TranscriptSection promptEventId={detail.id} transcript={detail.transcript} />
+          <TranscriptSection
+            promptEventId={detail.id}
+            transcript={detail.transcript}
+            transcriptOrder={transcriptOrder}
+            onToggleTranscriptOrder={onToggleTranscriptOrder}
+          />
         </div>
       )}
 
@@ -783,16 +804,28 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
 function TranscriptSection({
   promptEventId,
   transcript,
+  transcriptOrder,
+  onToggleTranscriptOrder,
 }: {
   promptEventId: string;
   transcript: PromptDetailViewModel["transcript"];
+  transcriptOrder: "desc" | "asc";
+  onToggleTranscriptOrder: () => void;
 }) {
   const [open, setOpen] = usePromptDisclosureState(promptEventId, "transcript");
   const [pageSize, setPageSize] = useState<(typeof transcriptPageSizeOptions)[number] | "all">(10);
   const [visibleCount, setVisibleCount] = useState(10);
   const [expandedEntries, setExpandedEntries] = useState<Record<string, boolean>>({});
+  const transcriptEntries = transcript.map((entry, index) => ({
+    entry,
+    entryId: `${entry.kind}:${entry.occurredAt}:${index}`,
+  }));
+  const orderedTranscript =
+    transcriptOrder === "desc"
+      ? [...transcriptEntries].reverse()
+      : transcriptEntries;
   const visibleTranscript =
-    pageSize === "all" ? transcript : transcript.slice(0, visibleCount);
+    pageSize === "all" ? orderedTranscript : orderedTranscript.slice(0, visibleCount);
   const remainingCount = transcript.length - visibleTranscript.length;
   const nextBatchCount =
     pageSize === "all" ? 0 : Math.min(pageSize, Math.max(remainingCount, 0));
@@ -813,6 +846,11 @@ function TranscriptSection({
           <span className="text-[10px] text-t3 bg-white px-1.5 py-px rounded border border-brd">
             {transcript.length} item{transcript.length === 1 ? "" : "s"}
           </span>
+          <OrderToggleButton
+            order={transcriptOrder}
+            onToggle={onToggleTranscriptOrder}
+            label="toggle transcript order"
+          />
           <label className="flex items-center gap-2 text-[10px] text-t3">
             <span className="uppercase tracking-[0.1em] text-t4">Show</span>
             <select
@@ -843,8 +881,7 @@ function TranscriptSection({
           <div className="relative">
             <div className="absolute left-[10px] top-2 bottom-2 w-px bg-brd" />
             <div className="space-y-5">
-              {visibleTranscript.map((entry, index) => {
-                const entryId = `${entry.kind}:${entry.occurredAt}:${index}`;
+              {visibleTranscript.map(({ entry, entryId }, index) => {
                 const isFinalMessage =
                   entry.kind === "message"
                   && isTranscriptMarkdownEntry(entry);
@@ -852,17 +889,22 @@ function TranscriptSection({
                   expandedEntries[entryId]
                   ?? (isFinalMessage ? true : false);
                 return (
-                  <TranscriptEntryRow
-                    key={entryId}
-                    entry={entry}
-                    expanded={entryExpanded}
-                    onToggle={() =>
-                      setExpandedEntries((current) => ({
-                        ...current,
-                        [entryId]: !entryExpanded,
-                      }))
-                    }
-                  />
+                  <div
+                    key={`${transcriptOrder}:${entryId}`}
+                    style={{ animationDelay: `${Math.min(index * 50, 400)}ms` }}
+                    className="cardenter"
+                  >
+                    <TranscriptEntryRow
+                      entry={entry}
+                      expanded={entryExpanded}
+                      onToggle={() =>
+                        setExpandedEntries((current) => ({
+                          ...current,
+                          [entryId]: !entryExpanded,
+                        }))
+                      }
+                    />
+                  </div>
                 );
               })}
             </div>
@@ -1291,6 +1333,33 @@ function Section({
 }
 
 const transcriptPageSizeOptions = [10, 20, 50] as const;
+
+function OrderToggleButton({
+  order,
+  onToggle,
+  label,
+}: {
+  order: "desc" | "asc";
+  onToggle: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggle();
+      }}
+      aria-label={label}
+      title={label}
+      className="size-7 rounded-md border border-brd bg-white text-t3 flex items-center justify-center transition-colors hover:bg-gz-1 hover:text-t1 pressable"
+    >
+      {order === "desc"
+        ? <ArrowDown className="size-4" strokeWidth={1.5} aria-hidden="true" />
+        : <ArrowUp className="size-4" strokeWidth={1.5} aria-hidden="true" />}
+    </button>
+  );
+}
 
 function PromptOutcomeBadge({
   label,

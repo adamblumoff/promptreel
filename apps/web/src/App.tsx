@@ -41,6 +41,7 @@ import {
 const KEYS = {
   workspace: "promptline:selected-workspace-id",
   thread: "promptline:selected-thread-id",
+  transcriptOrder: "promptline:transcript-order",
 } as const;
 
 function stored(key: string): string {
@@ -78,6 +79,9 @@ export function App() {
   const [promptsLoading, setPromptsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<ContentTab>("prompts");
   const [promptOrder, setPromptOrder] = useState<"desc" | "asc">("desc");
+  const [transcriptOrder, setTranscriptOrder] = useState<"desc" | "asc">(
+    () => (stored(KEYS.transcriptOrder) as "desc" | "asc") || "asc"
+  );
   const [visible, setVisible] = useState(() =>
     typeof document === "undefined" ? true : !document.hidden
   );
@@ -97,6 +101,7 @@ export function App() {
   /* persist selections */
   useEffect(() => persist(KEYS.workspace, selectedWorkspaceId), [selectedWorkspaceId]);
   useEffect(() => persist(KEYS.thread, selectedThreadId), [selectedThreadId]);
+  useEffect(() => persist(KEYS.transcriptOrder, transcriptOrder), [transcriptOrder]);
 
   /* ── fetch workspaces ─────────────────────────────────────────────────── */
 
@@ -379,6 +384,12 @@ export function App() {
     });
   };
 
+  const handleToggleTranscriptOrder = () => {
+    startTransition(() => {
+      setTranscriptOrder((current) => (current === "desc" ? "asc" : "desc"));
+    });
+  };
+
   /* ── render ───────────────────────────────────────────────────────────── */
 
   return (
@@ -416,6 +427,8 @@ export function App() {
             onToggle={handleTogglePrompt}
             promptOrder={promptOrder}
             onTogglePromptOrder={handleTogglePromptOrder}
+            transcriptOrder={transcriptOrder}
+            onToggleTranscriptOrder={handleToggleTranscriptOrder}
             isLoading={promptsLoading}
             blobCache={blobCache}
             blobLoadingById={blobLoadingById}
