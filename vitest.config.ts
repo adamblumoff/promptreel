@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 export default defineConfig({
   resolve: {
     alias: {
+      "@": resolve("apps/web/src"),
       "@promptline/domain": resolve("packages/domain/src/index.ts"),
       "@promptline/storage": resolve("packages/storage/src/index.ts"),
       "@promptline/codex-adapter": resolve("packages/codex-adapter/src/index.ts"),
@@ -13,7 +14,7 @@ export default defineConfig({
     }
   },
   test: {
-    include: ["packages/**/*.test.ts", "apps/**/*.test.ts"],
+    include: ["packages/**/*.test.{ts,tsx}", "apps/**/*.test.{ts,tsx}"],
     environment: "node"
   }
 });

@@ -306,6 +306,7 @@ export class PromptlineStore {
         lastActivityAt: thread.lastActivityAt,
         promptCount: thread.promptCount,
         openPromptCount: thread.openPromptCount,
+        isGenerating: false,
         lastPromptSummary: thread.lastPromptSummary,
         status: (thread.openPromptCount > 0 ? "open" : "closed") as ThreadSummary["status"]
       }))

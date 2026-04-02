@@ -1,4 +1,21 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  ArrowDownAZ,
+  ArrowUpAZ,
+  ChevronDown,
+  ChevronRight,
+  FileCode2,
+  FileText,
+  GitBranch,
+  GitCommitHorizontal,
+  GitPullRequest,
+  Info,
+  ListTodo,
+  RefreshCw,
+  Search,
+  Terminal,
+  TestTube2,
+} from "lucide-react";
 import type {
   FileGroupViewModel,
   PromptDetailArtifactViewModel,
@@ -9,7 +26,7 @@ import type {
   WorkspaceSidebarItemViewModel,
   WorkspaceStatusViewModel,
 } from "./view-models";
-import type { Workspace } from "./types";
+import type { ArtifactSubtype, Workspace } from "./types";
 import { cn } from "@/lib/utils";
 import { DiffViewer } from "./diff-viewer";
 import { MarkdownPlanDocument, normalizePlanDocument } from "./plan-renderer";
@@ -62,12 +79,7 @@ export function TopBar({
               </span>
             )}
             <span className="max-w-[180px] truncate">{selected?.slug ?? "Select workspace"}</span>
-            <svg
-              width="12" height="12" viewBox="0 0 16 16" fill="currentColor"
-              className={cn("opacity-40 transition-transform duration-200", dropdownOpen && "rotate-180")}
-            >
-              <path d="M4.427 9.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 9H4.604a.25.25 0 00-.177.427z" />
-            </svg>
+            <ChevronDown className={cn("size-3 opacity-40 transition-transform duration-200", dropdownOpen && "rotate-180")} />
           </button>
 
           {dropdownOpen && (
@@ -132,12 +144,7 @@ export function TopBar({
           title="Rescan sessions"
           className="size-7 flex items-center justify-center rounded-md border-0 bg-transparent text-t3 hover:text-t2 hover:bg-gz-1 disabled:opacity-30 cursor-pointer transition-colors pressable"
         >
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" className={isRescanning ? "spinner" : undefined}>
-            <path
-              d="M13.25 4.75V2.5m0 0H11m2.25 0-2 2A5.5 5.5 0 1 0 13.5 8"
-              stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5"
-            />
-          </svg>
+          <RefreshCw className={cn("size-[13px]", isRescanning && "spinner")} />
         </button>
       </div>
     </header>
@@ -368,25 +375,7 @@ export function PromptFeed({
               title="toggle ascending/descending"
               className="size-7 rounded-md border border-brd bg-white text-t3 flex items-center justify-center transition-colors hover:bg-gz-1 hover:text-t1 pressable"
             >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                {promptOrder === "desc" ? (
-                  <>
-                    <path d="M5 3.25v9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <path d="M2.75 10.5 5 12.75l2.25-2.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M9.5 4.25h3.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <path d="M9.5 8h2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <path d="M9.5 11.75h1.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </>
-                ) : (
-                  <>
-                    <path d="M5 3.25v9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <path d="M2.75 5.5 5 3.25 7.25 5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M9.5 4.25h1.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <path d="M9.5 8h2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <path d="M9.5 11.75h3.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </>
-                )}
-              </svg>
+              {promptOrder === "desc" ? <ArrowDownAZ className="size-3.5" aria-hidden="true" /> : <ArrowUpAZ className="size-3.5" aria-hidden="true" />}
             </button>
           </div>
         </div>
@@ -568,11 +557,26 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
   blobLoadingById?: Record<string, boolean>;
 }) {
   const hasDiffPane = detail.diffBlobIds.length > 0 || detail.hasCodeDiffArtifacts;
+  const leadingSectionCount =
+    (detail.featuredFinalResponseArtifact ? 1 : 0)
+    + (detail.featuredPlanArtifact ? 1 : 0);
 
   return (
     <div className="px-5 py-5 flex flex-col gap-5">
-      {detail.featuredPlanArtifact && (
+      {detail.featuredFinalResponseArtifact && (
         <div className="slidein">
+          <FinalResponseSection
+            promptEventId={detail.id}
+            blobId={detail.featuredFinalResponseBlobId}
+            blobCache={blobCache ?? {}}
+            blobLoadingById={blobLoadingById ?? {}}
+            hasFinalResponseArtifact
+          />
+        </div>
+      )}
+
+      {detail.featuredPlanArtifact && (
+        <div className="slidein" style={{ animationDelay: detail.featuredFinalResponseArtifact ? "50ms" : undefined }}>
           <PlanSection
             promptEventId={detail.id}
             blobId={detail.featuredPlanBlobId}
@@ -585,7 +589,7 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
       )}
 
       {hasDiffPane && (
-        <div className="slidein" style={{ animationDelay: detail.featuredPlanArtifact ? "50ms" : undefined }}>
+        <div className="slidein" style={{ animationDelay: leadingSectionCount > 0 ? `${leadingSectionCount * 50}ms` : undefined }}>
           <DiffSection
             promptEventId={detail.id}
             blobIds={detail.diffBlobIds}
@@ -597,13 +601,13 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
       )}
 
       {detail.artifactSummaries.length > 0 && (
-        <div className="slidein" style={{ animationDelay: detail.featuredPlanArtifact ? "100ms" : "50ms" }}>
+        <div className="slidein" style={{ animationDelay: `${Math.max(leadingSectionCount, hasDiffPane ? leadingSectionCount + 1 : leadingSectionCount) * 50}ms` }}>
           <ArtifactSection key={detail.id} artifacts={detail.artifactSummaries} />
         </div>
       )}
 
       {detail.fileGroups.length > 0 && (
-        <div className="slidein" style={{ animationDelay: detail.featuredPlanArtifact ? "150ms" : "100ms" }}>
+        <div className="slidein" style={{ animationDelay: `${(Math.max(leadingSectionCount, hasDiffPane ? leadingSectionCount + 1 : leadingSectionCount) + 1) * 50}ms` }}>
           <Section title="Files changed" badge={detail.touchedFilesLabel}>
             {detail.fileGroups.map((g) => (
               <FileGroupRow key={g.extension} promptEventId={detail.id} group={g} />
@@ -613,7 +617,7 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
       )}
 
       {detail.gitSummaries.length > 0 && (
-        <div className="slidein" style={{ animationDelay: detail.featuredPlanArtifact ? "200ms" : "150ms" }}>
+        <div className="slidein" style={{ animationDelay: `${(Math.max(leadingSectionCount, hasDiffPane ? leadingSectionCount + 1 : leadingSectionCount) + 2) * 50}ms` }}>
           <Section title="Git">
             {detail.gitSummaries.map((gl) => (
               <GitRow key={gl.id} link={gl} />
@@ -621,6 +625,68 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
           </Section>
         </div>
       )}
+    </div>
+  );
+}
+
+function FinalResponseSection({
+  promptEventId,
+  blobId,
+  blobCache,
+  blobLoadingById,
+  hasFinalResponseArtifact,
+}: {
+  promptEventId: string;
+  blobId: string | null;
+  blobCache: Record<string, string>;
+  blobLoadingById: Record<string, boolean>;
+  hasFinalResponseArtifact: boolean;
+}) {
+  const [open, setOpen] = usePromptDisclosureState(promptEventId, "final-response");
+  const rawContent = blobId ? blobCache[blobId] : null;
+  const isLoading = blobId ? Boolean(blobLoadingById[blobId]) && rawContent === undefined : false;
+  const markdown = rawContent?.trim() ?? "";
+
+  return (
+    <div>
+      <div className="rounded-xl border border-brd bg-white overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="w-full flex items-center gap-3 px-4 py-3 border-0 bg-gz-1 text-left cursor-pointer hover:bg-gz-2 transition-colors"
+        >
+          <ChevronRight className={cn("size-3 shrink-0 text-t4 transition-transform duration-200", open && "rotate-90")} />
+          <div className="min-w-0 flex-1">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Final response</h3>
+            <p className="text-[12px] text-t2">Rendered markdown final response</p>
+          </div>
+          {markdown && (
+            <span className="text-[10px] text-t3 bg-white px-1.5 py-px rounded border border-brd">markdown</span>
+          )}
+        </button>
+
+        {open && (
+          <div className="p-3 border-t border-brd slidedown">
+            {isLoading && (
+              <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
+                <RefreshCw className="size-3.5 spinner text-t4" />
+                <span className="text-[11px] text-t3">Loading final response...</span>
+              </div>
+            )}
+            {!isLoading && markdown && <MarkdownPlanDocument markdown={markdown} />}
+            {!isLoading && !markdown && hasFinalResponseArtifact && !blobId && (
+              <div className="rounded-xl border border-brd bg-white px-4 py-3">
+                <p className="text-[11px] text-t3">Final response content not stored for this artifact.</p>
+              </div>
+            )}
+            {!isLoading && !markdown && hasFinalResponseArtifact && blobId && (
+              <div className="rounded-xl border border-brd bg-white px-4 py-3">
+                <p className="text-[11px] text-t3">Failed to load final response content.</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -653,12 +719,7 @@ function PlanSection({
           onClick={() => setOpen((value) => !value)}
           className="w-full flex items-center gap-3 px-4 py-3 border-0 bg-gz-1 text-left cursor-pointer hover:bg-gz-2 transition-colors"
         >
-          <svg
-            width="10" height="10" viewBox="0 0 16 16" fill="currentColor"
-            className={cn("shrink-0 text-t4 transition-transform duration-200", open && "rotate-90")}
-          >
-            <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
-          </svg>
+          <ChevronRight className={cn("size-3 shrink-0 text-t4 transition-transform duration-200", open && "rotate-90")} />
           <div className="min-w-0 flex-1">
             <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Plan</h3>
             <p className="text-[12px] text-t2">Rendered markdown plan review</p>
@@ -672,9 +733,7 @@ function PlanSection({
           <div className="p-3 border-t border-brd slidedown">
             {isLoading && (
               <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="spinner text-t4">
-                  <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
+                <RefreshCw className="size-3.5 spinner text-t4" />
                 <span className="text-[11px] text-t3">Loading plan...</span>
               </div>
             )}
@@ -718,12 +777,7 @@ function DiffSection({ promptEventId, blobIds, blobCache, blobLoadingById, hasCo
           onClick={() => setOpen((value) => !value)}
           className="w-full flex items-center gap-3 px-4 py-3 border-0 bg-gz-1 text-left cursor-pointer hover:bg-gz-2 transition-colors"
         >
-          <svg
-            width="10" height="10" viewBox="0 0 16 16" fill="currentColor"
-            className={cn("shrink-0 text-t4 transition-transform duration-200", open && "rotate-90")}
-          >
-            <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
-          </svg>
+          <ChevronRight className={cn("size-3 shrink-0 text-t4 transition-transform duration-200", open && "rotate-90")} />
           <div className="min-w-0 flex-1">
             <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Code changes</h3>
             <p className="text-[12px] text-t2">Focused git-style diff review</p>
@@ -737,9 +791,7 @@ function DiffSection({ promptEventId, blobIds, blobCache, blobLoadingById, hasCo
           <div className="p-3 border-t border-brd slidedown">
             {anyLoading && !combinedPatch && (
               <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="spinner text-t4">
-                  <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
+                <RefreshCw className="size-3.5 spinner text-t4" />
                 <span className="text-[11px] text-t3">Loading diff...</span>
               </div>
             )}
@@ -849,22 +901,33 @@ function ArtifactSection({ artifacts }: { artifacts: PromptDetailArtifactViewMod
 /* ─── Artifact row ──────────────────────────────────────────────────────── */
 
 function ArtifactRow({ artifact }: { artifact: PromptDetailArtifactViewModel }) {
-  const iconPaths: Record<string, string> = {
-    code_diff: "M11.28 3.22a.75.75 0 0 1 0 1.06L7.56 8l3.72 3.72a.75.75 0 0 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z",
-    final_output: "M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1.5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-2.75h-.75a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z",
-    plan: "M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9Zm3.75 1a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5h-4.5Zm0 3a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5h-4.5Zm0 3a.75.75 0 0 0 0 1.5h2.5a.75.75 0 0 0 0-1.5h-2.5Z",
-    test_run: "M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM6.72 10.97l5.03-5.03a.75.75 0 0 0-1.06-1.06L6.19 9.38 5.31 8.47a.75.75 0 0 0-1.06 1.06l1.41 1.41a.75.75 0 0 0 1.06.03Z",
-    command_run: "M0 2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25Zm7 3.47-2.22-2.22a.75.75 0 0 0-1.06 1.06l2.75 2.75a.75.75 0 0 0 1.06 0l2.75-2.75a.75.75 0 0 0-1.06-1.06L7 6.22Z",
-    commit_ref: "M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z",
-    pr_ref: "M7.177 3.073 9.573.677A.25.25 0 0 1 10 .854v4.792a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm-2.25.75a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25ZM11 2.5h-1V4h1a1 1 0 0 1 1 1v5.628a2.251 2.251 0 1 0 1.5 0V5A2.5 2.5 0 0 0 11 2.5Zm1 10.25a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0ZM3.75 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z",
-  };
-  const d = iconPaths[artifact.type] ?? "M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z";
+  const iconMap = {
+    code_diff: FileCode2,
+    final_output: FileText,
+    plan: ListTodo,
+    test_run: TestTube2,
+    command_run: Terminal,
+    commit_ref: GitCommitHorizontal,
+    pr_ref: GitPullRequest,
+  } as const;
+  const classificationIconMap: Partial<Record<ArtifactSubtype, typeof Terminal>> = {
+    "verification.test": TestTube2,
+    "verification.typecheck": TestTube2,
+    "execution.search": Search,
+    "execution.git_status": GitBranch,
+    "execution.command": Terminal,
+    "final.answer": FileText,
+    "reference.commit": GitCommitHorizontal,
+    "reference.pr": GitPullRequest,
+  } as const;
+  const Icon =
+    (artifact.subtype ? classificationIconMap[artifact.subtype] : undefined)
+    ?? iconMap[artifact.type]
+    ?? Info;
 
   return (
     <div className="flex items-start gap-3 px-3 py-2.5 bg-white hover:bg-gz-1 transition-colors">
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="shrink-0 text-t4 mt-0.5">
-        <path d={d} />
-      </svg>
+      <Icon className="size-3.5 shrink-0 text-t4 mt-0.5" strokeWidth={1.75} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap mb-0.5">
           <span className="text-[12px] font-medium text-t1">{artifact.label}</span>
@@ -907,12 +970,7 @@ function FileGroupRow({ promptEventId, group }: { promptEventId: string; group: 
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center gap-2 px-3 py-2 border-0 bg-transparent text-left cursor-pointer hover:bg-gz-1 transition-colors"
       >
-        <svg
-          width="10" height="10" viewBox="0 0 16 16" fill="currentColor"
-          className={cn("shrink-0 text-t4 transition-transform duration-200 ease-out", open && "rotate-90")}
-        >
-          <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
-        </svg>
+        <ChevronRight className={cn("size-3 shrink-0 text-t4 transition-transform duration-200 ease-out", open && "rotate-90")} />
         <code className="text-[11px] font-mono font-semibold text-t2">{group.extension}</code>
         <span className="text-[10px] text-t4 ml-auto tabular-nums">{group.files.length}</span>
       </button>
@@ -989,9 +1047,7 @@ function GitRow({ link }: { link: PromptDetailGitLinkViewModel }) {
 
   return (
     <div className="flex items-center gap-3 px-3 py-2 bg-white hover:bg-gz-1 transition-colors">
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="shrink-0 text-t4">
-        <path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z" />
-      </svg>
+      <GitCommitHorizontal className="size-3.5 shrink-0 text-t4" strokeWidth={1.75} />
       <code className="text-[12px] font-mono font-semibold text-t1">{link.headline}</code>
       <span className={cn(
         "inline-flex items-center h-[18px] px-1.5 rounded text-[9px] font-semibold uppercase tracking-wider",

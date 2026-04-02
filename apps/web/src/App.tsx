@@ -24,7 +24,6 @@ import {
 } from "./components";
 import type { ContentTab } from "./components";
 import {
-  buildThreadRowViewModels,
   buildWorkspaceSidebarItems,
   getSelectedWorkspace,
   getSelectedWorkspaceStatus,
@@ -70,7 +69,6 @@ export function App() {
   const [selectedThreadId, setSelectedThreadId] = useState(() => stored(KEYS.thread));
   const [promptsByKey, setPromptsByKey] = useState<Record<string, PromptListItem[]>>({});
   const [health, setHealth] = useState<Health | null>(null);
-  const [filter, setFilter] = useState<"all" | "active" | "idle">("all");
   const [expandedPromptId, setExpandedPromptId] = useState<string | null>(null);
   const [detailsById, setDetailsById] = useState<Record<string, PromptDetail>>({});
   const [detailLoadingById, setDetailLoadingById] = useState<Record<string, boolean>>({});
@@ -277,24 +275,18 @@ export function App() {
   const selectedWorkspace = getSelectedWorkspace(workspaces, selectedWorkspaceId);
   const wsStatus = getSelectedWorkspaceStatus(selectedWorkspace, health, selectedWorkspaceId);
   const wsSidebarItems = buildWorkspaceSidebarItems(workspaces, selectedWorkspaceId);
-  const threadRows = buildThreadRowViewModels(threads);
+  const threadRows = threads.map(toThreadRowViewModel);
   const selThreadRow = threadRows.find((t) => t.id === selectedThreadId) ?? null;
 
   const promptRows = useMemo(
     () =>
-      [...prompts
-        .filter((p) => {
-          if (filter === "active") return p.status === "in_progress";
-          if (filter === "idle") return p.status !== "in_progress";
-          return true;
-        })
-        .map(toPromptRowViewModel)]
+      [...prompts.map(toPromptRowViewModel)]
         .sort((left, right) =>
           promptOrder === "desc"
             ? right.startedAt.localeCompare(left.startedAt)
             : left.startedAt.localeCompare(right.startedAt)
         ),
-    [filter, promptOrder, prompts]
+    [promptOrder, prompts]
   );
 
   const promptDetails = useMemo(
@@ -304,10 +296,6 @@ export function App() {
       ) as Record<string, PromptDetailViewModel>,
     [detailsById]
   );
-  const selectedPromptRow =
-    (expandedPromptId ? promptRows.find((row) => row.id === expandedPromptId) : null)
-    ?? promptRows[0]
-    ?? null;
 
   useEffect(() => {
     if (!selectedWorkspaceId) return;
@@ -327,11 +315,17 @@ export function App() {
     }
   }, [selectedWorkspaceId, promptRows, expandedPromptId, detailsById]);
 
-  // Auto-load diff blobs when a prompt detail becomes available
+  // Auto-load plan and diff blobs when a prompt detail becomes available
   useEffect(() => {
     if (!selectedWorkspaceId || !expandedPromptId) return;
     const detail = promptDetails[expandedPromptId];
     if (!detail) return;
+    if (detail.featuredFinalResponseBlobId) {
+      void loadBlob(selectedWorkspaceId, detail.featuredFinalResponseBlobId);
+    }
+    if (detail.featuredPlanBlobId) {
+      void loadBlob(selectedWorkspaceId, detail.featuredPlanBlobId);
+    }
     for (const blobId of detail.diffBlobIds) {
       void loadBlob(selectedWorkspaceId, blobId);
     }
@@ -393,7 +387,6 @@ export function App() {
         workspaces={wsSidebarItems}
         selectedWorkspaceId={selectedWorkspaceId}
         onSelectWorkspace={handleSelectWorkspace}
-        workspaceStatus={wsStatus}
         isRescanning={isRescanning}
         onRescan={() => void handleRescan()}
       />
@@ -408,11 +401,8 @@ export function App() {
       <main className="w-full px-5 py-6">
         <ContentHeader
           thread={selThreadRow}
-          selectedPromptStatus={selectedPromptRow?.status ?? null}
           activeTab={activeTab}
           onTabChange={setActiveTab}
-          filter={filter}
-          onFilterChange={setFilter}
           promptCount={promptRows.length}
         />
 

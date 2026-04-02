@@ -9,6 +9,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "vitest run",
+    "rebuild:imported-prompts": "tsx scripts/rebuild-imported-prompts.ts",
     "dev:daemon": "pnpm --filter @promptline/daemon dev",
     "dev:cli": "tsx apps/cli/src/index.ts",
     "dev:cli:watch": "pnpm --filter @promptline/cli dev",

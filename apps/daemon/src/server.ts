@@ -47,6 +47,7 @@ export function buildServer() {
         ...workspace,
         threadCount: threads.length,
         openThreadCount: threads.filter((thread) => thread.status === "open").length,
+        isGenerating: (status?.recentlyUpdatedSessionCount ?? 0) > 0,
         lastActivityAt: threads[0]?.lastActivityAt ?? null,
         sessionFileCount: status?.sessionFileCount ?? 0,
         recentlyUpdatedSessionCount: status?.recentlyUpdatedSessionCount ?? 0,
@@ -83,9 +84,15 @@ export function buildServer() {
     ingestion: tailer.scanNow()
   }));
 
-  app.get<{ Querystring: { workspaceId: string } }>("/api/threads", async (request): Promise<ThreadListResponse> => ({
-    threads: store.listThreads(request.query.workspaceId)
-  }));
+  app.get<{ Querystring: { workspaceId: string } }>("/api/threads", async (request): Promise<ThreadListResponse> => {
+    const recentlyUpdatedSessionIds = tailer.getRecentlyUpdatedSessionIds(request.query.workspaceId);
+    return {
+      threads: store.listThreads(request.query.workspaceId).map((thread) => ({
+        ...thread,
+        isGenerating: thread.sessionId ? recentlyUpdatedSessionIds.has(thread.sessionId) : false
+      }))
+    };
+  });
 
   app.get<{ Querystring: { workspaceId?: string; repoId?: string; threadId?: string } }>(
     "/api/prompt-events",

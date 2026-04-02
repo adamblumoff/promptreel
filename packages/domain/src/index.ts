@@ -12,6 +12,26 @@ export type ArtifactType =
   | "command_run"
   | "commit_ref"
   | "pr_ref";
+export type ArtifactFamily =
+  | "final"
+  | "execution"
+  | "tool"
+  | "verification"
+  | "reference"
+  | "unknown";
+export type ArtifactSubtype =
+  | "final.answer"
+  | "execution.command"
+  | "execution.search"
+  | "execution.git_status"
+  | "tool.exec_command"
+  | "tool.apply_patch"
+  | "tool.write_stdin"
+  | "verification.typecheck"
+  | "verification.test"
+  | "reference.commit"
+  | "reference.pr"
+  | "unknown.raw";
 export type ArtifactRole = "primary" | "secondary" | "evidence";
 export type ArtifactRelationType =
   | "implements"
@@ -49,6 +69,7 @@ export interface WorkspaceGroup {
 export interface WorkspaceListItem extends WorkspaceGroup {
   threadCount: number;
   openThreadCount: number;
+  isGenerating: boolean;
   lastActivityAt: string | null;
   sessionFileCount: number;
   recentlyUpdatedSessionCount: number;
@@ -75,6 +96,7 @@ export interface ThreadSummary {
   lastActivityAt: string;
   promptCount: number;
   openPromptCount: number;
+  isGenerating: boolean;
   lastPromptSummary: string;
   status: ThreadStatus;
 }
@@ -128,6 +150,12 @@ export interface ArtifactRecord {
   blobId: string | null;
   fileStatsJson: string | null;
   metadataJson: string | null;
+}
+
+export interface ArtifactClassification {
+  family: ArtifactFamily;
+  subtype: ArtifactSubtype;
+  displayLabel: string;
 }
 
 export interface ArtifactLinkRecord {
@@ -345,7 +373,19 @@ export function choosePrimaryArtifactType(
 }
 
 export function looksLikeTestCommand(commandSummary: string): boolean {
-  return /\b(test|vitest|jest|playwright|pytest|cargo test|go test)\b/i.test(commandSummary);
+  const normalized = commandSummary.trim().toLowerCase();
+  const patterns = [
+    /^(?:pnpm|npm|yarn|bun)\b(?:\s+--[^\s]+(?:=[^\s]+)?|\s+--filter\s+[^\s]+|\s+-[^\s]+)*\s+(?:run\s+)?test\b/,
+    /^(?:pnpm|npm|yarn|bun|npx|pnpx)\b(?:\s+--[^\s]+(?:=[^\s]+)?|\s+--filter\s+[^\s]+|\s+-[^\s]+)*\s+(?:exec\s+)?(?:vitest|jest|playwright(?:\s+test)?|pytest|phpunit|rspec)\b/,
+    /^(?:vitest|jest)\b/,
+    /^playwright(?:\s+test)?\b/,
+    /^(?:pytest|phpunit|rspec)\b/,
+    /^uv\s+run\s+pytest\b/,
+    /^cargo\s+test\b/,
+    /^go\s+test\b/,
+    /^dotnet\s+test\b/,
+  ];
+  return patterns.some((pattern) => pattern.test(normalized));
 }
 
 export function nowIso(): string {

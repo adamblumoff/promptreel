@@ -10,6 +10,7 @@ export type Workspace = {
   source: "auto_discovered" | "manual";
   threadCount: number;
   openThreadCount: number;
+  isGenerating: boolean;
   lastActivityAt: string | null;
   sessionFileCount: number;
   recentlyUpdatedSessionCount: number;
@@ -26,6 +27,7 @@ export type ThreadSummary = {
   lastActivityAt: string;
   promptCount: number;
   openPromptCount: number;
+  isGenerating: boolean;
   lastPromptSummary: string;
   status: "open" | "closed";
 };
@@ -39,6 +41,26 @@ export type ArtifactType =
   | "command_run"
   | "commit_ref"
   | "pr_ref";
+export type ArtifactFamily =
+  | "final"
+  | "execution"
+  | "tool"
+  | "verification"
+  | "reference"
+  | "unknown";
+export type ArtifactSubtype =
+  | "final.answer"
+  | "execution.command"
+  | "execution.search"
+  | "execution.git_status"
+  | "tool.exec_command"
+  | "tool.apply_patch"
+  | "tool.write_stdin"
+  | "verification.typecheck"
+  | "verification.test"
+  | "reference.commit"
+  | "reference.pr"
+  | "unknown.raw";
 export type ArtifactRole = "primary" | "secondary" | "evidence";
 export type ArtifactRelationType =
   | "implements"
@@ -88,6 +110,12 @@ export type Artifact = {
   blobId: string | null;
   fileStatsJson: string | null;
   metadataJson: string | null;
+};
+
+export type ArtifactClassification = {
+  family: ArtifactFamily;
+  subtype: ArtifactSubtype;
+  displayLabel: string;
 };
 
 export type ArtifactLink = {

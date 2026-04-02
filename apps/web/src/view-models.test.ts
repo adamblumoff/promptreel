@@ -1,7 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { Health, PromptDetail, PromptListItem, Workspace } from "./types";
 import {
-  buildThreadRowViewModels,
   buildWorkspaceSidebarItems,
   getSelectedWorkspaceStatus,
   resolveSelectedThreadId,
@@ -26,6 +25,7 @@ const workspaces: Workspace[] = [
     source: "auto_discovered",
     threadCount: 2,
     openThreadCount: 1,
+    isGenerating: true,
     sessionFileCount: 2,
     recentlyUpdatedSessionCount: 1,
     mode: "watching"
@@ -43,6 +43,7 @@ const workspaces: Workspace[] = [
     source: "auto_discovered",
     threadCount: 3,
     openThreadCount: 0,
+    isGenerating: false,
     sessionFileCount: 3,
     recentlyUpdatedSessionCount: 2,
     mode: "idle"
@@ -64,14 +65,14 @@ describe("web view models", () => {
     expect(items[0]).toMatchObject({
       id: "workspace-a",
       isSelected: true,
-      showActivityDot: true,
+      isGenerating: false,
       threadCountLabel: "3 threads",
       statusTone: "idle",
       gitBadgeLabel: "git"
     });
     expect(items[1]).toMatchObject({
       id: "workspace-z",
-      showActivityDot: false,
+      isGenerating: true,
     });
   });
 
@@ -86,6 +87,7 @@ describe("web view models", () => {
       lastActivityAt: "2026-03-30T14:22:00.000Z",
       promptCount: 4,
       openPromptCount: 1,
+      isGenerating: true,
       lastPromptSummary: "Refactor the stream layout.",
       status: "open"
     });
@@ -115,107 +117,45 @@ describe("web view models", () => {
     } satisfies PromptListItem);
 
     expect(thread.promptCountLabel).toBe("4 prompts");
-    expect(thread.openLabel).toBe("1 active");
-    expect(row.statusLabel).toBe("Active now");
+    expect(thread.openLabel).toBe("Generating");
+    expect(row.statusLabel).toBe("Generating");
     expect(row.filesLabel).toBe("2 files");
     expect(row.artifactLabel).toBe("4 artifacts");
     expect(row.childLabel).toBe("3 child prompts");
     expect(row.primaryLabel).toBe("code diff");
     expect(row.executionPathLabel).toBe("C:/work/alpha");
-    expect(thread.showActivityDot).toBe(false);
   });
 
-  test("marks only active threads, or the most recent thread when none are active", () => {
-    const now = new Date().toISOString();
-    const justBeforeNow = new Date(Date.now() - 60_000).toISOString();
-    const staleTime = "2026-03-30T14:24:00.000Z";
+  test("labels final output prompts as final response", () => {
+    const row = toPromptRowViewModel({
+      id: "prompt-final",
+      workspaceId: "workspace-a",
+      executionPath: "C:/work/alpha",
+      sessionId: "session-1",
+      threadId: "thread-1",
+      parentPromptEventId: null,
+      startedAt: "2026-03-30T14:22:00.000Z",
+      endedAt: "2026-03-30T14:24:00.000Z",
+      boundaryReason: "turn_completed",
+      status: "completed",
+      promptSummary: "Summarize what changed.",
+      primaryArtifactId: "artifact-final",
+      baselineSnapshotId: null,
+      endSnapshotId: null,
+      filesTouched: [],
+      filesTouchedCount: 0,
+      childCount: 0,
+      artifactCount: 1,
+      primaryArtifactType: "final_output",
+      primaryArtifactSummary: "Wrapped up the work.",
+      hasCodeDiff: false,
+      isLiveDerived: false
+    } satisfies PromptListItem);
 
-    const activeThreads = buildThreadRowViewModels([
-      {
-        id: "thread-1",
-        workspaceId: "workspace-a",
-        sessionId: "session-1",
-        threadId: "thread-1",
-        folderPath: "C:/work/alpha",
-        startedAt: "2026-03-30T14:00:00.000Z",
-        lastActivityAt: now,
-        promptCount: 4,
-        openPromptCount: 1,
-        lastPromptSummary: "Still running",
-        status: "open"
-      },
-      {
-        id: "thread-2",
-        workspaceId: "workspace-a",
-        sessionId: "session-2",
-        threadId: "thread-2",
-        folderPath: "C:/work/alpha",
-        startedAt: "2026-03-30T14:10:00.000Z",
-        lastActivityAt: staleTime,
-        promptCount: 2,
-        openPromptCount: 0,
-        lastPromptSummary: "Wrapped up",
-        status: "closed"
-      }
-    ]);
-    const idleThreads = buildThreadRowViewModels([
-      {
-        id: "thread-3",
-        workspaceId: "workspace-a",
-        sessionId: "session-3",
-        threadId: "thread-3",
-        folderPath: "C:/work/alpha",
-        startedAt: "2026-03-30T14:15:00.000Z",
-        lastActivityAt: justBeforeNow,
-        promptCount: 3,
-        openPromptCount: 0,
-        lastPromptSummary: "Most recent",
-        status: "closed"
-      },
-      {
-        id: "thread-4",
-        workspaceId: "workspace-a",
-        sessionId: "session-4",
-        threadId: "thread-4",
-        folderPath: "C:/work/alpha",
-        startedAt: "2026-03-30T14:05:00.000Z",
-        lastActivityAt: staleTime,
-        promptCount: 1,
-        openPromptCount: 0,
-        lastPromptSummary: "Older",
-        status: "closed"
-      }
-    ]);
-
-    expect(activeThreads.find((thread) => thread.id === "thread-1")?.showActivityDot).toBe(true);
-    expect(activeThreads.find((thread) => thread.id === "thread-2")?.showActivityDot).toBe(false);
-    expect(idleThreads.find((thread) => thread.id === "thread-3")?.showActivityDot).toBe(true);
-    expect(idleThreads.find((thread) => thread.id === "thread-4")?.showActivityDot).toBe(false);
+    expect(row.primaryLabel).toBe("final response");
   });
 
-  test("shows only recently active workspaces when stale open counts exist", () => {
-    const items = buildWorkspaceSidebarItems([
-      {
-        ...workspaces[0],
-        id: "workspace-stale",
-        slug: "stale",
-        lastActivityAt: "2026-03-20T17:12:48.014Z",
-        openThreadCount: 3,
-      },
-      {
-        ...workspaces[1],
-        id: "workspace-fresh",
-        slug: "fresh",
-        lastActivityAt: new Date().toISOString(),
-        openThreadCount: 1,
-      }
-    ], "workspace-fresh");
-
-    expect(items.find((item) => item.id === "workspace-stale")?.showActivityDot).toBe(false);
-    expect(items.find((item) => item.id === "workspace-fresh")?.showActivityDot).toBe(true);
-  });
-
-  test("shapes prompt detail into touched files, artifact summaries, and git summaries", () => {
+  test("shapes prompt detail into featured response, plan, artifact summaries, and git summaries", () => {
     const detail = toPromptDetailViewModel({
       id: "prompt-1",
       workspaceId: "workspace-a",
@@ -233,6 +173,22 @@ describe("web view models", () => {
       baselineSnapshotId: null,
       endSnapshotId: null,
       artifacts: [
+        {
+          id: "artifact-final",
+          promptEventId: "prompt-1",
+          type: "final_output",
+          role: "secondary",
+          summary: "Wrapped up the implementation.",
+          blobId: "blob-final",
+          fileStatsJson: null,
+          metadataJson: JSON.stringify({
+            classification: {
+              family: "final",
+              subtype: "final.answer",
+              displayLabel: "answer"
+            }
+          })
+        },
         {
           id: "artifact-diff",
           promptEventId: "prompt-1",
@@ -255,6 +211,22 @@ describe("web view models", () => {
           blobId: "blob-2",
           fileStatsJson: null,
           metadataJson: null
+        },
+        {
+          id: "artifact-search",
+          promptEventId: "prompt-1",
+          type: "command_run",
+          role: "evidence",
+          summary: "rg artifact packages",
+          blobId: "blob-3",
+          fileStatsJson: null,
+          metadataJson: JSON.stringify({
+            classification: {
+              family: "execution",
+              subtype: "execution.search",
+              displayLabel: "search"
+            }
+          })
         }
       ],
       artifactLinks: [
@@ -281,12 +253,94 @@ describe("web view models", () => {
     expect(detail.executionPathLabel).toBe("C:/work/alpha");
     expect(detail.touchedFiles).toEqual(["src/App.tsx", "src/components.tsx"]);
     expect(detail.touchedFilesLabel).toBe("2 touched files");
-    expect(detail.artifactSummaries[0]).toMatchObject({
-      label: "code diff · primary",
-      fileCountLabel: "2 files"
+    expect(detail.featuredFinalResponseArtifact).toBeNull();
+    expect(detail.featuredFinalResponseBlobId).toBeNull();
+    expect(detail.featuredPlanArtifact).toMatchObject({
+      id: "artifact-plan",
+      label: "plan",
+      blobId: "blob-2"
     });
-    expect(detail.artifactSummaries[1]?.relationCountLabel).toBe("1 link");
+    expect(detail.featuredPlanBlobId).toBe("blob-2");
+    expect(detail.artifactSummaries).toHaveLength(2);
+    expect(detail.artifactSummaries[0]).toMatchObject({
+      label: "code diff",
+      fileCountLabel: "2 files",
+      relationCountLabel: "1 link"
+    });
+    expect(detail.artifactSummaries[1]).toMatchObject({
+      label: "search",
+      family: "execution",
+      subtype: "execution.search",
+    });
     expect(detail.gitSummaries[0]?.headline).toContain("Commit abcdef1");
+  });
+
+  test("features final response when there is no plan artifact", () => {
+    const detail = toPromptDetailViewModel({
+      id: "prompt-final",
+      workspaceId: "workspace-a",
+      executionPath: "C:/work/alpha",
+      sessionId: "session-1",
+      threadId: "thread-1",
+      parentPromptEventId: null,
+      startedAt: "2026-03-30T14:22:00.000Z",
+      endedAt: "2026-03-30T14:24:00.000Z",
+      boundaryReason: "turn_completed",
+      status: "completed",
+      promptText: "Summarize the work.",
+      promptSummary: "Summarize the work.",
+      primaryArtifactId: "artifact-final",
+      baselineSnapshotId: null,
+      endSnapshotId: null,
+      artifacts: [
+        {
+          id: "artifact-final",
+          promptEventId: "prompt-final",
+          type: "final_output",
+          role: "primary",
+          summary: "Wrapped up the implementation.",
+          blobId: "blob-final",
+          fileStatsJson: null,
+          metadataJson: JSON.stringify({
+            classification: {
+              family: "final",
+              subtype: "final.answer",
+              displayLabel: "answer"
+            }
+          })
+        },
+        {
+          id: "artifact-command",
+          promptEventId: "prompt-final",
+          type: "command_run",
+          role: "evidence",
+          summary: "pnpm test",
+          blobId: "blob-command",
+          fileStatsJson: null,
+          metadataJson: JSON.stringify({
+            classification: {
+              family: "verification",
+              subtype: "verification.test",
+              displayLabel: "test"
+            }
+          })
+        }
+      ],
+      artifactLinks: [],
+      gitLinks: []
+    } satisfies PromptDetail);
+
+    expect(detail.featuredFinalResponseArtifact).toMatchObject({
+      id: "artifact-final",
+      label: "final response",
+      blobId: "blob-final"
+    });
+    expect(detail.featuredFinalResponseBlobId).toBe("blob-final");
+    expect(detail.artifactSummaries).toHaveLength(1);
+    expect(detail.artifactSummaries[0]).toMatchObject({
+      id: "artifact-command",
+      label: "test"
+    });
   });
 
   test("derives watcher status labels from health and handles missing status", () => {

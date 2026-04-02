@@ -392,11 +392,13 @@ index 1111111..2222222 100644
     const prompt = store.listPrompts(workspace.id)[0]!;
     const detail = store.getPromptDetail(workspace.id, prompt.id)!;
     const diffArtifact = detail.artifacts.find((artifact) => artifact.type === "code_diff")!;
+    const commandArtifacts = detail.artifacts.filter((artifact) => artifact.type === "command_run");
 
     expect(prompt.hasCodeDiff).toBe(true);
     expect(prompt.filesTouched).toEqual(["src/app.ts"]);
     expect(diffArtifact.metadataJson).toContain("\"source\":\"git_diff_output\"");
     expect(store.readBlob(workspace.id, diffArtifact.blobId ?? "")).toBe(gitDiffOutput);
+    expect(commandArtifacts).toHaveLength(0);
   });
 
   test("leaves prompts without patch or git diff data unchanged", () => {
@@ -426,6 +428,139 @@ index 1111111..2222222 100644
 
     expect(prompt.hasCodeDiff).toBe(false);
     expect(prompt.filesTouched).toEqual([]);
+  });
+
+  test("creates one command artifact per meaningful command and skips aggregate output artifacts", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-command-artifacts-");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "command-artifacts.jsonl",
+      [
+        eventMsg("2026-03-29T04:30:01.000Z", "user_message", "Run the tests and keep going."),
+        functionCall(
+          "2026-03-29T04:30:02.000Z",
+          "call_test",
+          "exec_command",
+          "{\"cmd\":\"pnpm test\"}"
+        ),
+        functionCallOutput("2026-03-29T04:30:03.000Z", "call_test", "Tests passed."),
+        functionCall(
+          "2026-03-29T04:30:04.000Z",
+          "call_write",
+          "write_stdin",
+          "{\"session_id\":1,\"chars\":\"q\"}"
+        ),
+        functionCallOutput("2026-03-29T04:30:05.000Z", "call_write", "ok"),
+        eventMsg("2026-03-29T04:30:06.000Z", "agent_message", "Everything passed.")
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
+    const detail = store.getPromptDetail(workspace.id, prompt.id)!;
+    const testArtifacts = detail.artifacts.filter((artifact) => artifact.type === "test_run");
+    const testMetadata = JSON.parse(testArtifacts[0]?.metadataJson ?? "{}") as {
+      classification?: { family?: string; subtype?: string; displayLabel?: string };
+    };
+
+    expect(testArtifacts).toHaveLength(1);
+    expect(testArtifacts[0]?.summary).toBe("pnpm test");
+    expect(store.readBlob(workspace.id, testArtifacts[0]?.blobId ?? "")).toBe("pnpm test\n\nTests passed.");
+    expect(testMetadata.classification).toEqual({
+      family: "verification",
+      subtype: "verification.test",
+      displayLabel: "test",
+    });
+    expect(detail.artifacts.some((artifact) => artifact.summary === "Function call output")).toBe(false);
+    expect(detail.artifacts.some((artifact) => artifact.summary === "write_stdin")).toBe(false);
+  });
+
+  test("classifies non-test commands into simple execution families", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-command-classification-");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "command-classification.jsonl",
+      [
+        eventMsg("2026-03-29T04:45:01.000Z", "user_message", "Inspect the repo."),
+        functionCall(
+          "2026-03-29T04:45:02.000Z",
+          "call_search",
+          "exec_command",
+          "{\"cmd\":\"rg artifact packages\"}"
+        ),
+        functionCallOutput("2026-03-29T04:45:03.000Z", "call_search", "packages/domain/src/index.ts"),
+        functionCall(
+          "2026-03-29T04:45:04.000Z",
+          "call_status",
+          "exec_command",
+          "{\"cmd\":\"git status --short\"}"
+        ),
+        functionCallOutput("2026-03-29T04:45:05.000Z", "call_status", " M packages/codex-adapter/src/index.ts"),
+        eventMsg("2026-03-29T04:45:06.000Z", "agent_message", "Done.")
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
+    const detail = store.getPromptDetail(workspace.id, prompt.id)!;
+    const searchArtifact = detail.artifacts.find((artifact) => artifact.summary === "rg artifact packages")!;
+    const statusArtifact = detail.artifacts.find((artifact) => artifact.summary === "git status --short")!;
+
+    expect(JSON.parse(searchArtifact.metadataJson ?? "{}").classification).toEqual({
+      family: "execution",
+      subtype: "execution.search",
+      displayLabel: "search",
+    });
+    expect(JSON.parse(statusArtifact.metadataJson ?? "{}").classification).toEqual({
+      family: "execution",
+      subtype: "execution.git_status",
+      displayLabel: "git status",
+    });
+  });
+
+  test("does not misclassify filenames that contain test runner words as test runs", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-no-filename-test-match-");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "no-filename-test-match.jsonl",
+      [
+        eventMsg("2026-03-29T04:50:01.000Z", "user_message", "Inspect the files."),
+        functionCall(
+          "2026-03-29T04:50:02.000Z",
+          "call_diff",
+          "exec_command",
+          "{\"cmd\":\"git diff -- packages/domain/src/index.test.ts\"}"
+        ),
+        functionCallOutput("2026-03-29T04:50:03.000Z", "call_diff", "diff --git a/packages/domain/src/index.test.ts b/packages/domain/src/index.test.ts"),
+        functionCall(
+          "2026-03-29T04:50:04.000Z",
+          "call_read",
+          "exec_command",
+          "{\"cmd\":\"Get-Content vitest.config.ts\"}"
+        ),
+        functionCallOutput("2026-03-29T04:50:05.000Z", "call_read", "import { defineConfig } from 'vitest/config';"),
+        eventMsg("2026-03-29T04:50:06.000Z", "agent_message", "Done.")
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
+    const detail = store.getPromptDetail(workspace.id, prompt.id)!;
+
+    expect(detail.artifacts.some((artifact) => artifact.type === "test_run")).toBe(false);
+    expect(detail.artifacts.some((artifact) => artifact.summary === "Get-Content vitest.config.ts")).toBe(true);
   });
 
   test("keeps recovered diffs on open tailed prompts", () => {

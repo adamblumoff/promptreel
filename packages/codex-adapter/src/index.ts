@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
 import WebSocket from "ws";
 import type {
+  ArtifactClassification,
   ArtifactLinkRecord,
   ArtifactRecord,
   CodeDiffResult,
@@ -481,6 +482,123 @@ function summarizeToolEvent(event: SessionToolEvent): string {
   return `${event.name} ${event.arguments ?? event.input ?? ""}`.trim();
 }
 
+function buildCommandArtifactBlobContent(command: string, output: string | null): string {
+  const normalizedCommand = command.trim();
+  const normalizedOutput = output?.trim() ?? "";
+  if (!normalizedOutput) {
+    return normalizedCommand;
+  }
+  return `${normalizedCommand}\n\n${normalizedOutput}`;
+}
+
+function classifyCommandExecution(command: string): ArtifactClassification {
+  const normalized = command.trim();
+  if (looksLikeTestCommand(normalized)) {
+    return {
+      family: "verification",
+      subtype: "verification.test",
+      displayLabel: "test",
+    };
+  }
+  if (/\b(?:tsc|typecheck)\b/i.test(normalized)) {
+    return {
+      family: "verification",
+      subtype: "verification.typecheck",
+      displayLabel: "typecheck",
+    };
+  }
+  if (/\bgit\s+status\b/i.test(normalized)) {
+    return {
+      family: "execution",
+      subtype: "execution.git_status",
+      displayLabel: "git status",
+    };
+  }
+  if (/\b(?:rg|grep|findstr|fd)\b/i.test(normalized)) {
+    return {
+      family: "execution",
+      subtype: "execution.search",
+      displayLabel: "search",
+    };
+  }
+  return {
+    family: "execution",
+    subtype: "execution.command",
+    displayLabel: "command",
+  };
+}
+
+function buildArtifactMetadata(
+  classification: ArtifactClassification,
+  extra: Record<string, unknown> = {}
+): string {
+  return JSON.stringify({
+    classification,
+    ...extra,
+  });
+}
+
+function createHistoricalCommandArtifacts(
+  store: PromptlineStore,
+  workspaceId: string,
+  promptId: string,
+  promptSeed: string,
+  toolEvents: SessionToolEvent[]
+): ArtifactRecord[] {
+  const commandEvents = toolEvents.filter((event) => {
+    if (event.kind !== "function_call") {
+      return false;
+    }
+    const command = extractCommandText(event);
+    if (!command?.trim()) {
+      return false;
+    }
+    return !isGitDiffCommandEvent(event);
+  });
+
+  return commandEvents.map((event, index) => {
+    const command = extractCommandText(event)?.trim() ?? summarizeToolEvent(event);
+    const classification = classifyCommandExecution(command);
+    return {
+      id: stableId("artifact", `${promptSeed}:command:${index}`),
+      promptEventId: promptId,
+      type: looksLikeTestCommand(command) ? "test_run" : "command_run",
+      role: "evidence",
+      summary: summarizePrompt(command),
+      blobId: store.writeBlob(workspaceId, buildCommandArtifactBlobContent(command, event.output)),
+      fileStatsJson: null,
+      metadataJson: buildArtifactMetadata(classification, {
+        name: event.name,
+        command,
+        hasOutput: Boolean(event.output?.trim()),
+      })
+    };
+  });
+}
+
+function createLiveCommandArtifact(
+  store: PromptlineStore,
+  workspaceId: string,
+  promptEventId: string,
+  item: Record<string, unknown>
+): ArtifactRecord | null {
+  const command = typeof item.command === "string" ? item.command.trim() : "";
+  if (!command) {
+    return null;
+  }
+  const classification = classifyCommandExecution(command);
+  return {
+    id: createId("artifact"),
+    promptEventId,
+    type: looksLikeTestCommand(command) ? "test_run" : "command_run",
+    role: "evidence",
+    summary: summarizePrompt(command),
+    blobId: store.writeBlob(workspaceId, command),
+    fileStatsJson: null,
+    metadataJson: buildArtifactMetadata(classification, item)
+  };
+}
+
 function normalizeRecoveredDiffPaths(diff: CodeDiffResult, repoPath: string | null): CodeDiffResult {
   return {
     ...diff,
@@ -585,7 +703,7 @@ function importSessionFiles(
       gitDir: file.normalizedCwd ? join(file.normalizedCwd, ".git") : null,
       source: "auto_discovered"
     });
-    const cursorKey = `codex-session:v4:${file.filePath}`;
+    const cursorKey = `codex-session:v5:${file.filePath}`;
     const cursor = store.getIngestCursor(workspace.id, cursorKey);
     if (cursor && cursor.cursorValue === String(file.mtimeMs)) {
       continue;
@@ -652,7 +770,11 @@ function importSessionFiles(
           summary: summarizePrompt(finalText),
           blobId,
           fileStatsJson: null,
-          metadataJson: null
+          metadataJson: buildArtifactMetadata({
+            family: "final",
+            subtype: "final.answer",
+            displayLabel: "answer",
+          })
         });
       }
 
@@ -685,21 +807,9 @@ function importSessionFiles(
         artifacts.push(diffArtifact);
       }
 
-      const functionCalls = toolEvents.filter((event) => event.kind === "function_call");
-      for (const [index, call] of functionCalls.entries()) {
-        const commandSummary = summarizeToolEvent(call);
-        const artifactType = looksLikeTestCommand(commandSummary) ? "test_run" : "command_run";
-        artifacts.push({
-          id: stableId("artifact", `${promptSeed}:call:${index}`),
-          promptEventId: promptId,
-          type: artifactType,
-          role: "evidence",
-          summary: summarizePrompt(commandSummary),
-          blobId: store.writeBlob(workspace.id, commandSummary),
-          fileStatsJson: null,
-          metadataJson: JSON.stringify({ name: call.name, arguments: call.arguments })
-        });
-      }
+      artifacts.push(
+        ...createHistoricalCommandArtifacts(store, workspace.id, promptId, promptSeed, toolEvents)
+      );
 
       const primaryType = choosePrimaryArtifactType(Boolean(planArtifactContent), Boolean(recoveredDiff), Boolean(finalText));
       if (primaryType) {
@@ -724,22 +834,6 @@ function importSessionFiles(
         },
         payload: line
       }));
-
-      const outputs = toolEvents
-        .filter((event) => event.kind === "function_call" && Boolean(event.output))
-        .map((event) => event.output ?? "");
-      if (outputs.length > 0) {
-        artifacts.push({
-          id: stableId("artifact", `${promptSeed}:function_output`),
-          promptEventId: promptId,
-          type: "command_run",
-          role: "evidence",
-          summary: "Function call output",
-          blobId: store.writeBlob(workspace.id, outputs.join("\n\n")),
-          fileStatsJson: null,
-          metadataJson: null
-        });
-      }
 
       store.persistPromptBundle(workspace.id, {
         prompt,
@@ -1147,19 +1241,12 @@ export async function runLiveDoctor(
         } else if (notification.method === "turn/diff/updated") {
           latestDiff = String(notification.params.diff ?? "");
         } else if (notification.method === "item/completed") {
-          const item = notification.params.item as { type?: string; command?: string; status?: string };
+          const item = notification.params.item as Record<string, unknown> | undefined;
           if (item?.type === "commandExecution") {
-            const command = String(item.command ?? "commandExecution");
-            commandArtifacts.push({
-              id: createId("artifact"),
-              promptEventId: "",
-              type: looksLikeTestCommand(command) ? "test_run" : "command_run",
-              role: "evidence",
-              summary: summarizePrompt(command),
-              blobId: store.writeBlob(repo.id, JSON.stringify(item, null, 2)),
-              fileStatsJson: null,
-              metadataJson: JSON.stringify(item)
-            });
+            const artifact = createLiveCommandArtifact(store, repo.id, "", item);
+            if (artifact) {
+              commandArtifacts.push(artifact);
+            }
           }
         } else if (notification.method === "turn/completed") {
           completed = true;
@@ -1205,7 +1292,11 @@ export async function runLiveDoctor(
         summary: summarizePrompt(finalText),
         blobId: store.writeBlob(repo.id, finalText.trim()),
         fileStatsJson: null,
-        metadataJson: null
+        metadataJson: buildArtifactMetadata({
+          family: "final",
+          subtype: "final.answer",
+          displayLabel: "answer",
+        })
       });
     }
 

@@ -1,6 +1,9 @@
 import type {
   Artifact,
+  ArtifactClassification,
+  ArtifactFamily,
   ArtifactRole,
+  ArtifactSubtype,
   ArtifactType,
   GitSurvivalState,
   Health,
@@ -13,7 +16,6 @@ import type {
 
 export type WorkspaceSidebarItemViewModel = Workspace & {
   isSelected: boolean;
-  showActivityDot: boolean;
   threadCountLabel: string;
   openThreadLabel: string;
   activityLabel: string;
@@ -33,7 +35,6 @@ export type ThreadRowViewModel = ThreadSummary & {
   activityLabel: string;
   promptCountLabel: string;
   openLabel: string;
-  showActivityDot: boolean;
   tone: "open" | "closed";
 };
 
@@ -52,6 +53,8 @@ export type PromptRowViewModel = PromptListItem & {
 export type PromptDetailArtifactViewModel = {
   id: string;
   type: ArtifactType;
+  family: ArtifactFamily | null;
+  subtype: ArtifactSubtype | null;
   role: ArtifactRole;
   label: string;
   summary: string;
@@ -59,6 +62,7 @@ export type PromptDetailArtifactViewModel = {
   relationCountLabel: string | null;
   files: string[];
   blobId: string | null;
+  planTraceSteps: string[];
 };
 
 export type PromptDetailGitLinkViewModel = {
@@ -82,6 +86,11 @@ export type PromptDetailViewModel = {
   touchedFiles: string[];
   touchedFilesLabel: string;
   fileGroups: FileGroupViewModel[];
+  featuredFinalResponseArtifact: PromptDetailArtifactViewModel | null;
+  featuredFinalResponseBlobId: string | null;
+  featuredPlanArtifact: PromptDetailArtifactViewModel | null;
+  featuredPlanBlobId: string | null;
+  planTraceSteps: string[];
   artifactSummaries: PromptDetailArtifactViewModel[];
   diffBlobIds: string[];
   hasCodeDiffArtifacts: boolean;
@@ -104,21 +113,6 @@ const formatters = {
     minute: "2-digit"
   })
 };
-
-const ACTIVE_RECENCY_MS = 5 * 60 * 1000;
-
-function isRecentlyActive(activityAt: string | null, now = Date.now()): boolean {
-  if (!activityAt) {
-    return false;
-  }
-
-  const activityTime = Date.parse(activityAt);
-  if (Number.isNaN(activityTime)) {
-    return false;
-  }
-
-  return now - activityTime <= ACTIVE_RECENCY_MS;
-}
 
 export function sortWorkspacesByActivity(workspaces: Workspace[]): Workspace[] {
   return [...workspaces].sort((left, right) => {
@@ -150,30 +144,15 @@ export function buildWorkspaceSidebarItems(
   workspaces: Workspace[],
   selectedWorkspaceId: string
 ): WorkspaceSidebarItemViewModel[] {
-  const sortedWorkspaces = sortWorkspacesByActivity(workspaces);
-  const activeWorkspaceIds = new Set(
-    sortedWorkspaces
-      .filter((workspace) => workspace.openThreadCount > 0 && isRecentlyActive(workspace.lastActivityAt))
-      .map((workspace) => workspace.id)
-  );
-  const fallbackWorkspaceId =
-    activeWorkspaceIds.size === 0
-      ? sortedWorkspaces[0]?.id ?? null
-      : null;
-
-  return sortedWorkspaces.map((workspace) => {
+  return sortWorkspacesByActivity(workspaces).map((workspace) => {
     const pathLabel = workspace.folderPath ?? "Unknown folder";
     const sessionCount = workspace.sessionFileCount;
     const activityValue = workspace.lastActivityAt ?? workspace.lastSeenAt;
     return {
       ...workspace,
       isSelected: workspace.id === selectedWorkspaceId,
-      showActivityDot:
-        activeWorkspaceIds.size > 0
-          ? activeWorkspaceIds.has(workspace.id)
-          : workspace.id === fallbackWorkspaceId,
       threadCountLabel: `${workspace.threadCount} thread${workspace.threadCount === 1 ? "" : "s"}`,
-      openThreadLabel: `${workspace.openThreadCount} active`,
+      openThreadLabel: workspace.isGenerating ? "Generating" : "Stopped",
       activityLabel: activityValue
         ? `${sessionCount} session file${sessionCount === 1 ? "" : "s"} · ${formatters.timestamp.format(new Date(activityValue))}`
         : `${sessionCount} session file${sessionCount === 1 ? "" : "s"}`,
@@ -244,42 +223,16 @@ export function toThreadRowViewModel(thread: ThreadSummary): ThreadRowViewModel 
     title: thread.lastPromptSummary || "Untitled thread",
     activityLabel: formatters.timestamp.format(new Date(thread.lastActivityAt)),
     promptCountLabel: `${thread.promptCount} prompt${thread.promptCount === 1 ? "" : "s"}`,
-    openLabel: `${thread.openPromptCount} active`,
-    showActivityDot: false,
+    openLabel: thread.isGenerating ? "Generating" : "Stopped",
     tone: thread.status
   };
-}
-
-export function buildThreadRowViewModels(threads: ThreadSummary[]): ThreadRowViewModel[] {
-  const activeThreadIds = new Set(
-    threads
-      .filter((thread) => (thread.openPromptCount > 0 || thread.status === "open") && isRecentlyActive(thread.lastActivityAt))
-      .map((thread) => thread.id)
-  );
-  const fallbackThreadId =
-    activeThreadIds.size === 0
-      ? threads.reduce<ThreadSummary | null>((latest, thread) => {
-          if (!latest || thread.lastActivityAt.localeCompare(latest.lastActivityAt) > 0) {
-            return thread;
-          }
-          return latest;
-        }, null)?.id ?? null
-      : null;
-
-  return threads.map((thread) => ({
-    ...toThreadRowViewModel(thread),
-    showActivityDot:
-      activeThreadIds.size > 0
-        ? activeThreadIds.has(thread.id)
-        : thread.id === fallbackThreadId,
-  }));
 }
 
 export function toPromptRowViewModel(prompt: PromptListItem): PromptRowViewModel {
   const statusLabel =
     prompt.status === "in_progress"
-      ? "Active now"
-      : "Idle";
+      ? "Generating"
+      : "Stopped";
 
   const primaryLabel = prompt.primaryArtifactType
     ? formatArtifactType(prompt.primaryArtifactType)
@@ -312,12 +265,56 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
     prompt.artifacts.find((artifact) => artifact.id === prompt.primaryArtifactId)
     ?? prompt.artifacts.find((artifact) => artifact.role === "primary")
     ?? null;
+  const featuredPlanArtifactId =
+    prompt.artifacts.find((artifact) => artifact.type === "plan" && artifact.role === "primary")?.id
+    ?? prompt.artifacts.find((artifact) => artifact.type === "plan")?.id
+    ?? null;
+  const featuredFinalResponseArtifactId =
+    featuredPlanArtifactId
+      ? null
+      : prompt.artifacts.find((artifact) => artifact.type === "final_output" && artifact.role === "primary")?.id
+        ?? prompt.artifacts.find((artifact) => artifact.type === "final_output")?.id
+        ?? null;
 
   const relationCounts = new Map<string, number>();
   for (const artifact of prompt.artifactLinks) {
     relationCounts.set(artifact.fromArtifactId, (relationCounts.get(artifact.fromArtifactId) ?? 0) + 1);
     relationCounts.set(artifact.toArtifactId, (relationCounts.get(artifact.toArtifactId) ?? 0) + 1);
   }
+
+  const artifactSummaries = prompt.artifacts.map((artifact) => {
+    const artifactFiles = parseArtifactFiles(artifact);
+    const fileCount = artifactFiles.length;
+    const relationCount = relationCounts.get(artifact.id) ?? 0;
+    return {
+      id: artifact.id,
+      type: artifact.type,
+      family: parseArtifactClassification(artifact)?.family ?? null,
+      subtype: parseArtifactClassification(artifact)?.subtype ?? null,
+      role: artifact.role,
+      label: getArtifactDisplayLabel(artifact),
+      summary: artifact.summary,
+      fileCountLabel: fileCount > 0 ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : null,
+      relationCountLabel:
+        relationCount > 0
+          ? `${relationCount} link${relationCount === 1 ? "" : "s"}`
+          : null,
+      files: artifactFiles.map((f) => f.path),
+      blobId: artifact.blobId,
+      planTraceSteps: parseArtifactPlanSteps(artifact),
+    };
+  });
+
+  const featuredPlanArtifact =
+    (featuredPlanArtifactId
+      ? artifactSummaries.find((artifact) => artifact.id === featuredPlanArtifactId)
+      : null)
+    ?? null;
+  const featuredFinalResponseArtifact =
+    (featuredFinalResponseArtifactId
+      ? artifactSummaries.find((artifact) => artifact.id === featuredFinalResponseArtifactId)
+      : null)
+    ?? null;
 
   return {
     id: prompt.id,
@@ -330,25 +327,17 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
         ? `${touchedFiles.length} touched file${touchedFiles.length === 1 ? "" : "s"}`
         : "No touched files recorded",
     fileGroups: groupFilesByExtension(touchedFiles),
-    artifactSummaries: prompt.artifacts.map((artifact) => {
-      const artifactFiles = parseArtifactFiles(artifact);
-      const fileCount = artifactFiles.length;
-      const relationCount = relationCounts.get(artifact.id) ?? 0;
-      return {
-        id: artifact.id,
-        type: artifact.type,
-        role: artifact.role,
-        label: `${formatArtifactType(artifact.type)} · ${artifact.role}`,
-        summary: artifact.summary,
-        fileCountLabel: fileCount > 0 ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : null,
-        relationCountLabel:
-          relationCount > 0
-            ? `${relationCount} link${relationCount === 1 ? "" : "s"}`
-            : null,
-        files: artifactFiles.map((f) => f.path),
-        blobId: artifact.blobId
-      };
-    }),
+    featuredFinalResponseArtifact,
+    featuredFinalResponseBlobId: featuredFinalResponseArtifact?.blobId ?? null,
+    featuredPlanArtifact,
+    featuredPlanBlobId: featuredPlanArtifact?.blobId ?? null,
+    planTraceSteps: featuredPlanArtifact?.planTraceSteps ?? [],
+    artifactSummaries: artifactSummaries.filter(
+      (artifact) =>
+        artifact.id !== featuredPlanArtifactId
+        && artifact.id !== featuredFinalResponseArtifactId
+        && !(featuredPlanArtifactId && artifact.type === "final_output")
+    ),
     diffBlobIds: prompt.artifacts
       .filter((a) => a.type === "code_diff" && a.blobId)
       .map((a) => a.blobId!),
@@ -387,7 +376,56 @@ function parseArtifactFiles(artifact: Artifact): FileStat[] {
   }
 }
 
+function parseArtifactPlanSteps(artifact: Artifact): string[] {
+  if (!artifact.metadataJson) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(artifact.metadataJson) as { steps?: unknown };
+    return Array.isArray(parsed.steps)
+      ? parsed.steps.filter((step): step is string => typeof step === "string" && step.trim().length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseArtifactClassification(artifact: Artifact): ArtifactClassification | null {
+  if (!artifact.metadataJson) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(artifact.metadataJson) as { classification?: ArtifactClassification };
+    const classification = parsed.classification;
+    if (!classification) {
+      return null;
+    }
+    if (
+      typeof classification.family !== "string"
+      || typeof classification.subtype !== "string"
+      || typeof classification.displayLabel !== "string"
+    ) {
+      return null;
+    }
+    return classification;
+  } catch {
+    return null;
+  }
+}
+
+function getArtifactDisplayLabel(artifact: Artifact): string {
+  if (artifact.type === "final_output") {
+    return "final response";
+  }
+  return parseArtifactClassification(artifact)?.displayLabel ?? formatArtifactType(artifact.type);
+}
+
 function formatArtifactType(type: ArtifactType): string {
+  if (type === "final_output") {
+    return "final response";
+  }
   return type.replace(/_/g, " ");
 }
 
