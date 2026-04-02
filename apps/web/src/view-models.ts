@@ -13,6 +13,7 @@ import type {
 
 export type WorkspaceSidebarItemViewModel = Workspace & {
   isSelected: boolean;
+  showActivityDot: boolean;
   threadCountLabel: string;
   openThreadLabel: string;
   activityLabel: string;
@@ -32,6 +33,7 @@ export type ThreadRowViewModel = ThreadSummary & {
   activityLabel: string;
   promptCountLabel: string;
   openLabel: string;
+  showActivityDot: boolean;
   tone: "open" | "closed";
 };
 
@@ -103,6 +105,21 @@ const formatters = {
   })
 };
 
+const ACTIVE_RECENCY_MS = 5 * 60 * 1000;
+
+function isRecentlyActive(activityAt: string | null, now = Date.now()): boolean {
+  if (!activityAt) {
+    return false;
+  }
+
+  const activityTime = Date.parse(activityAt);
+  if (Number.isNaN(activityTime)) {
+    return false;
+  }
+
+  return now - activityTime <= ACTIVE_RECENCY_MS;
+}
+
 export function sortWorkspacesByActivity(workspaces: Workspace[]): Workspace[] {
   return [...workspaces].sort((left, right) => {
     const leftActivity = left.lastActivityAt ?? left.lastSeenAt;
@@ -133,13 +150,28 @@ export function buildWorkspaceSidebarItems(
   workspaces: Workspace[],
   selectedWorkspaceId: string
 ): WorkspaceSidebarItemViewModel[] {
-  return sortWorkspacesByActivity(workspaces).map((workspace) => {
+  const sortedWorkspaces = sortWorkspacesByActivity(workspaces);
+  const activeWorkspaceIds = new Set(
+    sortedWorkspaces
+      .filter((workspace) => workspace.openThreadCount > 0 && isRecentlyActive(workspace.lastActivityAt))
+      .map((workspace) => workspace.id)
+  );
+  const fallbackWorkspaceId =
+    activeWorkspaceIds.size === 0
+      ? sortedWorkspaces[0]?.id ?? null
+      : null;
+
+  return sortedWorkspaces.map((workspace) => {
     const pathLabel = workspace.folderPath ?? "Unknown folder";
     const sessionCount = workspace.sessionFileCount;
     const activityValue = workspace.lastActivityAt ?? workspace.lastSeenAt;
     return {
       ...workspace,
       isSelected: workspace.id === selectedWorkspaceId,
+      showActivityDot:
+        activeWorkspaceIds.size > 0
+          ? activeWorkspaceIds.has(workspace.id)
+          : workspace.id === fallbackWorkspaceId,
       threadCountLabel: `${workspace.threadCount} thread${workspace.threadCount === 1 ? "" : "s"}`,
       openThreadLabel: `${workspace.openThreadCount} active`,
       activityLabel: activityValue
@@ -213,8 +245,34 @@ export function toThreadRowViewModel(thread: ThreadSummary): ThreadRowViewModel 
     activityLabel: formatters.timestamp.format(new Date(thread.lastActivityAt)),
     promptCountLabel: `${thread.promptCount} prompt${thread.promptCount === 1 ? "" : "s"}`,
     openLabel: `${thread.openPromptCount} active`,
+    showActivityDot: false,
     tone: thread.status
   };
+}
+
+export function buildThreadRowViewModels(threads: ThreadSummary[]): ThreadRowViewModel[] {
+  const activeThreadIds = new Set(
+    threads
+      .filter((thread) => (thread.openPromptCount > 0 || thread.status === "open") && isRecentlyActive(thread.lastActivityAt))
+      .map((thread) => thread.id)
+  );
+  const fallbackThreadId =
+    activeThreadIds.size === 0
+      ? threads.reduce<ThreadSummary | null>((latest, thread) => {
+          if (!latest || thread.lastActivityAt.localeCompare(latest.lastActivityAt) > 0) {
+            return thread;
+          }
+          return latest;
+        }, null)?.id ?? null
+      : null;
+
+  return threads.map((thread) => ({
+    ...toThreadRowViewModel(thread),
+    showActivityDot:
+      activeThreadIds.size > 0
+        ? activeThreadIds.has(thread.id)
+        : thread.id === fallbackThreadId,
+  }));
 }
 
 export function toPromptRowViewModel(prompt: PromptListItem): PromptRowViewModel {

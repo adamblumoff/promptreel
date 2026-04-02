@@ -24,6 +24,7 @@ import {
 } from "./components";
 import type { ContentTab } from "./components";
 import {
+  buildThreadRowViewModels,
   buildWorkspaceSidebarItems,
   getSelectedWorkspace,
   getSelectedWorkspaceStatus,
@@ -276,7 +277,7 @@ export function App() {
   const selectedWorkspace = getSelectedWorkspace(workspaces, selectedWorkspaceId);
   const wsStatus = getSelectedWorkspaceStatus(selectedWorkspace, health, selectedWorkspaceId);
   const wsSidebarItems = buildWorkspaceSidebarItems(workspaces, selectedWorkspaceId);
-  const threadRows = threads.map(toThreadRowViewModel);
+  const threadRows = buildThreadRowViewModels(threads);
   const selThreadRow = threadRows.find((t) => t.id === selectedThreadId) ?? null;
 
   const promptRows = useMemo(

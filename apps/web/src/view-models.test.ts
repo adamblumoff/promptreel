@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { Health, PromptDetail, PromptListItem, Workspace } from "./types";
 import {
+  buildThreadRowViewModels,
   buildWorkspaceSidebarItems,
   getSelectedWorkspaceStatus,
   resolveSelectedThreadId,
@@ -63,9 +64,14 @@ describe("web view models", () => {
     expect(items[0]).toMatchObject({
       id: "workspace-a",
       isSelected: true,
+      showActivityDot: true,
       threadCountLabel: "3 threads",
       statusTone: "idle",
       gitBadgeLabel: "git"
+    });
+    expect(items[1]).toMatchObject({
+      id: "workspace-z",
+      showActivityDot: false,
     });
   });
 
@@ -116,6 +122,97 @@ describe("web view models", () => {
     expect(row.childLabel).toBe("3 child prompts");
     expect(row.primaryLabel).toBe("code diff");
     expect(row.executionPathLabel).toBe("C:/work/alpha");
+    expect(thread.showActivityDot).toBe(false);
+  });
+
+  test("marks only active threads, or the most recent thread when none are active", () => {
+    const now = new Date().toISOString();
+    const justBeforeNow = new Date(Date.now() - 60_000).toISOString();
+    const staleTime = "2026-03-30T14:24:00.000Z";
+
+    const activeThreads = buildThreadRowViewModels([
+      {
+        id: "thread-1",
+        workspaceId: "workspace-a",
+        sessionId: "session-1",
+        threadId: "thread-1",
+        folderPath: "C:/work/alpha",
+        startedAt: "2026-03-30T14:00:00.000Z",
+        lastActivityAt: now,
+        promptCount: 4,
+        openPromptCount: 1,
+        lastPromptSummary: "Still running",
+        status: "open"
+      },
+      {
+        id: "thread-2",
+        workspaceId: "workspace-a",
+        sessionId: "session-2",
+        threadId: "thread-2",
+        folderPath: "C:/work/alpha",
+        startedAt: "2026-03-30T14:10:00.000Z",
+        lastActivityAt: staleTime,
+        promptCount: 2,
+        openPromptCount: 0,
+        lastPromptSummary: "Wrapped up",
+        status: "closed"
+      }
+    ]);
+    const idleThreads = buildThreadRowViewModels([
+      {
+        id: "thread-3",
+        workspaceId: "workspace-a",
+        sessionId: "session-3",
+        threadId: "thread-3",
+        folderPath: "C:/work/alpha",
+        startedAt: "2026-03-30T14:15:00.000Z",
+        lastActivityAt: justBeforeNow,
+        promptCount: 3,
+        openPromptCount: 0,
+        lastPromptSummary: "Most recent",
+        status: "closed"
+      },
+      {
+        id: "thread-4",
+        workspaceId: "workspace-a",
+        sessionId: "session-4",
+        threadId: "thread-4",
+        folderPath: "C:/work/alpha",
+        startedAt: "2026-03-30T14:05:00.000Z",
+        lastActivityAt: staleTime,
+        promptCount: 1,
+        openPromptCount: 0,
+        lastPromptSummary: "Older",
+        status: "closed"
+      }
+    ]);
+
+    expect(activeThreads.find((thread) => thread.id === "thread-1")?.showActivityDot).toBe(true);
+    expect(activeThreads.find((thread) => thread.id === "thread-2")?.showActivityDot).toBe(false);
+    expect(idleThreads.find((thread) => thread.id === "thread-3")?.showActivityDot).toBe(true);
+    expect(idleThreads.find((thread) => thread.id === "thread-4")?.showActivityDot).toBe(false);
+  });
+
+  test("shows only recently active workspaces when stale open counts exist", () => {
+    const items = buildWorkspaceSidebarItems([
+      {
+        ...workspaces[0],
+        id: "workspace-stale",
+        slug: "stale",
+        lastActivityAt: "2026-03-20T17:12:48.014Z",
+        openThreadCount: 3,
+      },
+      {
+        ...workspaces[1],
+        id: "workspace-fresh",
+        slug: "fresh",
+        lastActivityAt: new Date().toISOString(),
+        openThreadCount: 1,
+      }
+    ], "workspace-fresh");
+
+    expect(items.find((item) => item.id === "workspace-stale")?.showActivityDot).toBe(false);
+    expect(items.find((item) => item.id === "workspace-fresh")?.showActivityDot).toBe(true);
   });
 
   test("shapes prompt detail into touched files, artifact summaries, and git summaries", () => {

@@ -101,11 +101,11 @@ export function TopBar({
                       )}>
                         {ws.slug.slice(0, 2).toUpperCase()}
                       </span>
-                      <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1">
                         <p className="text-[13px] font-medium truncate">{ws.slug}</p>
                         <p className="text-[11px] text-t3 truncate">{ws.pathLabel}</p>
                       </div>
-                      {ws.mode === "watching" && (
+                      {ws.showActivityDot && (
                         <span className="shrink-0 size-2 rounded-full bg-green breathe" />
                       )}
                     </button>
@@ -185,7 +185,6 @@ export function ThreadBar({
       <div ref={scrollRef} className="flex gap-1.5 px-5 py-2.5 overflow-x-auto">
         {threads.map((thread, i) => {
           const active = thread.id === selectedThreadId;
-          const isOpen = thread.status === "open";
           return (
             <button
               key={thread.id}
@@ -199,14 +198,16 @@ export function ThreadBar({
                   : "border-brd bg-white text-t2 hover:bg-gz-1 hover:text-t1 hover:border-brd-strong hoverlift-sm"
               )}
             >
-              <span className={cn(
-                "size-1.5 rounded-full shrink-0 transition-colors",
-                isOpen
-                  ? active ? "bg-green-400" : "bg-green"
-                  : active ? "bg-gz-5" : "bg-t4"
-              )} />
+              <span className="flex size-1.5 shrink-0 items-center justify-center">
+                {thread.showActivityDot && (
+                  <span className={cn(
+                    "size-1.5 rounded-full transition-colors",
+                    active ? "bg-green-400" : "bg-green"
+                  )} />
+                )}
+              </span>
               <span className="max-w-[200px] truncate">{thread.title}</span>
-              {isOpen && thread.openPromptCount > 0 && (
+              {thread.openPromptCount > 0 && (
                 <span className={cn(
                   "size-4 rounded-full text-[9px] font-bold flex items-center justify-center transition-colors",
                   active
@@ -623,30 +624,14 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
         </div>
       )}
 
-      <div className="relative rounded-xl bg-gz-1 border border-brd overflow-hidden slidein" style={{ animationDelay: "50ms" }}>
-        <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-t1" />
-        <div className="pl-5 pr-4 py-3 text-[13px] leading-relaxed text-t2 whitespace-pre-wrap">
-          {detail.promptText}
-        </div>
-      </div>
-
-      {detail.primaryArtifactSummary && (
-        <div className="slidein" style={{ animationDelay: "100ms" }}>
-          <div className="rounded-xl border border-brd bg-white px-4 py-3">
-            <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Summary</h3>
-            <p className="text-[12px] text-t3">{detail.primaryArtifactSummary}</p>
-          </div>
-        </div>
-      )}
-
       {detail.artifactSummaries.length > 0 && (
-        <div className="slidein" style={{ animationDelay: "150ms" }}>
+        <div className="slidein" style={{ animationDelay: "50ms" }}>
           <ArtifactSection key={detail.id} artifacts={detail.artifactSummaries} />
         </div>
       )}
 
       {detail.fileGroups.length > 0 && (
-        <div className="slidein" style={{ animationDelay: "200ms" }}>
+        <div className="slidein" style={{ animationDelay: "100ms" }}>
           <Section title="Files changed" badge={detail.touchedFilesLabel}>
             {detail.fileGroups.map((g) => (
               <FileGroupRow key={g.extension} group={g} />
@@ -656,7 +641,7 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
       )}
 
       {detail.gitSummaries.length > 0 && (
-        <div className="slidein" style={{ animationDelay: "250ms" }}>
+        <div className="slidein" style={{ animationDelay: "150ms" }}>
           <Section title="Git">
             {detail.gitSummaries.map((gl) => (
               <GitRow key={gl.id} link={gl} />
