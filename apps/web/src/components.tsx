@@ -757,7 +757,13 @@ function TranscriptEntryRow({
   const summaryText = getTranscriptEntrySummary(entry);
   const detailText = entry.kind === "activity" ? entry.detail : null;
   const isFinalMessage = entry.kind === "message" && isTranscriptMarkdownEntry(entry);
-  const shouldShowExpanded = isExpandable && expanded;
+  const shouldShowExpanded = expanded;
+  const shouldShowExpandedBody =
+    expanded
+    && (
+      isFinalMessage
+      || (entry.kind === "activity" && Boolean(detailText))
+    );
   const entryLabel =
     isFinalMessage
       ? "final message"
@@ -771,56 +777,20 @@ function TranscriptEntryRow({
         <span className={cn("mt-[5px] size-2.5 rounded-full", markerClassName)} />
       </div>
       <div className="min-w-0">
-        {isFinalMessage ? (
-          <button
-            type="button"
-            onClick={onToggle}
-            className="w-full border-0 bg-transparent p-0 text-left cursor-pointer"
-          >
-            <TranscriptEntryLine
-              entry={entry}
-              entryLabel={entryLabel}
-              summaryText=""
-              timestampLabel={entry.timestampLabel}
-              expanded
-            />
-            {shouldShowExpanded && (
-              <div className="mt-1.5">
-                <MarkdownPlanDocument markdown={entry.text} variant="thread" />
-              </div>
-            )}
-          </button>
-        ) : isExpandable ? (
-          <button
-            type="button"
-            onClick={onToggle}
-            className="w-full border-0 bg-transparent p-0 text-left cursor-pointer"
-          >
-            <TranscriptEntryLine
-              entry={entry}
-              entryLabel={entryLabel}
-              summaryText={summaryText}
-              timestampLabel={entry.timestampLabel}
-              expanded={shouldShowExpanded}
-            />
-            {shouldShowExpanded && !isTranscriptMarkdownEntry(entry) && detailText && (
-              <div className="mt-1.5 border-l border-brd pl-3">
-                <p className="text-[11px] leading-5 font-mono text-t4 whitespace-pre-wrap break-words">
-                  {detailText}
-                </p>
-              </div>
-            )}
-          </button>
-        ) : (
-            <div className="flex min-w-0 items-baseline gap-2 text-[10px] uppercase tracking-[0.08em] text-t4">
-              <TranscriptEntryLine
-                entry={entry}
-                entryLabel={entryLabel}
-                summaryText={summaryText}
-                timestampLabel={entry.timestampLabel}
-                expanded
-              />
-            </div>
+        <TranscriptEntryLine
+          entry={entry}
+          entryLabel={entryLabel}
+          summaryText={isFinalMessage ? "" : summaryText}
+          timestampLabel={entry.timestampLabel}
+          expandable={isExpandable}
+          expanded={expanded}
+          onToggle={onToggle}
+        />
+        {shouldShowExpandedBody && (
+          <TranscriptEntryBody
+            entry={entry}
+            detailText={detailText}
+          />
         )}
       </div>
     </div>
@@ -832,15 +802,19 @@ function TranscriptEntryLine({
   entryLabel,
   summaryText,
   timestampLabel,
+  expandable,
   expanded,
+  onToggle,
 }: {
   entry: PromptDetailViewModel["transcript"][number];
   entryLabel: string;
   summaryText: string;
   timestampLabel: string;
+  expandable: boolean;
   expanded: boolean;
+  onToggle: () => void;
 }) {
-  return (
+  const line = (
     <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-0.5">
       <div className="flex min-w-0 items-baseline gap-2 text-[10px] uppercase tracking-[0.08em] text-t4">
         <span className="shrink-0 font-semibold">{entryLabel}</span>
@@ -853,21 +827,67 @@ function TranscriptEntryLine({
             : "text-[12px] text-t2"
         )}
       >
-        {summaryText && (
+        {summaryText ? (
           <span
             className={cn(
               "block min-w-0 leading-5",
-              !expanded && "truncate"
+              expanded ? "whitespace-pre-wrap break-words" : "truncate"
             )}
           >
             {summaryText}
-            {!expanded && "…"}
+            {expandable && !expanded && "…"}
+          </span>
+        ) : (
+          <span className="invisible block min-w-0 leading-5" aria-hidden="true">
+            .
           </span>
         )}
       </div>
       <span className="shrink-0 pt-px font-mono text-[10px] text-t4 tabular-nums normal-case">
         {timestampLabel}
       </span>
+    </div>
+  );
+
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="block w-full border-0 bg-transparent p-0 text-left cursor-pointer"
+    >
+      {line}
+    </button>
+  );
+}
+
+function TranscriptEntryBody({
+  entry,
+  detailText,
+}: {
+  entry: PromptDetailViewModel["transcript"][number];
+  detailText: string | null;
+}) {
+  if (entry.kind === "message") {
+    if (isTranscriptMarkdownEntry(entry)) {
+      return (
+        <div className="mt-1.5 border-l border-brd pl-3">
+          <MarkdownPlanDocument markdown={entry.text} variant="thread" />
+        </div>
+      );
+    }
+
+    return null;
+  }
+
+  if (!detailText) {
+    return null;
+  }
+
+  return (
+    <div className="mt-1.5 border-l border-brd pl-3">
+      <p className="text-[11px] leading-5 font-mono text-t4 whitespace-pre-wrap break-words">
+        {detailText}
+      </p>
     </div>
   );
 }
