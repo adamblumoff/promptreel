@@ -349,7 +349,6 @@ export function PromptFeed({
   isLoading,
   blobCache,
   blobLoadingById,
-  onLoadBlob,
 }: {
   rows: PromptRowViewModel[];
   details: Record<string, PromptDetailViewModel>;
@@ -360,7 +359,6 @@ export function PromptFeed({
   isLoading: boolean;
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
-  onLoadBlob?: (blobId: string) => void;
 }) {
   if (rows.length === 0) {
     return (
@@ -395,7 +393,6 @@ export function PromptFeed({
           index={i}
           blobCache={blobCache}
           blobLoadingById={blobLoadingById}
-          onLoadBlob={onLoadBlob}
         />
       ))}
     </div>
@@ -416,7 +413,6 @@ function PromptCard({
   index,
   blobCache,
   blobLoadingById,
-  onLoadBlob,
 }: {
   prompt: PromptRowViewModel;
   detail: PromptDetailViewModel | undefined;
@@ -427,7 +423,6 @@ function PromptCard({
   index: number;
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
-  onLoadBlob?: (blobId: string) => void;
 }) {
   const live = prompt.status === "in_progress";
 
@@ -502,7 +497,7 @@ function PromptCard({
               <p className="text-[13px] text-red">{error}</p>
             </div>
           )}
-          {detail && <ExpandedDetail detail={detail} blobCache={blobCache} blobLoadingById={blobLoadingById} onLoadBlob={onLoadBlob} />}
+          {detail && <ExpandedDetail detail={detail} blobCache={blobCache} blobLoadingById={blobLoadingById} />}
         </div>
       )}
     </div>
@@ -530,11 +525,10 @@ function Dot() {
    EXPANDED DETAIL — sections stagger in
    ════════════════════════════════════════════════════════════════════════════ */
 
-function ExpandedDetail({ detail, blobCache, blobLoadingById, onLoadBlob }: {
+function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
   detail: PromptDetailViewModel;
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
-  onLoadBlob?: (blobId: string) => void;
 }) {
   return (
     <div className="px-4 py-4 flex flex-col gap-5">
@@ -579,13 +573,12 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById, onLoadBlob }: {
       )}
 
       {/* Diff */}
-      {detail.diffBlobIds.length > 0 && onLoadBlob && (
+      {detail.diffBlobIds.length > 0 && (
         <div className="slidein" style={{ animationDelay: "200ms" }}>
           <DiffSection
             blobIds={detail.diffBlobIds}
             blobCache={blobCache ?? {}}
             blobLoadingById={blobLoadingById ?? {}}
-            onLoadBlob={onLoadBlob}
           />
         </div>
       )}
@@ -604,13 +597,11 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById, onLoadBlob }: {
   );
 }
 
-function DiffSection({ blobIds, blobCache, blobLoadingById, onLoadBlob }: {
+function DiffSection({ blobIds, blobCache, blobLoadingById }: {
   blobIds: string[];
   blobCache: Record<string, string>;
   blobLoadingById: Record<string, boolean>;
-  onLoadBlob: (blobId: string) => void;
 }) {
-  const allLoaded = blobIds.every((id) => blobCache[id] !== undefined);
   const anyLoading = blobIds.some((id) => blobLoadingById[id]);
   const combinedPatch = blobIds
     .map((id) => blobCache[id])
@@ -621,24 +612,15 @@ function DiffSection({ blobIds, blobCache, blobLoadingById, onLoadBlob }: {
     <div>
       <div className="flex items-center gap-2 mb-2">
         <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4">Code changes</h3>
-        {!allLoaded && !anyLoading && (
-          <button
-            type="button"
-            onClick={() => blobIds.forEach((id) => { if (!blobCache[id]) onLoadBlob(id); })}
-            className="text-[10px] font-medium text-t1 bg-gz-1 border border-brd px-2 py-0.5 rounded-md cursor-pointer hover:bg-gz-2 transition-colors pressable"
-          >
-            Load diff
-          </button>
-        )}
-        {anyLoading && (
-          <span className="inline-flex items-center gap-1.5 text-[10px] text-t3">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" className="spinner">
-              <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-            Loading...
-          </span>
-        )}
       </div>
+      {anyLoading && !combinedPatch && (
+        <div className="flex items-center gap-2 py-4 justify-center">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="spinner text-t4">
+            <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+          <span className="text-[11px] text-t3">Loading diff...</span>
+        </div>
+      )}
       {combinedPatch && <DiffViewer patch={combinedPatch} />}
     </div>
   );

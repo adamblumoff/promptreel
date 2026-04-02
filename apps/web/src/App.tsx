@@ -294,6 +294,16 @@ export function App() {
     [detailsById]
   );
 
+  // Auto-load diff blobs when a prompt detail becomes available
+  useEffect(() => {
+    if (!selectedWorkspaceId || !expandedPromptId) return;
+    const detail = promptDetails[expandedPromptId];
+    if (!detail) return;
+    for (const blobId of detail.diffBlobIds) {
+      void loadBlob(selectedWorkspaceId, blobId);
+    }
+  }, [selectedWorkspaceId, expandedPromptId, promptDetails]);
+
   /* ── handlers ─────────────────────────────────────────────────────────── */
 
   const handleSelectWorkspace = (id: string) => {
@@ -377,7 +387,6 @@ export function App() {
             isLoading={promptsLoading}
             blobCache={blobCache}
             blobLoadingById={blobLoadingById}
-            onLoadBlob={selectedWorkspaceId ? (blobId: string) => void loadBlob(selectedWorkspaceId, blobId) : undefined}
           />
         )}
 
