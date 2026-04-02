@@ -48,10 +48,23 @@ export function isWebHref(href: string | null | undefined): boolean {
   return typeof href === "string" && /^https?:\/\//i.test(href);
 }
 
-export function MarkdownPlanDocument({ markdown }: { markdown: string }) {
+export function MarkdownPlanDocument({
+  markdown,
+  variant = "panel",
+}: {
+  markdown: string;
+  variant?: "panel" | "thread";
+}) {
   return (
-    <div className="rounded-xl border border-brd bg-white px-5 py-4">
-      <div className="mx-auto max-w-[860px] text-[13px] leading-6 text-t2 text-pretty">
+    <div className={cn(
+      variant === "panel" && "rounded-xl border border-brd bg-white px-5 py-4",
+      variant === "thread" && "px-0 py-0"
+    )}>
+      <div className={cn(
+        "text-[13px] leading-6 text-t2 text-pretty",
+        variant === "panel" && "mx-auto max-w-[860px]",
+        variant === "thread" && "max-w-none"
+      )}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{

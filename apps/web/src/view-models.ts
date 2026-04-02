@@ -99,6 +99,26 @@ export type FileGroupViewModel = {
 export type PromptDetailViewModel = {
   id: string;
   promptText: string;
+  transcript: Array<
+    | {
+        kind: "message";
+        role: "user" | "assistant";
+        occurredAt: string;
+        phase: string | null;
+        text: string;
+        timestampLabel: string;
+      }
+    | {
+        kind: "activity";
+        occurredAt: string;
+        activityType: "command" | "tool";
+        label: string;
+        summary: string;
+        detail: string | null;
+        status: string | null;
+        timestampLabel: string;
+      }
+  >;
   executionPathLabel: string;
   primaryArtifactSummary: string;
   touchedFiles: string[];
@@ -341,6 +361,10 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
   return {
     id: prompt.id,
     promptText: prompt.promptText,
+    transcript: prompt.transcript.map((entry) => ({
+      ...entry,
+      timestampLabel: formatters.timestamp.format(new Date(entry.occurredAt)),
+    })),
     executionPathLabel: prompt.executionPath ?? "Unknown folder",
     primaryArtifactSummary: primaryArtifact?.summary ?? "No primary artifact preview recorded yet.",
     touchedFiles,

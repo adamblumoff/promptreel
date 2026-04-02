@@ -16,6 +16,8 @@ import type {
   ArtifactRecord,
   GitLinkRecord,
   PromptEventDetail,
+  PromptTranscriptActivity,
+  PromptTranscriptEntry,
   PromptEventListItem,
   PromptEventRecord,
   RawEventRecord,
@@ -575,12 +577,13 @@ export class PromptlineStore {
          commit_sha AS commitSha,
          patch_identity AS patchIdentity,
          survival_state AS survivalState,
-         matched_at AS matchedAt
+       matched_at AS matchedAt
        FROM git_links
        WHERE prompt_event_id = ?`
     ).all(promptId) as unknown as GitLinkRecord[];
+    const transcript = this.getPromptTranscript(db, workspaceId, prompt);
     db.close();
-    return { ...prompt, artifacts, artifactLinks, gitLinks };
+    return { ...prompt, transcript, artifacts, artifactLinks, gitLinks };
   }
 
   getFileHistory(workspaceId: string, filePath: string): PromptEventListItem[] {
@@ -835,6 +838,99 @@ export class PromptlineStore {
     db.close();
   }
 
+  private getPromptTranscript(
+    db: DatabaseSync,
+    workspaceId: string,
+    prompt: LegacyPromptRow
+  ): PromptTranscriptEntry[] {
+    const rawRows = db.prepare(
+      `SELECT
+         occurred_at AS occurredAt,
+         payload_blob_id AS payloadBlobId
+       FROM raw_events
+       WHERE repo_id = ?
+         AND (
+           (? IS NOT NULL AND thread_id = ?)
+           OR (? IS NULL AND session_id = ?)
+         )
+         AND occurred_at >= ?
+         AND (? IS NULL OR occurred_at <= ?)
+       ORDER BY occurred_at ASC, rowid ASC`
+    ).all(
+      workspaceId,
+      prompt.threadId,
+      prompt.threadId,
+      prompt.threadId,
+      prompt.sessionId,
+      prompt.startedAt,
+      prompt.endedAt,
+      prompt.endedAt
+    ) as Array<{ occurredAt: string; payloadBlobId: string }>;
+
+    const transcript: PromptTranscriptEntry[] = [];
+    const activityEntries = new Map<string, PromptTranscriptActivity>();
+
+    for (const row of rawRows) {
+      try {
+        const payload = JSON.parse(this.readBlob(workspaceId, row.payloadBlobId)) as {
+          type?: unknown;
+          method?: unknown;
+          params?: Record<string, unknown>;
+          payload?: Record<string, unknown>;
+        };
+
+        if (payload?.type === "event_msg") {
+          const eventPayload = payload.payload;
+          const messageType = eventPayload?.type;
+          const messageText = typeof eventPayload?.message === "string" ? eventPayload.message.trim() : "";
+          if (messageType === "user_message" && messageText) {
+            transcript.push({
+              kind: "message",
+              role: "user",
+              occurredAt: row.occurredAt,
+              phase: null,
+              text: messageText,
+            });
+            continue;
+          }
+          if (messageType === "agent_message" && messageText) {
+            transcript.push({
+              kind: "message",
+              role: "assistant",
+              occurredAt: row.occurredAt,
+              phase: typeof eventPayload?.phase === "string" ? eventPayload.phase : null,
+              text: messageText,
+            });
+            continue;
+          }
+
+          const completedActivity = buildCompletedActivityEntry(row.occurredAt, eventPayload);
+          if (completedActivity) {
+            transcript.push(completedActivity);
+          }
+          continue;
+        }
+
+        if (payload?.type === "response_item") {
+          const activity = upsertResponseItemActivity(activityEntries, transcript, row.occurredAt, payload.payload);
+          if (activity) {
+            activity.occurredAt = activity.occurredAt || row.occurredAt;
+          }
+          continue;
+        }
+
+        const appServerActivity = buildAppServerActivityEntry(row.occurredAt, payload);
+        if (appServerActivity) {
+          transcript.push(appServerActivity);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return transcript;
+  }
+
   private openRegistry(): DatabaseSync {
     return this.openDatabase(this.registryPath);
   }
@@ -983,4 +1079,163 @@ function isVisibleWorkspaceGroup(workspace: WorkspaceGroup): boolean {
 
 function asSqlParams(value: object): Record<string, SQLInputValue> {
   return value as Record<string, SQLInputValue>;
+}
+
+function parseResponseItemArguments(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  const rawArguments = typeof payload?.arguments === "string" ? payload.arguments : null;
+  return safeJsonParse<Record<string, unknown> | null>(rawArguments, null);
+}
+
+function summarizeTranscriptCommand(command: string): string {
+  return command.trim().replace(/\s+/g, " ");
+}
+
+function summarizeTranscriptOutput(value: string | null): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.length > 600 ? `${trimmed.slice(0, 600).trimEnd()}…` : trimmed;
+}
+
+function buildTranscriptActivityEntry(input: {
+  occurredAt: string;
+  activityType: "command" | "tool";
+  label: string;
+  summary: string;
+  detail?: string | null;
+  status?: string | null;
+}): PromptTranscriptActivity {
+  return {
+    kind: "activity",
+    occurredAt: input.occurredAt,
+    activityType: input.activityType,
+    label: input.label,
+    summary: input.summary,
+    detail: summarizeTranscriptOutput(input.detail ?? null),
+    status: input.status ?? null,
+  };
+}
+
+function buildCompletedActivityEntry(
+  occurredAt: string,
+  payload: Record<string, unknown> | undefined
+): PromptTranscriptActivity | null {
+  const item = payload?.item;
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    return null;
+  }
+  const itemRecord = item as Record<string, unknown>;
+  if (itemRecord.type !== "commandExecution") {
+    return null;
+  }
+
+  const command = typeof itemRecord.command === "string" ? itemRecord.command.trim() : "";
+  if (!command) {
+    return null;
+  }
+
+  return buildTranscriptActivityEntry({
+    occurredAt,
+    activityType: "command",
+    label: "command",
+    summary: summarizeTranscriptCommand(command),
+    detail: typeof itemRecord.output === "string" ? itemRecord.output : null,
+    status: typeof itemRecord.status === "string" ? itemRecord.status : null,
+  });
+}
+
+function upsertResponseItemActivity(
+  activityEntries: Map<string, PromptTranscriptActivity>,
+  transcript: PromptTranscriptEntry[],
+  occurredAt: string,
+  payload: Record<string, unknown> | undefined
+): PromptTranscriptActivity | null {
+  const payloadType = typeof payload?.type === "string" ? payload.type : null;
+  const callId = typeof payload?.call_id === "string" ? payload.call_id : null;
+  if (!payloadType || !callId) {
+    return null;
+  }
+  const safePayload: Record<string, unknown> = payload ?? {};
+
+  if (payloadType === "function_call") {
+    const parsedArguments = parseResponseItemArguments(safePayload);
+    const command = typeof parsedArguments?.cmd === "string" ? parsedArguments.cmd.trim() : "";
+    const entry = buildTranscriptActivityEntry({
+      occurredAt,
+      activityType: "command",
+      label: "command",
+      summary: command || String(safePayload.name ?? "function call").trim(),
+      detail: null,
+      status: null,
+    });
+    activityEntries.set(callId, entry);
+    transcript.push(entry);
+    return entry;
+  }
+
+  if (payloadType === "function_call_output") {
+    const entry = activityEntries.get(callId);
+    if (!entry) {
+      return null;
+    }
+    entry.detail = summarizeTranscriptOutput(typeof safePayload.output === "string" ? safePayload.output : null);
+    return entry;
+  }
+
+  if (payloadType === "custom_tool_call") {
+    const entry = buildTranscriptActivityEntry({
+      occurredAt,
+      activityType: "tool",
+      label: String(safePayload.name ?? "tool").trim() || "tool",
+      summary: typeof safePayload.input === "string" && safePayload.input.trim()
+        ? summarizeTranscriptCommand(safePayload.input)
+        : String(safePayload.name ?? "tool").trim() || "tool",
+      detail: null,
+      status: typeof safePayload.status === "string" ? safePayload.status : null,
+    });
+    activityEntries.set(callId, entry);
+    transcript.push(entry);
+    return entry;
+  }
+
+  if (payloadType === "custom_tool_call_output") {
+    const entry = activityEntries.get(callId);
+    if (!entry) {
+      return null;
+    }
+    entry.detail = summarizeTranscriptOutput(typeof safePayload.output === "string" ? safePayload.output : null);
+    return entry;
+  }
+
+  return null;
+}
+
+function buildAppServerActivityEntry(
+  occurredAt: string,
+  payload: { method?: unknown; params?: Record<string, unknown> }
+): PromptTranscriptActivity | null {
+  if (payload.method !== "item/completed") {
+    return null;
+  }
+  const item = payload.params?.item;
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    return null;
+  }
+  const itemRecord = item as Record<string, unknown>;
+  if (itemRecord.type !== "commandExecution") {
+    return null;
+  }
+  const command = typeof itemRecord.command === "string" ? itemRecord.command.trim() : "";
+  if (!command) {
+    return null;
+  }
+  return buildTranscriptActivityEntry({
+    occurredAt,
+    activityType: "command",
+    label: "command",
+    summary: summarizeTranscriptCommand(command),
+    detail: typeof itemRecord.output === "string" ? itemRecord.output : null,
+    status: typeof itemRecord.status === "string" ? itemRecord.status : null,
+  });
 }

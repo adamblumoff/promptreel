@@ -4,22 +4,12 @@ import {
   ArrowUpAZ,
   ChevronDown,
   ChevronRight,
-  FileCode2,
-  FileText,
-  GitBranch,
   GitCommitHorizontal,
-  GitPullRequest,
-  Info,
-  ListTodo,
   RefreshCw,
-  Search,
-  Terminal,
-  TestTube2,
 } from "lucide-react";
 import type {
   FileGroupViewModel,
   PlanDecisionViewModel,
-  PromptDetailArtifactViewModel,
   PromptDetailGitLinkViewModel,
   PromptDetailViewModel,
   PromptRowViewModel,
@@ -27,7 +17,7 @@ import type {
   WorkspaceSidebarItemViewModel,
   WorkspaceStatusViewModel,
 } from "./view-models";
-import type { ArtifactSubtype, Workspace } from "./types";
+import type { Workspace } from "./types";
 import { cn } from "@/lib/utils";
 import { DiffViewer } from "./diff-viewer";
 import { MarkdownPlanDocument, normalizePlanDocument } from "./plan-renderer";
@@ -572,14 +562,25 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
   blobLoadingById?: Record<string, boolean>;
 }) {
   const hasDiffPane = detail.diffBlobIds.length > 0 || detail.hasCodeDiffArtifacts;
+  const transcriptSectionCount = detail.transcript.length > 0 ? 1 : 0;
+  const finalResponseSectionCount = detail.featuredFinalResponseArtifact ? 1 : 0;
+  const planSectionCount = detail.featuredPlanArtifact ? 1 : 0;
   const leadingSectionCount =
-    (detail.featuredFinalResponseArtifact ? 1 : 0)
-    + (detail.featuredPlanArtifact ? 1 : 0);
+    transcriptSectionCount
+    + finalResponseSectionCount
+    + planSectionCount;
+  const detailSectionCount = leadingSectionCount + (hasDiffPane ? 1 : 0);
 
   return (
     <div className="px-5 py-5 flex flex-col gap-5">
-      {detail.featuredFinalResponseArtifact && (
+      {detail.transcript.length > 0 && (
         <div className="slidein">
+          <TranscriptSection promptEventId={detail.id} transcript={detail.transcript} />
+        </div>
+      )}
+
+      {detail.featuredFinalResponseArtifact && (
+        <div className="slidein" style={{ animationDelay: transcriptSectionCount > 0 ? "50ms" : undefined }}>
           <FinalResponseSection
             promptEventId={detail.id}
             blobId={detail.featuredFinalResponseBlobId}
@@ -591,7 +592,15 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
       )}
 
       {detail.featuredPlanArtifact && (
-        <div className="slidein" style={{ animationDelay: detail.featuredFinalResponseArtifact ? "50ms" : undefined }}>
+        <div
+          className="slidein"
+          style={{
+            animationDelay:
+              transcriptSectionCount + finalResponseSectionCount > 0
+                ? `${(transcriptSectionCount + finalResponseSectionCount) * 50}ms`
+                : undefined
+          }}
+        >
           <PlanSection
             promptEventId={detail.id}
             blobId={detail.featuredPlanBlobId}
@@ -616,14 +625,8 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
         </div>
       )}
 
-      {detail.artifactSummaries.length > 0 && (
-        <div className="slidein" style={{ animationDelay: `${Math.max(leadingSectionCount, hasDiffPane ? leadingSectionCount + 1 : leadingSectionCount) * 50}ms` }}>
-          <ArtifactSection key={detail.id} artifacts={detail.artifactSummaries} />
-        </div>
-      )}
-
       {detail.fileGroups.length > 0 && (
-        <div className="slidein" style={{ animationDelay: `${(Math.max(leadingSectionCount, hasDiffPane ? leadingSectionCount + 1 : leadingSectionCount) + 1) * 50}ms` }}>
+        <div className="slidein" style={{ animationDelay: `${detailSectionCount * 50}ms` }}>
           <Section title="Files changed" badge={detail.touchedFilesLabel}>
             {detail.fileGroups.map((g) => (
               <FileGroupRow key={g.extension} promptEventId={detail.id} group={g} />
@@ -633,7 +636,7 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
       )}
 
       {detail.gitSummaries.length > 0 && (
-        <div className="slidein" style={{ animationDelay: `${(Math.max(leadingSectionCount, hasDiffPane ? leadingSectionCount + 1 : leadingSectionCount) + 2) * 50}ms` }}>
+        <div className="slidein" style={{ animationDelay: `${(detailSectionCount + 1) * 50}ms` }}>
           <Section title="Git">
             {detail.gitSummaries.map((gl) => (
               <GitRow key={gl.id} link={gl} />
@@ -641,6 +644,144 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
           </Section>
         </div>
       )}
+    </div>
+  );
+}
+
+function TranscriptSection({
+  promptEventId,
+  transcript,
+}: {
+  promptEventId: string;
+  transcript: PromptDetailViewModel["transcript"];
+}) {
+  const [open, setOpen] = usePromptDisclosureState(promptEventId, "transcript");
+  const [pageSize, setPageSize] = useState<(typeof transcriptPageSizeOptions)[number] | "all">(10);
+  const [visibleCount, setVisibleCount] = useState(10);
+  const visibleTranscript =
+    pageSize === "all" ? transcript : transcript.slice(0, visibleCount);
+  const remainingCount = transcript.length - visibleTranscript.length;
+  const nextBatchCount =
+    pageSize === "all" ? 0 : Math.min(pageSize, Math.max(remainingCount, 0));
+
+  return (
+    <div className="rounded-xl border border-brd bg-white overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="w-full flex items-center gap-3 px-4 py-3 border-0 bg-gz-1 text-left cursor-pointer hover:bg-gz-2 transition-colors"
+        >
+        <ChevronRight className={cn("size-3 shrink-0 text-t4 transition-transform duration-200", open && "rotate-90")} />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Transcript</h3>
+          <p className="text-[12px] text-t2">Prompt, assistant messages, and tool activity in turn order</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] text-t3 bg-white px-1.5 py-px rounded border border-brd">
+            {transcript.length} item{transcript.length === 1 ? "" : "s"}
+          </span>
+          <label className="flex items-center gap-2 text-[10px] text-t3">
+            <span className="uppercase tracking-[0.1em] text-t4">Show</span>
+            <select
+              aria-label="Transcript items per page"
+              className="h-6 rounded-md border border-brd bg-white px-2 text-[11px] text-t2 outline-none transition-colors hover:border-brd-strong focus:border-brd-strong"
+              value={pageSize}
+              onClick={(event) => event.stopPropagation()}
+              onChange={(event) => {
+                const nextValue =
+                  event.target.value === "all" ? "all" : Number(event.target.value) as (typeof transcriptPageSizeOptions)[number];
+                setPageSize(nextValue);
+                setVisibleCount(nextValue === "all" ? transcript.length : nextValue);
+              }}
+            >
+              {transcriptPageSizeOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+              <option value="all">All</option>
+            </select>
+          </label>
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-brd px-4 py-4 slidedown">
+          <div className="relative">
+            <div className="absolute left-[10px] top-2 bottom-2 w-px bg-brd" />
+            <div className="space-y-5">
+              {visibleTranscript.map((entry, index) => (
+                <TranscriptEntryRow key={`${entry.kind}:${entry.occurredAt}:${index}`} entry={entry} />
+              ))}
+            </div>
+          </div>
+          {pageSize !== "all" && remainingCount > 0 && (
+            <div className="mt-4 pl-8">
+              <button
+                type="button"
+                onClick={() => setVisibleCount((current) => Math.min(current + pageSize, transcript.length))}
+                className="text-[11px] font-medium text-t3 transition-colors hover:text-t1"
+              >
+                Show {nextBatchCount} more
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TranscriptEntryRow({
+  entry,
+}: {
+  entry: PromptDetailViewModel["transcript"][number];
+}) {
+  const isMessage = entry.kind === "message";
+  const markerClassName = isMessage
+    ? entry.role === "user"
+      ? "bg-t1"
+      : "bg-white border border-brd-strong"
+    : "bg-gz-3";
+
+  return (
+    <div className="grid grid-cols-[20px_minmax(0,1fr)] gap-4">
+      <div className="relative flex justify-center">
+        <span className={cn("mt-[3px] size-2.5 rounded-full", markerClassName)} />
+      </div>
+      <div className="min-w-0">
+        <div className="mb-1.5 flex min-h-[14px] items-center gap-2 flex-wrap text-[10px] uppercase tracking-[0.08em] text-t4">
+          <span className="font-semibold">
+            {entry.kind === "message"
+              ? entry.role === "user" ? "prompt" : "assistant"
+              : entry.label}
+          </span>
+          {entry.kind === "message" && entry.phase && (
+            <span>{entry.phase.replace(/_/g, " ")}</span>
+          )}
+          {entry.kind === "activity" && entry.status && (
+            <span>{entry.status}</span>
+          )}
+          <span className="font-mono tracking-normal text-[10px] tabular-nums normal-case">{entry.timestampLabel}</span>
+        </div>
+        {entry.kind === "message" ? (
+          <MarkdownPlanDocument markdown={entry.text} variant="thread" />
+        ) : (
+          <div className="space-y-1">
+            <p className={cn(
+              "text-[13px] leading-6 text-t2",
+              entry.activityType === "command" && "font-mono text-[12px]"
+            )}>
+              {entry.summary}
+            </p>
+            {entry.detail && (
+              <pre className="overflow-x-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-t3 font-mono">
+                {entry.detail}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -931,115 +1072,7 @@ function Section({
   );
 }
 
-const artifactPageSizeOptions = [10, 20, 50] as const;
-
-function ArtifactSection({ artifacts }: { artifacts: PromptDetailArtifactViewModel[] }) {
-  const [pageSize, setPageSize] = useState<(typeof artifactPageSizeOptions)[number] | "all">(10);
-  const [visibleCount, setVisibleCount] = useState(10);
-
-  const visibleArtifacts =
-    pageSize === "all" ? artifacts : artifacts.slice(0, visibleCount);
-  const remainingCount = artifacts.length - visibleArtifacts.length;
-  const nextBatchCount =
-    pageSize === "all" ? 0 : Math.min(pageSize, Math.max(remainingCount, 0));
-
-  return (
-    <Section
-      title="Artifacts"
-      badge={`${artifacts.length} item${artifacts.length === 1 ? "" : "s"}`}
-      actions={
-        <label className="flex items-center gap-2 text-[10px] text-t3">
-          <span className="uppercase tracking-[0.1em] text-t4">Show</span>
-          <select
-            aria-label="Artifacts per page"
-            className="h-6 rounded-md border border-brd bg-white px-2 text-[11px] text-t2 outline-none transition-colors hover:border-brd-strong focus:border-brd-strong"
-            value={pageSize}
-            onChange={(event) => {
-              const nextValue =
-                event.target.value === "all" ? "all" : Number(event.target.value) as (typeof artifactPageSizeOptions)[number];
-              setPageSize(nextValue);
-              setVisibleCount(nextValue === "all" ? artifacts.length : nextValue);
-            }}
-          >
-            {artifactPageSizeOptions.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-            <option value="all">All</option>
-          </select>
-        </label>
-      }
-    >
-      {visibleArtifacts.map((artifact) => (
-        <ArtifactRow key={artifact.id} artifact={artifact} />
-      ))}
-      {pageSize !== "all" && remainingCount > 0 && (
-        <div className="bg-white px-3 py-2.5">
-          <button
-            type="button"
-            onClick={() => setVisibleCount((current) => Math.min(current + pageSize, artifacts.length))}
-            className="w-full rounded-md border border-brd bg-gz-1 px-3 py-2 text-[11px] font-medium text-t2 transition-colors hover:bg-gz-2 hover:text-t1"
-          >
-            Show {nextBatchCount} more
-          </button>
-        </div>
-      )}
-    </Section>
-  );
-}
-
-/* ─── Artifact row ──────────────────────────────────────────────────────── */
-
-function ArtifactRow({ artifact }: { artifact: PromptDetailArtifactViewModel }) {
-  const iconMap = {
-    code_diff: FileCode2,
-    final_output: FileText,
-    plan: ListTodo,
-    test_run: TestTube2,
-    command_run: Terminal,
-    commit_ref: GitCommitHorizontal,
-    pr_ref: GitPullRequest,
-  } as const;
-  const classificationIconMap: Partial<Record<ArtifactSubtype, typeof Terminal>> = {
-    "verification.test": TestTube2,
-    "verification.typecheck": TestTube2,
-    "execution.search": Search,
-    "execution.git_status": GitBranch,
-    "execution.command": Terminal,
-    "final.answer": FileText,
-    "reference.commit": GitCommitHorizontal,
-    "reference.pr": GitPullRequest,
-  } as const;
-  const Icon =
-    (artifact.subtype ? classificationIconMap[artifact.subtype] : undefined)
-    ?? iconMap[artifact.type]
-    ?? Info;
-
-  return (
-    <div className="flex items-start gap-3 px-3 py-2.5 bg-white hover:bg-gz-1 transition-colors">
-      <Icon className="size-3.5 shrink-0 text-t4 mt-0.5" strokeWidth={1.75} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap mb-0.5">
-          <span className="text-[12px] font-medium text-t1">{artifact.label}</span>
-          {artifact.fileCountLabel && <ChipBadge label={artifact.fileCountLabel} />}
-          {artifact.relationCountLabel && <ChipBadge label={artifact.relationCountLabel} />}
-        </div>
-        <p className="text-[11px] text-t3 line-clamp-2">{artifact.summary}</p>
-        {artifact.files.length > 0 && (
-          <div className="mt-1.5 flex flex-col">
-            {artifact.files.slice(0, 5).map((f) => (
-              <code key={f} className="text-[10px] text-t4 font-mono truncate py-px">{f}</code>
-            ))}
-            {artifact.files.length > 5 && (
-              <span className="text-[10px] text-t4">+{artifact.files.length - 5} more</span>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+const transcriptPageSizeOptions = [10, 20, 50] as const;
 
 function ChipBadge({ label }: { label: string }) {
   return (

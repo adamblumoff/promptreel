@@ -140,6 +140,24 @@ export type GitLink = {
 
 export type PromptDetail = Omit<PromptListItem, "filesTouched" | "filesTouchedCount" | "childCount" | "artifactCount" | "primaryArtifactType" | "primaryArtifactSummary" | "hasCodeDiff" | "isLiveDerived"> & {
   promptText: string;
+  transcript: Array<
+    | {
+        kind: "message";
+        role: "user" | "assistant";
+        occurredAt: string;
+        phase: string | null;
+        text: string;
+      }
+    | {
+        kind: "activity";
+        occurredAt: string;
+        activityType: "command" | "tool";
+        label: string;
+        summary: string;
+        detail: string | null;
+        status: string | null;
+      }
+  >;
   artifacts: Artifact[];
   artifactLinks: ArtifactLink[];
   gitLinks: GitLink[];

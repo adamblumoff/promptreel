@@ -194,7 +194,28 @@ export interface PromptEventRecord {
   endSnapshotId: string | null;
 }
 
+export interface PromptTranscriptMessage {
+  kind: "message";
+  role: "user" | "assistant";
+  occurredAt: string;
+  phase: string | null;
+  text: string;
+}
+
+export interface PromptTranscriptActivity {
+  kind: "activity";
+  occurredAt: string;
+  activityType: "command" | "tool";
+  label: string;
+  summary: string;
+  detail: string | null;
+  status: string | null;
+}
+
+export type PromptTranscriptEntry = PromptTranscriptMessage | PromptTranscriptActivity;
+
 export interface PromptEventDetail extends PromptEventRecord {
+  transcript: PromptTranscriptEntry[];
   artifacts: ArtifactRecord[];
   artifactLinks: ArtifactLinkRecord[];
   gitLinks: GitLinkRecord[];

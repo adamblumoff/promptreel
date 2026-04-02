@@ -247,6 +247,31 @@ describe("web view models", () => {
       endSnapshotId: null,
       hasPlanArtifact: true,
       hasFinalResponse: true,
+      transcript: [
+        {
+          kind: "message",
+          role: "user",
+          occurredAt: "2026-03-30T14:22:00.000Z",
+          phase: null,
+          text: "Explain the change and summarize the diff."
+        },
+        {
+          kind: "activity",
+          occurredAt: "2026-03-30T14:22:30.000Z",
+          activityType: "command",
+          label: "command",
+          summary: "rg artifact packages",
+          detail: "packages/domain/src/index.ts",
+          status: null
+        },
+        {
+          kind: "message",
+          role: "assistant",
+          occurredAt: "2026-03-30T14:23:00.000Z",
+          phase: "commentary",
+          text: "I’m reviewing the diff and plan together."
+        }
+      ],
       artifacts: [
         {
           id: "artifact-final",
@@ -346,6 +371,17 @@ describe("web view models", () => {
     } satisfies PromptDetail);
 
     expect(detail.primaryArtifactSummary).toBe("Updated the shell and prompt list.");
+    expect(detail.transcript).toHaveLength(3);
+    expect(detail.transcript[0]).toMatchObject({
+      kind: "message",
+      role: "user",
+      text: "Explain the change and summarize the diff."
+    });
+    expect(detail.transcript[1]).toMatchObject({
+      kind: "activity",
+      summary: "rg artifact packages",
+      detail: "packages/domain/src/index.ts"
+    });
     expect(detail.executionPathLabel).toBe("C:/work/alpha");
     expect(detail.touchedFiles).toEqual(["src/App.tsx", "src/components.tsx"]);
     expect(detail.touchedFilesLabel).toBe("2 touched files");
@@ -393,6 +429,22 @@ describe("web view models", () => {
       endSnapshotId: null,
       hasPlanArtifact: false,
       hasFinalResponse: true,
+      transcript: [
+        {
+          kind: "message",
+          role: "user",
+          occurredAt: "2026-03-30T14:22:00.000Z",
+          phase: null,
+          text: "Summarize the work."
+        },
+        {
+          kind: "message",
+          role: "assistant",
+          occurredAt: "2026-03-30T14:24:00.000Z",
+          phase: "final_answer",
+          text: "Wrapped up the implementation."
+        }
+      ],
       artifacts: [
         {
           id: "artifact-final",
