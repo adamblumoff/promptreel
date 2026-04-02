@@ -1138,11 +1138,31 @@ function isApplyPatchActivity(payload: Record<string, unknown>): boolean {
 
 function summarizeToolActivity(payload: Record<string, unknown>): string {
   if (isApplyPatchActivity(payload)) {
-    return "Updated files via apply_patch";
+    return summarizeApplyPatchActivity(typeof payload.input === "string" ? payload.input : null);
   }
 
   const input = typeof payload.input === "string" ? payload.input.trim() : "";
   return input ? summarizeTranscriptCommand(input) : String(payload.name ?? "tool").trim() || "tool";
+}
+
+function summarizeApplyPatchActivity(input: string | null): string {
+  const patch = input?.trim() ?? "";
+  if (!patch) {
+    return "apply patch";
+  }
+
+  const files = [
+    ...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm),
+  ].map((match) => match[1]?.trim()).filter((value): value is string => Boolean(value));
+
+  if (files.length === 0) {
+    return "apply patch";
+  }
+
+  const primaryFile = files[0]!;
+  return files.length === 1
+    ? `apply patch ${primaryFile}`
+    : `apply patch ${primaryFile} +${files.length - 1}`;
 }
 
 function normalizeToolActivityDetail(

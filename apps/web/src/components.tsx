@@ -777,7 +777,7 @@ function TranscriptEntryRow({
   return (
     <div className="grid grid-cols-[20px_minmax(0,1fr)] gap-4">
       <div className="relative flex justify-center">
-        <span className={cn("mt-[3px] size-2.5 rounded-full", markerClassName)} />
+        <span className={cn("mt-[6px] size-2.5 rounded-full", markerClassName)} />
       </div>
       <div className="min-w-0">
         {isExpandable ? (
@@ -786,24 +786,14 @@ function TranscriptEntryRow({
             onClick={onToggle}
             className="w-full border-0 bg-transparent p-0 text-left cursor-pointer"
           >
-            <div className="flex min-w-0 items-baseline gap-2 text-[10px] uppercase tracking-[0.08em] text-t4">
-              <span className="shrink-0 font-semibold">{entryLabel}</span>
-              {metaLabel && <span className="shrink-0">{metaLabel}</span>}
-              <span className="shrink-0 font-mono tracking-normal tabular-nums normal-case">{entry.timestampLabel}</span>
-              <span
-                className={cn(
-                  "min-w-0 flex-1 normal-case tracking-normal",
-                  entry.kind === "activity"
-                    ? "font-mono text-[11px] font-semibold text-t1"
-                    : "text-[12px] text-t2"
-                )}
-              >
-                <span className={cn("block min-w-0", !shouldShowExpanded && "truncate")}>
-                  {summaryText}
-                  {!shouldShowExpanded && "…"}
-                </span>
-              </span>
-            </div>
+            <TranscriptEntryLine
+              entry={entry}
+              entryLabel={entryLabel}
+              metaLabel={metaLabel}
+              summaryText={summaryText}
+              timestampLabel={entry.timestampLabel}
+              expanded={shouldShowExpanded}
+            />
             {shouldShowExpanded && detailText && (
               <div className="mt-1.5 border-l border-brd pl-3">
                 <p className="text-[11px] leading-5 font-mono text-t4 whitespace-pre-wrap break-words">
@@ -813,23 +803,64 @@ function TranscriptEntryRow({
             )}
           </button>
         ) : (
-          <div className="flex min-w-0 items-baseline gap-2 text-[10px] uppercase tracking-[0.08em] text-t4">
-            <span className="shrink-0 font-semibold">{entryLabel}</span>
-            {metaLabel && <span className="shrink-0">{metaLabel}</span>}
-            <span className="shrink-0 font-mono tracking-normal tabular-nums normal-case">{entry.timestampLabel}</span>
-            <span
-              className={cn(
-                "min-w-0 flex-1 truncate normal-case tracking-normal",
-                entry.kind === "activity"
-                  ? "font-mono text-[11px] font-semibold text-t1"
-                  : "text-[12px] text-t2"
-              )}
-            >
-              {summaryText}
-            </span>
-          </div>
+            <div className="flex min-w-0 items-baseline gap-2 text-[10px] uppercase tracking-[0.08em] text-t4">
+              <TranscriptEntryLine
+                entry={entry}
+                entryLabel={entryLabel}
+                metaLabel={metaLabel}
+                summaryText={summaryText}
+                timestampLabel={entry.timestampLabel}
+                expanded
+              />
+            </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function TranscriptEntryLine({
+  entry,
+  entryLabel,
+  metaLabel,
+  summaryText,
+  timestampLabel,
+  expanded,
+}: {
+  entry: PromptDetailViewModel["transcript"][number];
+  entryLabel: string;
+  metaLabel: string | null;
+  summaryText: string;
+  timestampLabel: string;
+  expanded: boolean;
+}) {
+  return (
+    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-0.5">
+      <div className="flex min-w-0 items-baseline gap-2 text-[10px] uppercase tracking-[0.08em] text-t4">
+        <span className="shrink-0 font-semibold">{entryLabel}</span>
+        {metaLabel && <span className="shrink-0">{metaLabel}</span>}
+      </div>
+      <div
+        className={cn(
+          "min-w-0 normal-case tracking-normal",
+          entry.kind === "activity"
+            ? "font-mono text-[11px] font-semibold text-t1"
+            : "text-[12px] text-t2"
+        )}
+      >
+        <span
+          className={cn(
+            "block min-w-0 leading-5",
+            !expanded && "truncate"
+          )}
+        >
+          {summaryText}
+          {!expanded && "…"}
+        </span>
+      </div>
+      <span className="shrink-0 pt-px font-mono text-[10px] text-t4 tabular-nums normal-case">
+        {timestampLabel}
+      </span>
     </div>
   );
 }
