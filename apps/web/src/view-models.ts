@@ -302,8 +302,8 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
       commitSha: gitLink.commitSha,
       survivalState: gitLink.survivalState,
       headline: gitLink.commitSha
-        ? `${gitLink.commitSha.slice(0, 7)}`
-        : `${gitLink.patchIdentity.slice(0, 8)}`,
+        ? `Commit ${gitLink.commitSha.slice(0, 7)}`
+        : `Patch ${gitLink.patchIdentity.slice(0, 8)}`,
       detail: `Matched ${formatters.timestamp.format(new Date(gitLink.matchedAt))}`
     }))
   };

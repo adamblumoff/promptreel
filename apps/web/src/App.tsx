@@ -299,11 +299,6 @@ export function App() {
     if (!selectedWorkspaceId || !expandedPromptId) return;
     const detail = promptDetails[expandedPromptId];
     if (!detail) return;
-    console.log("[diff-debug] detail for", expandedPromptId, {
-      diffBlobIds: detail.diffBlobIds,
-      hasCodeDiffArtifacts: detail.hasCodeDiffArtifacts,
-      artifactSummaries: detail.artifactSummaries.map(a => ({ type: a.type, blobId: a.blobId })),
-    });
     for (const blobId of detail.diffBlobIds) {
       void loadBlob(selectedWorkspaceId, blobId);
     }

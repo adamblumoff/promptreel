@@ -530,69 +530,77 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
 }) {
-  return (
-    <div className="px-4 py-4 flex flex-col gap-5">
-      {/* Prompt text */}
-      <div className="relative rounded-lg bg-gz-1 border border-brd overflow-hidden slidein">
-        <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-t1" />
-        <div className="pl-5 pr-4 py-3 text-[13px] leading-relaxed text-t2 whitespace-pre-wrap">
-          {detail.promptText}
-        </div>
-      </div>
+  const hasDiffPane = detail.diffBlobIds.length > 0 || detail.hasCodeDiffArtifacts;
 
-      {/* Meta */}
-      <div className="flex items-center gap-3 flex-wrap slidein" style={{ animationDelay: "50ms" }}>
-        <code className="text-[11px] font-mono text-t3 bg-gz-1 border border-brd px-2 py-0.5 rounded-md">
-          {detail.executionPathLabel}
-        </code>
-        {detail.primaryArtifactSummary && (
-          <p className="text-[12px] text-t3 truncate">{detail.primaryArtifactSummary}</p>
+  return (
+    <div className={cn(
+      "px-4 py-4",
+      hasDiffPane && "lg:grid lg:grid-cols-[minmax(0,0.95fr)_minmax(340px,1.05fr)] lg:gap-5 lg:items-start"
+    )}>
+      <div className="min-w-0 flex flex-col gap-5">
+        {/* Prompt text */}
+        <div className="relative rounded-lg bg-gz-1 border border-brd overflow-hidden slidein">
+          <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-t1" />
+          <div className="pl-5 pr-4 py-3 text-[13px] leading-relaxed text-t2 whitespace-pre-wrap">
+            {detail.promptText}
+          </div>
+        </div>
+
+        {/* Meta */}
+        <div className="flex items-center gap-3 flex-wrap slidein" style={{ animationDelay: "50ms" }}>
+          <code className="text-[11px] font-mono text-t3 bg-gz-1 border border-brd px-2 py-0.5 rounded-md">
+            {detail.executionPathLabel}
+          </code>
+          {detail.primaryArtifactSummary && (
+            <p className="text-[12px] text-t3 truncate">{detail.primaryArtifactSummary}</p>
+          )}
+        </div>
+
+        {/* Artifacts */}
+        {detail.artifactSummaries.length > 0 && (
+          <div className="slidein" style={{ animationDelay: "100ms" }}>
+            <Section title="Artifacts">
+              {detail.artifactSummaries.map((a) => (
+                <ArtifactRow key={a.id} artifact={a} />
+              ))}
+            </Section>
+          </div>
+        )}
+
+        {/* Files */}
+        {detail.fileGroups.length > 0 && (
+          <div className="slidein" style={{ animationDelay: "150ms" }}>
+            <Section title="Files changed" badge={detail.touchedFilesLabel}>
+              {detail.fileGroups.map((g) => (
+                <FileGroupRow key={g.extension} group={g} />
+              ))}
+            </Section>
+          </div>
+        )}
+
+        {/* Git */}
+        {detail.gitSummaries.length > 0 && (
+          <div className="slidein" style={{ animationDelay: `${hasDiffPane ? 150 : 200}ms` }}>
+            <Section title="Git">
+              {detail.gitSummaries.map((gl) => (
+                <GitRow key={gl.id} link={gl} />
+              ))}
+            </Section>
+          </div>
         )}
       </div>
 
-      {/* Artifacts */}
-      {detail.artifactSummaries.length > 0 && (
-        <div className="slidein" style={{ animationDelay: "100ms" }}>
-          <Section title="Artifacts">
-            {detail.artifactSummaries.map((a) => (
-              <ArtifactRow key={a.id} artifact={a} />
-            ))}
-          </Section>
-        </div>
-      )}
-
-      {/* Files */}
-      {detail.fileGroups.length > 0 && (
-        <div className="slidein" style={{ animationDelay: "150ms" }}>
-          <Section title="Files changed" badge={detail.touchedFilesLabel}>
-            {detail.fileGroups.map((g) => (
-              <FileGroupRow key={g.extension} group={g} />
-            ))}
-          </Section>
-        </div>
-      )}
-
-      {/* Diff */}
-      {(detail.diffBlobIds.length > 0 || detail.hasCodeDiffArtifacts) && (
-        <div className="slidein" style={{ animationDelay: "200ms" }}>
-          <DiffSection
-            blobIds={detail.diffBlobIds}
-            blobCache={blobCache ?? {}}
-            blobLoadingById={blobLoadingById ?? {}}
-            hasCodeDiffArtifacts={detail.hasCodeDiffArtifacts}
-          />
-        </div>
-      )}
-
-      {/* Git */}
-      {detail.gitSummaries.length > 0 && (
-        <div className="slidein" style={{ animationDelay: `${detail.diffBlobIds.length > 0 ? 250 : 200}ms` }}>
-          <Section title="Git">
-            {detail.gitSummaries.map((gl) => (
-              <GitRow key={gl.id} link={gl} />
-            ))}
-          </Section>
-        </div>
+      {hasDiffPane && (
+        <aside className="min-w-0 mt-5 lg:mt-0 slidein" style={{ animationDelay: "200ms" }}>
+          <div className="lg:sticky lg:top-4">
+            <DiffSection
+              blobIds={detail.diffBlobIds}
+              blobCache={blobCache ?? {}}
+              blobLoadingById={blobLoadingById ?? {}}
+              hasCodeDiffArtifacts={detail.hasCodeDiffArtifacts}
+            />
+          </div>
+        </aside>
       )}
     </div>
   );
@@ -612,23 +620,30 @@ function DiffSection({ blobIds, blobCache, blobLoadingById, hasCodeDiffArtifacts
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-2 mb-2 px-1">
         <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4">Code changes</h3>
+        {blobIds.length > 0 && (
+          <span className="text-[10px] text-t3 bg-gz-1 px-1.5 py-px rounded">git diff</span>
+        )}
       </div>
       {anyLoading && !combinedPatch && (
-        <div className="flex items-center gap-2 py-4 justify-center">
+        <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="spinner text-t4">
             <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
           <span className="text-[11px] text-t3">Loading diff...</span>
         </div>
       )}
-      {combinedPatch && <DiffViewer patch={combinedPatch} />}
+      {combinedPatch && <DiffViewer patch={combinedPatch} mode="focused" />}
       {!anyLoading && !combinedPatch && hasCodeDiffArtifacts && blobIds.length === 0 && (
-        <p className="text-[11px] text-t3 py-2">Diff content not stored for this artifact.</p>
+        <div className="rounded-xl border border-brd bg-white px-4 py-3">
+          <p className="text-[11px] text-t3">Diff content not stored for this artifact.</p>
+        </div>
       )}
       {!anyLoading && !combinedPatch && blobIds.length > 0 && (
-        <p className="text-[11px] text-t3 py-2">Failed to load diff content.</p>
+        <div className="rounded-xl border border-brd bg-white px-4 py-3">
+          <p className="text-[11px] text-t3">Failed to load diff content.</p>
+        </div>
       )}
     </div>
   );

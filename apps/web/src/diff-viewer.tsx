@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -208,7 +208,13 @@ function parseDiff(raw: string): DiffFile[] {
    DiffViewer — renders a full diff
    ═══════════════════════════════════════════════════════════════════════════ */
 
-export function DiffViewer({ patch }: { patch: string }) {
+export function DiffViewer({
+  patch,
+  mode = "stacked"
+}: {
+  patch: string;
+  mode?: "stacked" | "focused";
+}) {
   const files = parseDiff(patch);
 
   if (files.length === 0) {
@@ -221,6 +227,10 @@ export function DiffViewer({ patch }: { patch: string }) {
 
   const totalAdd = files.reduce((s, f) => s + f.additions, 0);
   const totalDel = files.reduce((s, f) => s + f.deletions, 0);
+
+  if (mode === "focused") {
+    return <FocusedDiffViewer files={files} totalAdd={totalAdd} totalDel={totalDel} />;
+  }
 
   return (
     <div className="flex flex-col gap-3 slidein">
@@ -236,6 +246,102 @@ export function DiffViewer({ patch }: { patch: string }) {
       {files.map((file, i) => (
         <FileDiff key={`${file.displayPath}-${i}`} file={file} defaultOpen={files.length <= 3} index={i} />
       ))}
+    </div>
+  );
+}
+
+function FocusedDiffViewer({
+  files,
+  totalAdd,
+  totalDel
+}: {
+  files: DiffFile[];
+  totalAdd: number;
+  totalDel: number;
+}) {
+  const [activePath, setActivePath] = useState(files[0]?.displayPath ?? "");
+
+  useEffect(() => {
+    if (!files.some((file) => file.displayPath === activePath)) {
+      setActivePath(files[0]?.displayPath ?? "");
+    }
+  }, [activePath, files]);
+
+  const activeFile = files.find((file) => file.displayPath === activePath) ?? files[0];
+  if (!activeFile) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-xl border border-brd bg-white overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-gz-1 border-b border-brd">
+        <div className="min-w-0">
+          <p className="text-[11px] font-medium text-t2">
+            {files.length} file{files.length !== 1 ? "s" : ""} changed
+          </p>
+          <p className="text-[10px] text-t4 truncate">{activeFile.displayPath}</p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {totalAdd > 0 && <span className="text-[10px] font-mono text-green">+{totalAdd}</span>}
+          {totalDel > 0 && <span className="text-[10px] font-mono text-red">-{totalDel}</span>}
+          <DiffBar additions={totalAdd} deletions={totalDel} />
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-[220px_minmax(0,1fr)]">
+        <div className="border-b border-brd bg-white lg:border-b-0 lg:border-r">
+          <div className="max-h-[280px] overflow-y-auto p-1.5">
+            {files.map((file) => {
+              const isActive = file.displayPath === activeFile.displayPath;
+              return (
+                <button
+                  key={file.displayPath}
+                  type="button"
+                  onClick={() => setActivePath(file.displayPath)}
+                  className={cn(
+                    "w-full rounded-lg border px-2.5 py-2 text-left transition-colors",
+                    isActive
+                      ? "border-brd-strong bg-gz-1"
+                      : "border-transparent bg-transparent hover:bg-gz-1"
+                  )}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <code className="min-w-0 flex-1 truncate text-[11px] font-mono text-t2">
+                      {file.displayPath}
+                    </code>
+                    {file.isNew && (
+                      <span className="text-[9px] font-semibold uppercase tracking-wider text-green bg-green-dim px-1.5 py-px rounded">
+                        new
+                      </span>
+                    )}
+                    {file.isDeleted && (
+                      <span className="text-[9px] font-semibold uppercase tracking-wider text-red bg-red-dim px-1.5 py-px rounded">
+                        deleted
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px]">
+                    {file.additions > 0 && <span className="font-mono text-green">+{file.additions}</span>}
+                    {file.deletions > 0 && <span className="font-mono text-red">-{file.deletions}</span>}
+                    <DiffBar additions={file.additions} deletions={file.deletions} />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-brd bg-white">
+            <code className="min-w-0 flex-1 truncate text-[11px] font-mono font-medium text-t1">
+              {activeFile.displayPath}
+            </code>
+            {activeFile.additions > 0 && <span className="text-[10px] font-mono text-green">+{activeFile.additions}</span>}
+            {activeFile.deletions > 0 && <span className="text-[10px] font-mono text-red">-{activeFile.deletions}</span>}
+          </div>
+          <DiffTable file={activeFile} maxHeightClass="max-h-[560px]" />
+        </div>
+      </div>
     </div>
   );
 }
@@ -276,16 +382,30 @@ function FileDiff({ file, defaultOpen, index }: { file: DiffFile; defaultOpen: b
 
       {/* Diff lines */}
       {open && (
-        <div className="overflow-x-auto slidedown">
-          <table className="w-full border-collapse text-[11px] leading-[18px] font-mono">
-            <tbody>
-              {file.lines.map((line, j) => (
-                <DiffLineRow key={j} line={line} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DiffTable file={file} maxHeightClass="" className="slidedown" />
       )}
+    </div>
+  );
+}
+
+function DiffTable({
+  file,
+  maxHeightClass,
+  className
+}: {
+  file: DiffFile;
+  maxHeightClass: string;
+  className?: string;
+}) {
+  return (
+    <div className={cn("overflow-x-auto", maxHeightClass, className)}>
+      <table className="w-full border-collapse text-[11px] leading-[18px] font-mono">
+        <tbody>
+          {file.lines.map((line, index) => (
+            <DiffLineRow key={index} line={line} />
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
