@@ -11,8 +11,8 @@
   --color-gz-5: #c0c0c0;
   --color-t1: #0a0a0a;
   --color-t2: #525252;
-  --color-t3: #737373;
-  --color-t4: #a3a3a3;
+  --color-t3: #5f5f5f;
+  --color-t4: #767676;
   --color-brd: rgba(0, 0, 0, 0.08);
   --color-brd-strong: rgba(0, 0, 0, 0.15);
   --color-cyan: #0891b2;
@@ -24,8 +24,8 @@
   --color-green-dim: rgba(22, 163, 74, 0.08);
   --color-red: #dc2626;
   --color-red-dim: rgba(220, 38, 38, 0.06);
-  --color-amber: #d97706;
-  --color-amber-dim: rgba(217, 119, 6, 0.08);
+  --color-amber: #9a3412;
+  --color-amber-dim: rgba(154, 52, 18, 0.1);
 }
 
 :root {

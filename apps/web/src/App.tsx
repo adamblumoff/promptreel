@@ -1,7 +1,6 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchBlob,
-  fetchHealth,
   fetchPromptDetail,
   fetchPrompts,
   fetchThreads,
@@ -9,7 +8,6 @@ import {
   rescanSessions,
 } from "./api";
 import type {
-  Health,
   PromptDetail,
   PromptListItem,
   ThreadSummary,
@@ -63,7 +61,6 @@ export function App() {
   const [threadsByWs, setThreadsByWs] = useState<Record<string, ThreadSummary[]>>({});
   const [selectedThreadId, setSelectedThreadId] = useState(() => stored(KEYS.thread));
   const [promptsByKey, setPromptsByKey] = useState<Record<string, PromptListItem[]>>({});
-  const [health, setHealth] = useState<Health | null>(null);
   const [expandedPromptId, setExpandedPromptId] = useState<string | null>(null);
   const [detailsById, setDetailsById] = useState<Record<string, PromptDetail>>({});
   const [detailLoadingById, setDetailLoadingById] = useState<Record<string, boolean>>({});
@@ -120,30 +117,6 @@ export function App() {
     const id = setInterval(() => void go(), 10_000);
     return () => { live = false; ctrl?.abort(); clearInterval(id); };
   }, [visible]);
-
-  /* ── fetch health ─────────────────────────────────────────────────────── */
-
-  useEffect(() => {
-    if (!selectedWorkspaceId || !visible) return;
-    let live = true;
-    let ctrl: AbortController | null = null;
-
-    const go = async () => {
-      ctrl?.abort();
-      ctrl = new AbortController();
-      try {
-        const d = await fetchHealth({ signal: ctrl.signal });
-        if (live) setHealth(d);
-      } catch (e) {
-        if (!live || isAbort(e)) return;
-        setHealth(null);
-      }
-    };
-
-    void go();
-    const id = setInterval(() => void go(), 15_000);
-    return () => { live = false; ctrl?.abort(); clearInterval(id); };
-  }, [visible, selectedWorkspaceId]);
 
   /* ── fetch threads ────────────────────────────────────────────────────── */
 
@@ -317,22 +290,6 @@ export function App() {
     }
   }, [selectedWorkspaceId, promptRows, expandedPromptId, detailsById]);
 
-  // Auto-load plan and diff blobs when a prompt detail becomes available
-  useEffect(() => {
-    if (!selectedWorkspaceId || !expandedPromptId) return;
-    const detail = promptDetails[expandedPromptId];
-    if (!detail) return;
-    if (detail.featuredFinalResponseBlobId) {
-      void loadBlob(selectedWorkspaceId, detail.featuredFinalResponseBlobId);
-    }
-    if (detail.featuredPlanBlobId) {
-      void loadBlob(selectedWorkspaceId, detail.featuredPlanBlobId);
-    }
-    for (const blobId of detail.diffBlobIds) {
-      void loadBlob(selectedWorkspaceId, blobId);
-    }
-  }, [selectedWorkspaceId, expandedPromptId, promptDetails]);
-
   /* ── handlers ─────────────────────────────────────────────────────────── */
 
   const handleSelectWorkspace = (id: string) => {
@@ -362,8 +319,7 @@ export function App() {
     setIsRescanning(true);
     try {
       const ctrl = new AbortController();
-      const ingestion = await rescanSessions({ signal: ctrl.signal });
-      setHealth((c) => (c ? { ...c, ingestion } : c));
+      await rescanSessions({ signal: ctrl.signal });
       const ws = sortWorkspacesByActivity(await fetchWorkspaces({ signal: ctrl.signal }));
       startTransition(() => {
         setWorkspaces(ws);
@@ -384,6 +340,14 @@ export function App() {
     startTransition(() => {
       setTranscriptOrder((current) => (current === "desc" ? "asc" : "desc"));
     });
+  };
+
+  const handleLoadBlob = (blobId: string) => {
+    if (!selectedWorkspaceId) {
+      return;
+    }
+
+    void loadBlob(selectedWorkspaceId, blobId);
   };
 
   /* ── render ───────────────────────────────────────────────────────────── */
@@ -415,6 +379,7 @@ export function App() {
           transcriptOrder={transcriptOrder}
           onToggleTranscriptOrder={handleToggleTranscriptOrder}
           isLoading={promptsLoading}
+          onLoadBlob={handleLoadBlob}
           blobCache={blobCache}
           blobLoadingById={blobLoadingById}
         />

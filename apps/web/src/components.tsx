@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, type ReactNode, useEffect, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -19,8 +19,17 @@ import type {
 } from "./view-models";
 import type { Workspace } from "./types";
 import { cn } from "@/lib/utils";
-import { DiffViewer } from "./diff-viewer";
-import { MarkdownPlanDocument, normalizePlanDocument } from "./plan-renderer";
+import { normalizePlanDocument } from "./plan-document";
+
+const LazyDiffViewer = lazy(async () => {
+  const module = await import("./diff-viewer");
+  return { default: module.DiffViewer };
+});
+
+const LazyMarkdownPlanDocument = lazy(async () => {
+  const module = await import("./plan-renderer");
+  return { default: module.MarkdownPlanDocument };
+});
 
 const decisionTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -271,6 +280,7 @@ export function PromptFeed({
   transcriptOrder,
   onToggleTranscriptOrder,
   isLoading,
+  onLoadBlob,
   blobCache,
   blobLoadingById,
 }: {
@@ -285,6 +295,7 @@ export function PromptFeed({
   transcriptOrder: "desc" | "asc";
   onToggleTranscriptOrder: () => void;
   isLoading: boolean;
+  onLoadBlob: (blobId: string) => void;
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
 }) {
@@ -349,6 +360,7 @@ export function PromptFeed({
             error={errorById[expandedId] ?? null}
             transcriptOrder={transcriptOrder}
             onToggleTranscriptOrder={onToggleTranscriptOrder}
+            onLoadBlob={onLoadBlob}
             blobCache={blobCache}
             blobLoadingById={blobLoadingById}
           />
@@ -467,6 +479,7 @@ function PromptReviewPane({
   error,
   transcriptOrder,
   onToggleTranscriptOrder,
+  onLoadBlob,
   blobCache,
   blobLoadingById,
 }: {
@@ -476,6 +489,7 @@ function PromptReviewPane({
   error: string | null;
   transcriptOrder: "desc" | "asc";
   onToggleTranscriptOrder: () => void;
+  onLoadBlob: (blobId: string) => void;
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
 }) {
@@ -525,6 +539,7 @@ function PromptReviewPane({
           detail={detail}
           transcriptOrder={transcriptOrder}
           onToggleTranscriptOrder={onToggleTranscriptOrder}
+          onLoadBlob={onLoadBlob}
           blobCache={blobCache}
           blobLoadingById={blobLoadingById}
         />
@@ -670,10 +685,11 @@ function getPromptClampStyle(collapsed: boolean, collapsedLines: number) {
    EXPANDED DETAIL — sections stagger in
    ════════════════════════════════════════════════════════════════════════════ */
 
-function ExpandedDetail({ detail, transcriptOrder, onToggleTranscriptOrder, blobCache, blobLoadingById }: {
+function ExpandedDetail({ detail, transcriptOrder, onToggleTranscriptOrder, onLoadBlob, blobCache, blobLoadingById }: {
   detail: PromptDetailViewModel;
   transcriptOrder: "desc" | "asc";
   onToggleTranscriptOrder: () => void;
+  onLoadBlob: (blobId: string) => void;
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
 }) {
@@ -711,6 +727,7 @@ function ExpandedDetail({ detail, transcriptOrder, onToggleTranscriptOrder, blob
           <PlanSection
             promptEventId={detail.id}
             blobId={detail.featuredPlanBlobId}
+            onLoadBlob={onLoadBlob}
             blobCache={blobCache ?? {}}
             blobLoadingById={blobLoadingById ?? {}}
             fallbackSteps={detail.planTraceSteps}
@@ -725,6 +742,7 @@ function ExpandedDetail({ detail, transcriptOrder, onToggleTranscriptOrder, blob
           <DiffSection
             promptEventId={detail.id}
             blobIds={detail.diffBlobIds}
+            onLoadBlob={onLoadBlob}
             blobCache={blobCache ?? {}}
             blobLoadingById={blobLoadingById ?? {}}
             hasCodeDiffArtifacts={detail.hasCodeDiffArtifacts}
@@ -776,16 +794,18 @@ function TranscriptSection({
 
   return (
     <div className="rounded-xl border border-brd bg-white overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="w-full flex items-center gap-3 px-4 py-3 border-0 bg-gz-1 text-left cursor-pointer hover:bg-gz-2 transition-colors"
+      <div className="flex items-center gap-3 px-4 py-3 bg-gz-1">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="flex min-w-0 flex-1 items-center gap-3 border-0 bg-transparent p-0 text-left cursor-pointer hover:text-t1 transition-colors"
         >
-        <ChevronRight className={cn("size-3 shrink-0 text-t4 transition-transform duration-200", open && "rotate-90")} />
-        <div className="min-w-0 flex-1">
-          <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Transcript</h3>
-          <p className="text-[12px] text-t2">Prompt, assistant messages, and tool activity in turn order</p>
-        </div>
+          <ChevronRight className={cn("size-3 shrink-0 text-t4 transition-transform duration-200", open && "rotate-90")} />
+          <div className="min-w-0 flex-1">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Transcript</h3>
+            <p className="text-[12px] text-t2">Prompt, assistant messages, and tool activity in turn order</p>
+          </div>
+        </button>
         <div className="flex items-center gap-3">
           <span className="text-[10px] text-t3 bg-white px-1.5 py-px rounded border border-brd">
             {transcript.length} item{transcript.length === 1 ? "" : "s"}
@@ -801,7 +821,6 @@ function TranscriptSection({
               aria-label="Transcript items per page"
               className="h-6 rounded-md border border-brd bg-white px-2 text-[11px] text-t2 outline-none transition-colors hover:border-brd-strong focus:border-brd-strong"
               value={pageSize}
-              onClick={(event) => event.stopPropagation()}
               onChange={(event) => {
                 const nextValue =
                   event.target.value === "all" ? "all" : Number(event.target.value) as (typeof transcriptPageSizeOptions)[number];
@@ -818,7 +837,7 @@ function TranscriptSection({
             </select>
           </label>
         </div>
-      </button>
+      </div>
 
       {open && (
         <div className="border-t border-brd px-4 py-4 slidedown">
@@ -1003,7 +1022,9 @@ function TranscriptEntryBody({
     if (isTranscriptMarkdownEntry(entry)) {
       return (
         <div className="mt-1.5 border-l border-brd pl-3">
-          <MarkdownPlanDocument markdown={entry.text} variant="thread" />
+          <Suspense fallback={<ContentRendererFallback text="Rendering message..." />}>
+            <LazyMarkdownPlanDocument markdown={entry.text} variant="thread" />
+          </Suspense>
         </div>
       );
     }
@@ -1055,6 +1076,7 @@ function isTranscriptMarkdownEntry(entry: PromptDetailViewModel["transcript"][nu
 function PlanSection({
   promptEventId,
   blobId,
+  onLoadBlob,
   blobCache,
   blobLoadingById,
   fallbackSteps = [],
@@ -1063,6 +1085,7 @@ function PlanSection({
 }: {
   promptEventId: string;
   blobId: string | null;
+  onLoadBlob: (blobId: string) => void;
   blobCache: Record<string, string>;
   blobLoadingById: Record<string, boolean>;
   fallbackSteps?: string[];
@@ -1071,8 +1094,17 @@ function PlanSection({
 }) {
   const [open, setOpen] = usePromptDisclosureState(promptEventId, "plan");
   const rawContent = blobId ? blobCache[blobId] : null;
-  const isLoading = blobId ? Boolean(blobLoadingById[blobId]) && rawContent === undefined : false;
+  const shouldRequestContent = Boolean(open && blobId && rawContent === undefined && !blobLoadingById[blobId]);
+  const isLoading = blobId
+    ? shouldRequestContent || (Boolean(blobLoadingById[blobId]) && rawContent === undefined)
+    : false;
   const normalized = normalizePlanDocument(rawContent, fallbackSteps);
+
+  useEffect(() => {
+    if (shouldRequestContent && blobId) {
+      onLoadBlob(blobId);
+    }
+  }, [blobId, onLoadBlob, shouldRequestContent]);
 
   return (
     <div>
@@ -1112,7 +1144,11 @@ function PlanSection({
                 <span className="text-[11px] text-t3">Loading plan...</span>
               </div>
             )}
-            {!isLoading && normalized && <MarkdownPlanDocument markdown={normalized.markdown} />}
+            {!isLoading && normalized && (
+              <Suspense fallback={<ContentRendererFallback text="Rendering plan..." />}>
+                <LazyMarkdownPlanDocument markdown={normalized.markdown} />
+              </Suspense>
+            )}
             {!isLoading && !normalized && hasPlanArtifact && !blobId && (
               <div className="rounded-xl border border-brd bg-white px-4 py-3">
                 <p className="text-[11px] text-t3">Plan content not stored for this artifact.</p>
@@ -1191,19 +1227,30 @@ function formatDecisionTimestamp(timestamp: string): string {
   }
 }
 
-function DiffSection({ promptEventId, blobIds, blobCache, blobLoadingById, hasCodeDiffArtifacts }: {
+function DiffSection({ promptEventId, blobIds, onLoadBlob, blobCache, blobLoadingById, hasCodeDiffArtifacts }: {
   promptEventId: string;
   blobIds: string[];
+  onLoadBlob: (blobId: string) => void;
   blobCache: Record<string, string>;
   blobLoadingById: Record<string, boolean>;
   hasCodeDiffArtifacts: boolean;
 }) {
   const [open, setOpen] = usePromptDisclosureState(promptEventId, "diff");
+  const pendingBlobIds = open
+    ? blobIds.filter((id) => blobCache[id] === undefined && !blobLoadingById[id])
+    : [];
   const anyLoading = blobIds.some((id) => blobLoadingById[id]);
   const combinedPatch = blobIds
     .map((id) => blobCache[id])
     .filter((c): c is string => c !== undefined)
     .join("\n");
+  const isLoading = pendingBlobIds.length > 0 || (anyLoading && !combinedPatch);
+
+  useEffect(() => {
+    for (const blobId of pendingBlobIds) {
+      onLoadBlob(blobId);
+    }
+  }, [onLoadBlob, pendingBlobIds]);
 
   return (
     <div>
@@ -1225,19 +1272,23 @@ function DiffSection({ promptEventId, blobIds, blobCache, blobLoadingById, hasCo
 
         {open && (
           <div className="p-3 border-t border-brd slidedown">
-            {anyLoading && !combinedPatch && (
+            {isLoading && !combinedPatch && (
               <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
                 <RefreshCw className="size-3.5 spinner text-t4" />
                 <span className="text-[11px] text-t3">Loading diff...</span>
               </div>
             )}
-            {combinedPatch && <DiffViewer patch={combinedPatch} mode="focused" />}
-            {!anyLoading && !combinedPatch && hasCodeDiffArtifacts && blobIds.length === 0 && (
+            {combinedPatch && (
+              <Suspense fallback={<ContentRendererFallback text="Rendering diff..." />}>
+                <LazyDiffViewer patch={combinedPatch} mode="focused" />
+              </Suspense>
+            )}
+            {!isLoading && !combinedPatch && hasCodeDiffArtifacts && blobIds.length === 0 && (
               <div className="rounded-xl border border-brd bg-white px-4 py-3">
                 <p className="text-[11px] text-t3">Diff content not stored for this artifact.</p>
               </div>
             )}
-            {!anyLoading && !combinedPatch && blobIds.length > 0 && (
+            {!isLoading && !combinedPatch && blobIds.length > 0 && (
               <div className="rounded-xl border border-brd bg-white px-4 py-3">
                 <p className="text-[11px] text-t3">Failed to load diff content.</p>
               </div>
@@ -1272,6 +1323,15 @@ function Section({
       <div className="rounded-lg border border-brd overflow-hidden divide-y divide-brd">
         {children}
       </div>
+    </div>
+  );
+}
+
+function ContentRendererFallback({ text }: { text: string }) {
+  return (
+    <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
+      <RefreshCw className="size-3.5 spinner text-t4" />
+      <span className="text-[11px] text-t3">{text}</span>
     </div>
   );
 }
