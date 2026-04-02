@@ -44,6 +44,7 @@ const decisionTimestampFormatter = new Intl.DateTimeFormat(undefined, {
 
 export function TopBar({
   workspaces,
+  isWorkspacesLoading,
   selectedWorkspaceId,
   onSelectWorkspace,
   threads,
@@ -54,6 +55,7 @@ export function TopBar({
   onRescan,
 }: {
   workspaces: WorkspaceSidebarItemViewModel[];
+  isWorkspacesLoading: boolean;
   selectedWorkspaceId: string;
   onSelectWorkspace: (id: string) => void;
   threads: ThreadRowViewModel[];
@@ -98,7 +100,9 @@ export function TopBar({
                 {selectedWorkspace.slug.slice(0, 2).toUpperCase()}
               </span>
             )}
-            <span className="max-w-[180px] truncate">{selectedWorkspace?.slug ?? "Select workspace"}</span>
+            <span className="max-w-[180px] truncate">
+              {selectedWorkspace?.slug ?? (isWorkspacesLoading ? "Loading workspaces..." : "Select workspace")}
+            </span>
             <ChevronDown className={cn("size-3 opacity-40 transition-transform duration-200", workspaceDropdownOpen && "rotate-180")} />
           </button>
 
@@ -143,7 +147,9 @@ export function TopBar({
                     </button>
                   ))}
                   {workspaces.length === 0 && (
-                    <p className="text-[13px] text-t3 text-center py-6">No workspaces discovered</p>
+                    <p className="text-[13px] text-t3 text-center py-6">
+                      {isWorkspacesLoading ? "Loading workspaces..." : "No workspaces discovered"}
+                    </p>
                   )}
                 </div>
               </div>
@@ -280,6 +286,7 @@ export function PromptFeed({
   transcriptOrder,
   onToggleTranscriptOrder,
   isLoading,
+  isInitializing,
   onLoadBlob,
   blobCache,
   blobLoadingById,
@@ -295,11 +302,16 @@ export function PromptFeed({
   transcriptOrder: "desc" | "asc";
   onToggleTranscriptOrder: () => void;
   isLoading: boolean;
+  isInitializing: boolean;
   onLoadBlob: (blobId: string) => void;
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
 }) {
   if (rows.length === 0) {
+    if (isInitializing) {
+      return <PromptFeedLoadingState />;
+    }
+
     return (
       <div className="py-20 text-center slidein">
         <div className="size-14 rounded-2xl bg-gz-1 border border-brd flex items-center justify-center mx-auto mb-4">
@@ -367,6 +379,72 @@ export function PromptFeed({
         ) : (
           <EmptyPromptReview />
         )}
+      </section>
+    </div>
+  );
+}
+
+function PromptFeedLoadingState() {
+  return (
+    <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
+      <section className="min-w-0 rounded-xl border border-brd bg-white overflow-hidden slidein">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 bg-gz-1 border-b border-brd">
+          <div>
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-t4">Thread</h2>
+            <p className="text-[12px] text-t3 mt-1">Loading prompt events...</p>
+          </div>
+        </div>
+
+        <div className="relative px-4 py-3">
+          <div className="absolute left-[27.5px] top-5 bottom-5 w-px bg-brd" />
+          <div className="flex flex-col gap-2">
+            {Array.from({ length: 5 }, (_, index) => (
+              <div
+                key={index}
+                style={{ animationDelay: `${index * 40}ms` }}
+                className="grid grid-cols-[24px_minmax(0,1fr)] items-stretch gap-3 cardenter"
+              >
+                <div className="relative flex self-stretch items-center justify-center">
+                  <span className="size-4 rounded-full border-[3px] border-white bg-gz-4" />
+                </div>
+                <div className="rounded-xl border border-brd bg-white px-4 py-3">
+                  <div className="mb-2 h-3 w-24 rounded bg-gz-2 animate-pulse" />
+                  <div className="space-y-2">
+                    <div className="h-3.5 w-full rounded bg-gz-2 animate-pulse" />
+                    <div className="h-3.5 w-4/5 rounded bg-gz-2 animate-pulse" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="min-w-0 slidein" style={{ animationDelay: "80ms" }}>
+        <div className="rounded-xl border border-brd bg-white shadow-sm shadow-black/5 overflow-hidden">
+          <div className="px-5 py-4 border-b border-brd bg-gz-1">
+            <div className="mb-2 h-3 w-28 rounded bg-gz-2 animate-pulse" />
+            <div className="space-y-2">
+              <div className="h-4 w-full rounded bg-gz-2 animate-pulse" />
+              <div className="h-4 w-5/6 rounded bg-gz-2 animate-pulse" />
+              <div className="h-4 w-2/3 rounded bg-gz-2 animate-pulse" />
+            </div>
+          </div>
+          <div className="px-5 py-5 space-y-5">
+            {Array.from({ length: 3 }, (_, index) => (
+              <div key={index} className="rounded-xl border border-brd bg-white overflow-hidden">
+                <div className="flex items-center gap-3 px-4 py-3 bg-gz-1 border-b border-brd">
+                  <div className="h-3 w-20 rounded bg-gz-2 animate-pulse" />
+                </div>
+                <div className="p-4 space-y-2">
+                  <div className="h-3.5 w-full rounded bg-gz-2 animate-pulse" />
+                  <div className="h-3.5 w-11/12 rounded bg-gz-2 animate-pulse" />
+                  <div className="h-3.5 w-3/4 rounded bg-gz-2 animate-pulse" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
     </div>
   );

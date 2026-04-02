@@ -27,6 +27,10 @@ import {
   toThreadRowViewModel,
   type PromptDetailViewModel,
 } from "./view-models";
+import {
+  getPromptIdsNeedingDetailRefresh,
+  mapPromptStatuses,
+} from "./prompt-detail-state";
 
 /* ─── Storage helpers ───────────────────────────────────────────────────── */
 
@@ -64,6 +68,7 @@ const ACTIVE_DETAIL_POLL_MS = 3_000;
 export function App() {
   /* state */
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [workspacesLoading, setWorkspacesLoading] = useState(true);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(() => stored(KEYS.workspace));
   const [threadsByWs, setThreadsByWs] = useState<Record<string, ThreadSummary[]>>({});
   const [selectedThreadId, setSelectedThreadId] = useState(() => stored(KEYS.thread));
@@ -86,6 +91,7 @@ export function App() {
   const [blobCache, setBlobCache] = useState<Record<string, string>>({});
   const [blobLoadingById, setBlobLoadingById] = useState<Record<string, boolean>>({});
   const detailControllers = useRef<Record<string, AbortController | undefined>>({});
+  const previousPromptStatusesRef = useRef<Partial<Record<string, PromptListItem["status"]>>>({});
 
   /* visibility */
   useEffect(() => {
@@ -110,6 +116,7 @@ export function App() {
     const go = async () => {
       ctrl?.abort();
       ctrl = new AbortController();
+      setWorkspacesLoading(true);
       try {
         const data = sortWorkspacesByActivity(await fetchWorkspaces({ signal: ctrl.signal }));
         if (!live) return;
@@ -118,6 +125,9 @@ export function App() {
           setSelectedWorkspaceId((c) => resolveSelectedWorkspaceId(data, c));
         });
       } catch (e) { if (!live || isAbort(e)) return; }
+      finally {
+        if (live) setWorkspacesLoading(false);
+      }
     };
 
     void go();
@@ -200,6 +210,10 @@ export function App() {
 
   const prompts = pKey ? (promptsByKey[pKey] ?? []) : [];
 
+  useEffect(() => {
+    previousPromptStatusesRef.current = {};
+  }, [pKey]);
+
   /* ── load prompt detail ───────────────────────────────────────────────── */
 
   async function loadDetail(wsId: string, pid: string, force = false) {
@@ -245,6 +259,25 @@ export function App() {
     const id = setInterval(() => void loadDetail(selectedWorkspaceId, expandedPromptId, true), ACTIVE_DETAIL_POLL_MS);
     return () => clearInterval(id);
   }, [expandedPromptId, visible, detailsById, prompts, selectedWorkspaceId]);
+
+  useEffect(() => {
+    if (!selectedWorkspaceId || prompts.length === 0) {
+      previousPromptStatusesRef.current = {};
+      return;
+    }
+
+    const promptIdsThatNeedRefresh = getPromptIdsNeedingDetailRefresh(
+      prompts,
+      previousPromptStatusesRef.current,
+      detailsById
+    );
+
+    previousPromptStatusesRef.current = mapPromptStatuses(prompts);
+
+    for (const promptId of promptIdsThatNeedRefresh) {
+      void loadDetail(selectedWorkspaceId, promptId, true);
+    }
+  }, [detailsById, prompts, selectedWorkspaceId]);
 
   useEffect(() => {
     return () => { for (const c of Object.values(detailControllers.current)) c?.abort(); };
@@ -365,6 +398,7 @@ export function App() {
     <div className="min-h-dvh bg-white">
       <TopBar
         workspaces={wsSidebarItems}
+        isWorkspacesLoading={workspacesLoading}
         selectedWorkspaceId={selectedWorkspaceId}
         onSelectWorkspace={handleSelectWorkspace}
         threads={threadRows}
@@ -388,6 +422,7 @@ export function App() {
           transcriptOrder={transcriptOrder}
           onToggleTranscriptOrder={handleToggleTranscriptOrder}
           isLoading={promptsLoading}
+          isInitializing={workspacesLoading || threadsLoading || promptsLoading}
           onLoadBlob={handleLoadBlob}
           blobCache={blobCache}
           blobLoadingById={blobLoadingById}

@@ -193,6 +193,14 @@ function isAgentMessage(line: SessionLine): string | null {
   return String(line.payload.message ?? "");
 }
 
+function isMirroredUserResponseItem(line: SessionLine): boolean {
+  return (
+    line.type === "response_item"
+    && line.payload?.type === "message"
+    && line.payload?.role === "user"
+  );
+}
+
 function collectSessionAgentMessages(window: SessionLine[]): SessionAgentMessage[] {
   return window.flatMap((line) => {
     const text = isAgentMessage(line)?.trim();
@@ -205,6 +213,35 @@ function collectSessionAgentMessages(window: SessionLine[]): SessionAgentMessage
       text,
     }];
   });
+}
+
+function trimHistoricalWindowEndExclusive(
+  lines: SessionLine[],
+  currentStart: number,
+  endExclusive: number
+): number {
+  if (currentStart < 0 || endExclusive >= lines.length) {
+    return endExclusive;
+  }
+
+  const boundaryTimestamp = lines[endExclusive]?.timestamp;
+  if (!boundaryTimestamp) {
+    return endExclusive;
+  }
+
+  let trimmedEndExclusive = endExclusive;
+  while (trimmedEndExclusive > currentStart) {
+    const candidate = lines[trimmedEndExclusive - 1]!;
+    if (candidate.timestamp !== boundaryTimestamp) {
+      break;
+    }
+    if (!isMirroredUserResponseItem(candidate)) {
+      break;
+    }
+    trimmedEndExclusive -= 1;
+  }
+
+  return trimmedEndExclusive;
 }
 
 function extractHistoricalFinalText(window: SessionLine[]): string {
@@ -1002,7 +1039,12 @@ function importSessionFiles(
       if (currentStart < 0) {
         return;
       }
-      const window = lines.slice(currentStart, endExclusive);
+      const effectiveEndExclusive = trimHistoricalWindowEndExclusive(
+        lines,
+        currentStart,
+        endExclusive
+      );
+      const window = lines.slice(currentStart, effectiveEndExclusive);
       const userLine = window.find((line) => isUserMessage(line));
       const promptText = userLine ? isUserMessage(userLine) ?? "" : "";
       if (!promptText) {

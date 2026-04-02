@@ -884,6 +884,13 @@ export class PromptlineStore {
           const messageType = eventPayload?.type;
           const messageText = typeof eventPayload?.message === "string" ? eventPayload.message.trim() : "";
           if (messageType === "user_message" && messageText) {
+            if (
+              prompt.boundaryReason === "next_user_prompt"
+              && prompt.endedAt
+              && row.occurredAt === prompt.endedAt
+            ) {
+              continue;
+            }
             transcript.push({
               kind: "message",
               role: "user",

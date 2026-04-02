@@ -760,6 +760,40 @@ index 1111111..2222222 100644
     expect(prompt.filesTouched).toEqual(["src/open.ts"]);
   });
 
+  test("keeps the next prompt's mirrored user response out of the previous transcript window", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-next-user-boundary-");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "next-user-boundary.jsonl",
+      [
+        eventMsg("2026-03-29T05:10:01.000Z", "user_message", "First prompt."),
+        agentMessage("2026-03-29T05:10:02.000Z", "final_answer", "First answer."),
+        userResponseItem("2026-03-29T05:10:03.000Z", "Second prompt."),
+        eventMsg("2026-03-29T05:10:03.000Z", "user_message", "Second prompt."),
+        agentMessage("2026-03-29T05:10:04.000Z", "final_answer", "Second answer.")
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompts = store.listPrompts(workspace.id);
+    const firstPrompt = prompts.find((prompt) => prompt.promptSummary === "First prompt.")!;
+    const firstDetail = store.getPromptDetail(workspace.id, firstPrompt.id)!;
+
+    expect(firstPrompt.endedAt).toBe("2026-03-29T05:10:02.000Z");
+    expect(
+      firstDetail.transcript.some(
+        (entry) =>
+          entry.kind === "message"
+          && entry.role === "user"
+          && entry.text === "Second prompt."
+      )
+    ).toBe(false);
+  });
+
   test("ignores nested cwd values unless that exact folder has its own .git directory", () => {
     const root = mkdtempSync(join(tmpdir(), "promptline-import-grouping-"));
     const repoPath = join(root, "repo");
@@ -823,6 +857,10 @@ function writeCodexSession(
 
 function eventMsg(timestamp: string, type: "user_message" | "agent_message", message: string): string {
   return `{"timestamp":"${timestamp}","type":"event_msg","payload":{"type":"${type}","message":"${escapeJson(message)}"}}`;
+}
+
+function userResponseItem(timestamp: string, message: string): string {
+  return `{"timestamp":"${timestamp}","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"${escapeJson(message)}"}]}}`;
 }
 
 function agentMessage(timestamp: string, phase: string, message: string): string {

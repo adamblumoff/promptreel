@@ -170,4 +170,129 @@ describe("PromptlineStore", () => {
     expect(prompts[0]?.filesTouched).toEqual(["src/new.ts"]);
     expect(store.listThreads(repo.id)).toHaveLength(1);
   });
+
+  test("skips a legacy next-user boundary row when reading prompt transcripts", () => {
+    const root = mkdtempSync(join(tmpdir(), "promptline-store-legacy-boundary-"));
+    const repoPath = join(root, "repo");
+    mkdirSync(repoPath, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repoPath, stdio: "ignore" });
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    const repo = store.addRepo(repoPath);
+    const baseline = store.createSnapshot(repo.id, {
+      repoPath,
+      headSha: null,
+      branchName: null,
+      gitStatusSummary: "baseline",
+      dirtyFileHashes: {},
+      files: []
+    });
+    const ending = store.createSnapshot(repo.id, {
+      repoPath,
+      headSha: null,
+      branchName: null,
+      gitStatusSummary: "end",
+      dirtyFileHashes: {},
+      files: []
+    });
+    const prompt: PromptEventRecord = {
+      id: "prompt_legacy_boundary",
+      workspaceId: repo.id,
+      executionPath: repoPath,
+      sessionId: "session-1",
+      threadId: "session-1",
+      parentPromptEventId: null,
+      startedAt: "2026-03-29T00:00:00.000Z",
+      endedAt: "2026-03-29T00:00:02.000Z",
+      boundaryReason: "next_user_prompt",
+      status: "imported",
+      promptText: "First prompt.",
+      promptSummary: "First prompt.",
+      primaryArtifactId: null,
+      baselineSnapshotId: baseline.id,
+      endSnapshotId: ending.id
+    };
+
+    store.persistPromptBundle(repo.id, {
+      prompt,
+      snapshots: [baseline, ending],
+      artifacts: [],
+      artifactLinks: [],
+      gitLinks: [],
+      rawEvents: [
+        {
+          record: {
+            id: "raw_first_user",
+            workspaceId: repo.id,
+            source: "codex-session",
+            sessionId: "session-1",
+            threadId: "session-1",
+            eventType: "event_msg:user_message",
+            occurredAt: "2026-03-29T00:00:00.000Z",
+            ingestPath: "session.jsonl",
+            payloadBlobId: ""
+          },
+          payload: {
+            type: "event_msg",
+            payload: {
+              type: "user_message",
+              message: "First prompt."
+            }
+          }
+        },
+        {
+          record: {
+            id: "raw_first_assistant",
+            workspaceId: repo.id,
+            source: "codex-session",
+            sessionId: "session-1",
+            threadId: "session-1",
+            eventType: "event_msg:agent_message",
+            occurredAt: "2026-03-29T00:00:01.000Z",
+            ingestPath: "session.jsonl",
+            payloadBlobId: ""
+          },
+          payload: {
+            type: "event_msg",
+            payload: {
+              type: "agent_message",
+              phase: "final_answer",
+              message: "First answer."
+            }
+          }
+        },
+        {
+          record: {
+            id: "raw_second_user",
+            workspaceId: repo.id,
+            source: "codex-session",
+            sessionId: "session-1",
+            threadId: "session-1",
+            eventType: "event_msg:user_message",
+            occurredAt: "2026-03-29T00:00:02.000Z",
+            ingestPath: "session.jsonl",
+            payloadBlobId: ""
+          },
+          payload: {
+            type: "event_msg",
+            payload: {
+              type: "user_message",
+              message: "Second prompt."
+            }
+          }
+        }
+      ]
+    });
+
+    const detail = store.getPromptDetail(repo.id, prompt.id)!;
+
+    expect(
+      detail.transcript.map((entry) =>
+        entry.kind === "message" ? `${entry.role}:${entry.text}` : entry.summary
+      )
+    ).toEqual([
+      "user:First prompt.",
+      "assistant:First answer."
+    ]);
+  });
 });
