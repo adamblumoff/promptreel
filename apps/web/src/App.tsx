@@ -366,7 +366,7 @@ export function App() {
         isLoading={threadsLoading}
       />
 
-      <main className="max-w-[860px] mx-auto px-5 py-6">
+      <main className="w-full px-5 py-6">
         <ContentHeader
           thread={selThreadRow}
           activeTab={activeTab}
