@@ -385,8 +385,9 @@ export function PromptFeed({
               <PromptTimelineItem
                 key={`${promptOrder}:${prompt.id}`}
                 prompt={prompt}
+                promptText={details[prompt.id]?.promptText ?? null}
                 isSelected={expandedId === prompt.id}
-                isLoading={loadingById[prompt.id] ?? false}
+                isLoading={prompt.status === "in_progress" ? false : (loadingById[prompt.id] ?? false)}
                 onSelect={() => onToggle(prompt.id)}
                 index={i}
               />
@@ -419,17 +420,33 @@ export function PromptFeed({
 
 function PromptTimelineItem({
   prompt,
+  promptText,
   isSelected,
   isLoading,
   onSelect,
   index,
 }: {
   prompt: PromptRowViewModel;
+  promptText: string | null;
   isSelected: boolean;
   isLoading: boolean;
   onSelect: () => void;
   index: number;
 }) {
+  const displayedPromptText = isSelected ? (promptText ?? prompt.promptSummary) : prompt.promptSummary;
+  const {
+    expanded: isPromptExpanded,
+    setExpanded: setIsPromptExpanded,
+    canExpand: canExpandPrompt,
+    textRef: promptTextRef,
+  } = useExpandablePromptText(displayedPromptText);
+
+  useEffect(() => {
+    if (!isSelected) {
+      setIsPromptExpanded(false);
+    }
+  }, [isSelected, setIsPromptExpanded]);
+
   return (
     <div
       style={{ animationDelay: `${Math.min(index * 50, 400)}ms` }}
@@ -446,39 +463,53 @@ function PromptTimelineItem({
         />
       </div>
 
-      <button
-        type="button"
-        onClick={onSelect}
+      <div
         className={cn(
-          "group rounded-xl border px-4 py-3 text-left transition-all duration-200",
+          "rounded-xl border transition-all duration-200",
           isSelected
             ? "border-brd-strong bg-white shadow-md shadow-black/5"
             : "border-brd bg-white hover:border-brd-strong hover:bg-gz-1 hoverlift"
         )}
       >
-        <div className="flex items-start gap-3 mb-2">
-          <div className="min-w-0 flex-1">
-            <div className="mb-1.5">
-              <span className="text-[11px] font-mono text-t4 tabular-nums">{prompt.timestampLabel}</span>
+        <button
+          type="button"
+          onClick={onSelect}
+          className="group block w-full rounded-xl border-0 bg-transparent px-4 py-3 text-left"
+        >
+          <div className="flex items-start gap-3 mb-2">
+            <div className="min-w-0 flex-1">
+              <div className="mb-1.5">
+                <span className="text-[11px] font-mono text-t4 tabular-nums">{prompt.timestampLabel}</span>
+              </div>
+              <p
+                ref={promptTextRef}
+                className={cn(
+                  "text-[13px] leading-snug transition-colors duration-150 whitespace-pre-wrap break-words",
+                  isSelected ? "text-t1 font-medium" : "text-t2",
+                  !isPromptExpanded && "overflow-hidden"
+                )}
+                style={getPromptClampStyle(!isPromptExpanded, 3)}
+              >
+                {displayedPromptText}
+              </p>
             </div>
-            <p className={cn(
-              "text-[13px] leading-snug transition-colors duration-150",
-              isSelected ? "text-t1 font-medium" : "text-t2"
-            )}>
-              {prompt.promptSummary}
-            </p>
           </div>
-        </div>
 
-        <div className="flex items-center gap-2 flex-wrap text-[10px] text-t3">
-          {prompt.outcomeLabel && <PromptOutcomeBadge label={prompt.outcomeLabel} tone={prompt.outcomeTone} />}
-          <ChipBadge label={prompt.primaryLabel} />
-          {prompt.filesTouchedCount > 0 && <ChipBadge label={prompt.filesLabel} />}
-          {prompt.artifactCount > 0 && <ChipBadge label={prompt.artifactLabel} />}
-          {prompt.childCount > 0 && <ChipBadge label={prompt.childLabel} />}
-          {isLoading && <span className="text-t4">Loading…</span>}
-        </div>
-      </button>
+          <div className="flex items-center gap-2 flex-wrap text-[10px] text-t3">
+            {prompt.outcomeLabel && <PromptOutcomeBadge label={prompt.outcomeLabel} tone={prompt.outcomeTone} />}
+            {isLoading && <span className="text-t4">Loading…</span>}
+          </div>
+        </button>
+
+        {isSelected && canExpandPrompt && (
+          <div className="px-4 pb-3">
+            <PromptTextToggle
+              expanded={isPromptExpanded}
+              onToggle={() => setIsPromptExpanded((current) => !current)}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -506,7 +537,12 @@ function PromptReviewPane({
             <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-t4 mb-1">
               Selected Prompt
             </h2>
-            <p className="text-[15px] leading-snug text-t1 font-medium">{prompt.promptSummary}</p>
+            <ExpandablePromptText
+              text={detail?.promptText ?? prompt.promptSummary}
+              collapsedLines={3}
+              textClassName="text-[15px] leading-snug text-t1 font-medium"
+              toggleClassName="mt-2"
+            />
           </div>
           <div className="flex items-center gap-2 flex-wrap text-[11px] text-t3">
             <span className="font-mono tabular-nums">{prompt.timestampLabel}</span>
@@ -550,6 +586,126 @@ function EmptyPromptReview() {
 
 function Dot() {
   return <span className="text-t4">&middot;</span>;
+}
+
+function ExpandablePromptText({
+  text,
+  collapsedLines = 3,
+  textClassName,
+  toggleClassName,
+}: {
+  text: string;
+  collapsedLines?: number;
+  textClassName: string;
+  toggleClassName?: string;
+}) {
+  const {
+    expanded,
+    setExpanded,
+    canExpand,
+    textRef,
+  } = useExpandablePromptText(text);
+
+  return (
+    <div className="min-w-0">
+      <p
+        ref={textRef}
+        className={cn(
+          textClassName,
+          "whitespace-pre-wrap break-words",
+          !expanded && "overflow-hidden"
+        )}
+        style={getPromptClampStyle(!expanded, collapsedLines)}
+      >
+        {text}
+      </p>
+      {canExpand && (
+        <div className={toggleClassName}>
+          <PromptTextToggle
+            expanded={expanded}
+            onToggle={() => setExpanded((current) => !current)}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PromptTextToggle({
+  expanded,
+  onToggle,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="text-[11px] font-medium text-t3 transition-colors hover:text-t1"
+    >
+      {expanded ? "Show less" : "Show more"}
+    </button>
+  );
+}
+
+function useExpandablePromptText(text: string) {
+  const textRef = useRef<HTMLParagraphElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [canExpand, setCanExpand] = useState(false);
+
+  useEffect(() => {
+    setExpanded(false);
+  }, [text]);
+
+  useEffect(() => {
+    const element = textRef.current;
+    if (!element) {
+      setCanExpand(false);
+      return;
+    }
+
+    if (expanded) {
+      setCanExpand(true);
+      return;
+    }
+
+    let frame = 0;
+    const measure = () => {
+      setCanExpand(element.scrollHeight > element.clientHeight + 1);
+    };
+
+    frame = window.requestAnimationFrame(measure);
+
+    if (typeof ResizeObserver === "undefined") {
+      return () => window.cancelAnimationFrame(frame);
+    }
+
+    const observer = new ResizeObserver(() => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(measure);
+    });
+    observer.observe(element);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [expanded, text]);
+
+  return { expanded, setExpanded, canExpand, textRef };
+}
+
+function getPromptClampStyle(collapsed: boolean, collapsedLines: number) {
+  if (!collapsed) {
+    return undefined;
+  }
+
+  return {
+    display: "-webkit-box",
+    WebkitBoxOrient: "vertical",
+    WebkitLineClamp: String(collapsedLines),
+  } as const;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -611,18 +767,8 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
         </div>
       )}
 
-      {detail.fileGroups.length > 0 && (
-        <div className="slidein" style={{ animationDelay: `${detailSectionCount * 50}ms` }}>
-          <Section title="Files changed" badge={detail.touchedFilesLabel}>
-            {detail.fileGroups.map((g) => (
-              <FileGroupRow key={g.extension} promptEventId={detail.id} group={g} />
-            ))}
-          </Section>
-        </div>
-      )}
-
       {detail.gitSummaries.length > 0 && (
-        <div className="slidein" style={{ animationDelay: `${(detailSectionCount + 1) * 50}ms` }}>
+        <div className="slidein" style={{ animationDelay: `${detailSectionCount * 50}ms` }}>
           <Section title="Git">
             {detail.gitSummaries.map((gl) => (
               <GitRow key={gl.id} link={gl} />
@@ -1145,14 +1291,6 @@ function Section({
 }
 
 const transcriptPageSizeOptions = [10, 20, 50] as const;
-
-function ChipBadge({ label }: { label: string }) {
-  return (
-    <span className="inline-flex items-center h-[16px] px-1.5 rounded text-[9px] font-medium bg-gz-2 text-t3">
-      {label}
-    </span>
-  );
-}
 
 function PromptOutcomeBadge({
   label,
