@@ -600,11 +600,9 @@ function PromptReviewPane({
         </div>
       )}
 
-      {isLoading && !detail && (
-        <div className="px-5 py-10 flex items-center justify-center">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="spinner text-t3">
-            <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
+      {!detail && !error && (
+        <div className="px-5 py-5">
+          <PromptDetailLoadingState />
         </div>
       )}
       {error && !detail && (
@@ -631,6 +629,84 @@ function EmptyPromptReview() {
     <div className="rounded-xl border border-dashed border-brd bg-gz-1/70 px-6 py-10 text-center">
       <p className="text-[14px] text-t2 mb-1">Select a prompt event</p>
       <p className="text-[12px] text-t4">Choose a point in the thread to inspect its artifacts and diff.</p>
+    </div>
+  );
+}
+
+function PromptDetailLoadingState() {
+  return (
+    <div className="flex flex-col gap-5">
+      <LoadingSectionCard
+        title="Transcript"
+        subtitle="Loading prompt, assistant messages, and tool activity..."
+      >
+        <div className="relative px-4 py-4">
+          <div className="absolute left-[14px] top-4 bottom-4 w-px bg-brd" />
+          <div className="space-y-5">
+            {[0, 1, 2].map((index) => (
+              <LoadingTranscriptRow key={index} />
+            ))}
+          </div>
+        </div>
+      </LoadingSectionCard>
+
+      <LoadingSectionCard
+        title="Code changes"
+        subtitle="Loading focused git-style diff review..."
+      >
+        <div className="px-4 py-4">
+          <div className="rounded-xl border border-brd bg-white p-4">
+            <div className="animate-pulse space-y-3">
+              <div className="h-3 w-32 rounded bg-gz-2" />
+              <div className="h-3 w-full rounded bg-gz-2" />
+              <div className="h-3 w-[92%] rounded bg-gz-2" />
+              <div className="h-3 w-[88%] rounded bg-gz-2" />
+              <div className="h-3 w-[76%] rounded bg-gz-2" />
+            </div>
+          </div>
+        </div>
+      </LoadingSectionCard>
+    </div>
+  );
+}
+
+function LoadingSectionCard({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-brd bg-white overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3 bg-gz-1">
+        <RefreshCw className="size-3.5 shrink-0 spinner text-t4" />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">{title}</h3>
+          <p className="text-[12px] text-t2">{subtitle}</p>
+        </div>
+      </div>
+      <div className="border-t border-brd">{children}</div>
+    </div>
+  );
+}
+
+function LoadingTranscriptRow() {
+  return (
+    <div className="grid grid-cols-[20px_minmax(0,1fr)] gap-4">
+      <div className="relative flex justify-center">
+        <span className="mt-[5px] size-2.5 rounded-full bg-gz-3" />
+      </div>
+      <div className="min-w-0 animate-pulse space-y-2">
+        <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-3">
+          <div className="h-3 w-20 rounded bg-gz-2" />
+          <div className="h-3 w-full rounded bg-gz-2" />
+          <div className="h-3 w-16 rounded bg-gz-2" />
+        </div>
+        <div className="h-3 w-[78%] rounded bg-gz-2" />
+      </div>
     </div>
   );
 }
