@@ -45,6 +45,7 @@ export type PromptBoundaryReason =
   | "thread_idle"
   | "import_end";
 export type PromptEventStatus = "in_progress" | "completed" | "imported";
+export type PromptMode = "default" | "plan";
 export type ThreadStatus = "open" | "closed";
 export type GitSurvivalState =
   | "uncommitted"
@@ -185,6 +186,7 @@ export interface PromptEventRecord {
   endedAt: string | null;
   boundaryReason: PromptBoundaryReason | null;
   status: PromptEventStatus;
+  mode: PromptMode;
   promptText: string;
   promptSummary: string;
   primaryArtifactId: string | null;
@@ -209,6 +211,7 @@ export interface PromptEventListItem {
   endedAt: string | null;
   boundaryReason: PromptBoundaryReason | null;
   status: PromptEventStatus;
+  mode: PromptMode;
   artifactCount: number;
   childCount: number;
   filesTouched: string[];
@@ -220,6 +223,8 @@ export interface PromptEventListItem {
   primaryArtifactType: ArtifactType | null;
   primaryArtifactSummary: string | null;
   hasCodeDiff: boolean;
+  hasPlanArtifact: boolean;
+  hasFinalResponse: boolean;
   isLiveDerived: boolean;
 }
 

@@ -33,6 +33,7 @@ export type ThreadSummary = {
 };
 
 export type PromptStatus = "in_progress" | "completed" | "imported";
+export type PromptMode = "default" | "plan";
 export type ArtifactType =
   | "final_output"
   | "plan"
@@ -87,6 +88,7 @@ export type PromptListItem = {
   endedAt: string | null;
   boundaryReason: "next_user_prompt" | "turn_completed" | "thread_idle" | "import_end" | null;
   status: PromptStatus;
+  mode: PromptMode;
   promptSummary: string;
   primaryArtifactId: string | null;
   baselineSnapshotId: string | null;
@@ -98,6 +100,8 @@ export type PromptListItem = {
   primaryArtifactType: ArtifactType | null;
   primaryArtifactSummary: string | null;
   hasCodeDiff: boolean;
+  hasPlanArtifact: boolean;
+  hasFinalResponse: boolean;
   isLiveDerived: boolean;
 };
 

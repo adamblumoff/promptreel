@@ -173,8 +173,106 @@ describe("importCodexSessions", () => {
     const planArtifact = detail.artifacts.find((artifact) => artifact.type === "plan")!;
 
     expect(store.readBlob(workspace.id, finalOutputArtifact.blobId ?? "")).toBe(finalAnswer);
-    expect(store.readBlob(workspace.id, planArtifact.blobId ?? "")).toBe(finalAnswer);
+    expect(store.readBlob(workspace.id, planArtifact.blobId ?? "")).toBe([
+      "Here is the plan.",
+      "",
+      "## Plan",
+      "",
+      "1. Fix the importer.",
+      "2. Re-run the backfill."
+    ].join("\n"));
     expect(planArtifact.metadataJson).not.toContain("root cause pinned down");
+  });
+
+  test("stores plan-mode decision details inside the plan artifact and keeps the final plan clean", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-plan-decisions-");
+    const finalAnswer = [
+      "Which direction should I take?",
+      "",
+      "1. Keep it very simple and only fix the importer.",
+      "2. Add the rebuild script in the same pass.",
+      "",
+      "## Plan",
+      "",
+      "1. Fix the importer classification path.",
+      "2. Add the rebuild command once the importer is stable."
+    ].join("\n");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "plan-handoff.jsonl",
+      [
+        eventMsg("2026-03-29T00:25:01.000Z", "user_message", "Write a plan for the importer fix."),
+        turnContext("2026-03-29T00:25:01.500Z", "plan"),
+        agentMessage("2026-03-29T00:25:02.000Z", "final_answer", finalAnswer),
+        eventMsg("2026-03-29T00:25:03.000Z", "user_message", "Let's do option 2.")
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const promptWithPlan = store.listPrompts(workspace.id).find((prompt) => prompt.hasPlanArtifact)!;
+    expect(promptWithPlan.mode).toBe("plan");
+    const detail = store.getPromptDetail(workspace.id, promptWithPlan.id)!;
+    const planArtifact = detail.artifacts.find((artifact) => artifact.type === "plan")!;
+    const planMetadata = JSON.parse(planArtifact.metadataJson ?? "{}") as {
+      decisions?: Array<{
+        question?: string;
+        userAnswer?: string;
+        selectedOptionId?: string | null;
+        selectedText?: string | null;
+      }>;
+    };
+
+    expect(store.readBlob(workspace.id, planArtifact.blobId ?? "")).toBe([
+      "## Plan",
+      "",
+      "1. Fix the importer classification path.",
+      "2. Add the rebuild command once the importer is stable."
+    ].join("\n"));
+    expect(planMetadata.decisions).toHaveLength(1);
+    expect(planMetadata.decisions?.[0]).toMatchObject({
+      question: "Which direction should I take?",
+      userAnswer: "Let's do option 2.",
+      selectedOptionId: "2",
+      selectedText: "Add the rebuild script in the same pass.",
+    });
+  });
+
+  test("does not turn conceptual answers about plan artifacts into plan artifacts", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-conceptual-plan-talk-");
+    const finalAnswer = [
+      "I think this is worth doing, and I’d keep it very narrow at first.",
+      "",
+      "1. Track the question.",
+      "2. Track the options.",
+      "3. Track the chosen answer."
+    ].join("\n");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "conceptual-plan-talk.jsonl",
+      [
+        eventMsg(
+          "2026-03-29T00:27:01.000Z",
+          "user_message",
+          "Let's think more about plan handoffs and how to track them."
+        ),
+        agentMessage("2026-03-29T00:27:02.000Z", "final_answer", finalAnswer)
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompt = store.listPrompts(workspace.id)[0]!;
+    const detail = store.getPromptDetail(workspace.id, prompt.id)!;
+
+    expect(detail.artifacts.some((artifact) => artifact.type === "plan")).toBe(false);
+    expect(detail.artifacts.some((artifact) => artifact.type === "final_output")).toBe(true);
   });
 
   test("does not invent plan artifacts for non-plan prompts with bullet lists", () => {
@@ -270,6 +368,73 @@ describe("importCodexSessions", () => {
     expect(prompt.status).toBe("in_progress");
     expect(store.readBlob(workspace.id, planArtifact.blobId ?? "")).toBe(embeddedPlan);
     expect(planArtifact.metadataJson).not.toContain("root cause pinned down");
+  });
+
+  test("carries plan-mode decisions forward to a later final plan artifact", () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-plan-decision-chain-");
+
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "plan-decision-chain.jsonl",
+      [
+        eventMsg("2026-03-29T00:41:01.000Z", "user_message", "Help me plan the artifact redesign."),
+        turnContext("2026-03-29T00:41:01.500Z", "plan"),
+        agentMessage(
+          "2026-03-29T00:41:02.000Z",
+          "final_answer",
+          [
+            "Which direction should I take?",
+            "",
+            "1. Start with a tiny family/subtype pipeline.",
+            "2. Rebuild the whole artifact stack at once.",
+          ].join("\n")
+        ),
+        eventMsg("2026-03-29T00:41:03.000Z", "user_message", "Let's do option 1."),
+        turnContext("2026-03-29T00:41:03.500Z", "plan"),
+        agentMessage(
+          "2026-03-29T00:41:04.000Z",
+          "final_answer",
+          [
+            "## Plan",
+            "",
+            "1. Add family/subtype classification for command artifacts.",
+            "2. Keep the UI simple in the first pass.",
+          ].join("\n")
+        )
+      ]
+    );
+
+    const store = new PromptlineStore(join(root, ".pl"));
+    importCodexSessions(store, join(root, "sessions"));
+    const workspace = store.listWorkspaces()[0]!;
+    const prompts = store.listPrompts(workspace.id);
+    expect(prompts[0]?.mode).toBe("plan");
+    expect(prompts[1]?.mode).toBe("plan");
+
+    const finalPlanPrompt = prompts.find((prompt) => prompt.hasPlanArtifact && prompt.hasFinalResponse)!;
+    const detail = store.getPromptDetail(workspace.id, finalPlanPrompt.id)!;
+    const planArtifact = detail.artifacts.find((artifact) => artifact.type === "plan")!;
+    const planMetadata = JSON.parse(planArtifact.metadataJson ?? "{}") as {
+      decisions?: Array<{
+        question?: string;
+        userAnswer?: string;
+        selectedOptionId?: string | null;
+      }>;
+    };
+
+    expect(planMetadata.decisions).toHaveLength(1);
+    expect(planMetadata.decisions?.[0]).toMatchObject({
+      question: "Which direction should I take?",
+      userAnswer: "Let's do option 1.",
+      selectedOptionId: "1",
+    });
+    expect(store.readBlob(workspace.id, planArtifact.blobId ?? "")).toBe([
+      "## Plan",
+      "",
+      "1. Add family/subtype classification for command artifacts.",
+      "2. Keep the UI simple in the first pass.",
+    ].join("\n"));
   });
 
   test("recovers code diffs from successful apply_patch custom tool calls", () => {
@@ -666,6 +831,10 @@ function agentMessage(timestamp: string, phase: string, message: string): string
 
 function itemCompleted(timestamp: string, itemType: string, text: string): string {
   return `{"timestamp":"${timestamp}","type":"event_msg","payload":{"type":"item_completed","item":{"type":"${itemType}","text":"${escapeJson(text)}"}}}`;
+}
+
+function turnContext(timestamp: string, mode: "default" | "plan"): string {
+  return `{"timestamp":"${timestamp}","type":"turn_context","payload":{"turn_id":"turn-${mode}","collaboration_mode":{"mode":"${mode}"}}}`;
 }
 
 function functionCall(timestamp: string, callId: string, name: string, argumentsJson: string): string {

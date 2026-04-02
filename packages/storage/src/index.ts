@@ -63,6 +63,7 @@ type LegacyPromptRow = {
   endedAt: string | null;
   boundaryReason: PromptEventRecord["boundaryReason"];
   status: PromptEventRecord["status"];
+  mode: PromptEventRecord["mode"];
   promptText: string;
   promptSummary: string;
   primaryArtifactId: string | null;
@@ -361,8 +362,8 @@ export class PromptlineStore {
 
       db.prepare(
         `INSERT OR REPLACE INTO prompt_events
-         (id, repo_id, execution_path, session_id, thread_id, parent_prompt_event_id, started_at, ended_at, boundary_reason, status, prompt_text, prompt_summary, primary_artifact_id, baseline_snapshot_id, end_snapshot_id)
-         VALUES (:id, :workspaceId, :executionPath, :sessionId, :threadId, :parentPromptEventId, :startedAt, :endedAt, :boundaryReason, :status, :promptText, :promptSummary, :primaryArtifactId, :baselineSnapshotId, :endSnapshotId)`
+         (id, repo_id, execution_path, session_id, thread_id, parent_prompt_event_id, started_at, ended_at, boundary_reason, status, mode, prompt_text, prompt_summary, primary_artifact_id, baseline_snapshot_id, end_snapshot_id)
+         VALUES (:id, :workspaceId, :executionPath, :sessionId, :threadId, :parentPromptEventId, :startedAt, :endedAt, :boundaryReason, :status, :mode, :promptText, :promptSummary, :primaryArtifactId, :baselineSnapshotId, :endSnapshotId)`
       ).run(asSqlParams(bundle.prompt));
 
       for (const artifact of bundle.artifacts) {
@@ -444,6 +445,7 @@ export class PromptlineStore {
            ended_at AS endedAt,
            boundary_reason AS boundaryReason,
            status,
+           COALESCE(mode, 'default') AS mode,
            prompt_summary AS promptSummary,
            primary_artifact_id AS primaryArtifactId,
            baseline_snapshot_id AS baselineSnapshotId,
@@ -462,6 +464,7 @@ export class PromptlineStore {
            ended_at AS endedAt,
            boundary_reason AS boundaryReason,
            status,
+           COALESCE(mode, 'default') AS mode,
            prompt_summary AS promptSummary,
            primary_artifact_id AS primaryArtifactId,
            baseline_snapshot_id AS baselineSnapshotId,
@@ -501,6 +504,8 @@ export class PromptlineStore {
         primaryArtifactType: primaryArtifact?.type ?? null,
         primaryArtifactSummary: primaryArtifact?.summary ?? null,
         hasCodeDiff: artifacts.some((artifact) => artifact.type === "code_diff"),
+        hasPlanArtifact: artifacts.some((artifact) => artifact.type === "plan"),
+        hasFinalResponse: artifacts.some((artifact) => artifact.type === "final_output"),
         isLiveDerived: prompt.status === "in_progress"
       } satisfies PromptEventListItem;
     });
@@ -523,6 +528,7 @@ export class PromptlineStore {
          ended_at AS endedAt,
          boundary_reason AS boundaryReason,
          status,
+         COALESCE(mode, 'default') AS mode,
          prompt_text AS promptText,
          prompt_summary AS promptSummary,
          primary_artifact_id AS primaryArtifactId,
@@ -787,6 +793,7 @@ export class PromptlineStore {
         ended_at TEXT,
         boundary_reason TEXT,
         status TEXT NOT NULL,
+        mode TEXT,
         prompt_text TEXT NOT NULL,
         prompt_summary TEXT NOT NULL,
         primary_artifact_id TEXT,
@@ -824,6 +831,7 @@ export class PromptlineStore {
       );
     `);
     this.ensureColumn(db, "prompt_events", "execution_path", "TEXT");
+    this.ensureColumn(db, "prompt_events", "mode", "TEXT");
     db.close();
   }
 

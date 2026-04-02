@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import type {
   FileGroupViewModel,
+  PlanDecisionViewModel,
   PromptDetailArtifactViewModel,
   PromptDetailGitLinkViewModel,
   PromptDetailViewModel,
@@ -30,6 +31,13 @@ import type { ArtifactSubtype, Workspace } from "./types";
 import { cn } from "@/lib/utils";
 import { DiffViewer } from "./diff-viewer";
 import { MarkdownPlanDocument, normalizePlanDocument } from "./plan-renderer";
+
+const decisionTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
 
 /* ════════════════════════════════════════════════════════════════════════════
    TOP BAR
@@ -473,6 +481,7 @@ function PromptTimelineItem({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap text-[10px] text-t3">
+          {prompt.outcomeLabel && <PromptOutcomeBadge label={prompt.outcomeLabel} tone={prompt.outcomeTone} />}
           <ChipBadge label={prompt.primaryLabel} />
           {prompt.filesTouchedCount > 0 && <ChipBadge label={prompt.filesLabel} />}
           {prompt.artifactCount > 0 && <ChipBadge label={prompt.artifactLabel} />}
@@ -511,6 +520,12 @@ function PromptReviewPane({
           </div>
           <div className="flex items-center gap-2 flex-wrap text-[11px] text-t3">
             <span className="font-mono tabular-nums">{prompt.timestampLabel}</span>
+            {prompt.outcomeLabel && (
+              <>
+                <Dot />
+                <PromptOutcomeBadge label={prompt.outcomeLabel} tone={prompt.outcomeTone} compact />
+              </>
+            )}
             <Dot />
             <span>{prompt.executionPathLabel}</span>
           </div>
@@ -583,6 +598,7 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
             blobCache={blobCache ?? {}}
             blobLoadingById={blobLoadingById ?? {}}
             fallbackSteps={detail.planTraceSteps}
+            decisions={detail.featuredPlanArtifact.planDecisions}
             hasPlanArtifact
           />
         </div>
@@ -697,6 +713,7 @@ function PlanSection({
   blobCache,
   blobLoadingById,
   fallbackSteps = [],
+  decisions,
   hasPlanArtifact,
 }: {
   promptEventId: string;
@@ -704,6 +721,7 @@ function PlanSection({
   blobCache: Record<string, string>;
   blobLoadingById: Record<string, boolean>;
   fallbackSteps?: string[];
+  decisions: PlanDecisionViewModel[];
   hasPlanArtifact: boolean;
 }) {
   const [open, setOpen] = usePromptDisclosureState(promptEventId, "plan");
@@ -731,6 +749,18 @@ function PlanSection({
 
         {open && (
           <div className="p-3 border-t border-brd slidedown">
+            {decisions.length > 0 && (
+              <div className="mb-3">
+                <div className="mb-2 px-1">
+                  <h4 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Decision log</h4>
+                  <p className="text-[12px] text-t2">Direction choices made during plan building</p>
+                </div>
+                <PlanDecisionLog decisions={decisions} />
+              </div>
+            )}
+
+            {decisions.length > 0 && <div className="mb-3 border-t border-brd" />}
+
             {isLoading && (
               <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
                 <RefreshCw className="size-3.5 spinner text-t4" />
@@ -753,6 +783,67 @@ function PlanSection({
       </div>
     </div>
   );
+}
+
+function PlanDecisionLog({ decisions }: { decisions: PlanDecisionViewModel[] }) {
+  return (
+    <div className="space-y-3">
+      {decisions.map((decision, index) => (
+        <div key={`${decision.promptEventId}:${decision.askedAt}:${index}`} className="rounded-xl border border-brd bg-white px-4 py-4 text-[13px] leading-6 text-t2">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h5 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-t4">Decision {index + 1}</h5>
+            <span className="text-[10px] font-mono text-t4 tabular-nums">{formatDecisionTimestamp(decision.answeredAt)}</span>
+          </div>
+
+          <div className="mb-4">
+            <h6 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-t4">Question</h6>
+            <p className="text-pretty">{decision.question}</p>
+          </div>
+
+          <div className="mb-4">
+            <h6 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-t4">Options</h6>
+            <div className="space-y-2">
+              {decision.options.map((option) => (
+                <div
+                  key={option.id}
+                  className={cn(
+                    "rounded-lg border px-3 py-2",
+                    option.isSelected ? "border-sky-200 bg-sky-50" : "border-brd bg-gz-1"
+                  )}
+                >
+                  <div className="flex items-start gap-2">
+                    <span className="mt-0.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-white px-1.5 text-[10px] font-semibold text-t3 border border-brd">
+                      {option.id}
+                    </span>
+                    <p className="text-pretty">{option.text}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg border border-brd bg-gz-1 px-3 py-2">
+              <h6 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-t4">Chosen direction</h6>
+              <p>{decision.selectedText ?? "No exact option match recorded."}</p>
+            </div>
+            <div className="rounded-lg border border-brd bg-gz-1 px-3 py-2">
+              <h6 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-t4">User response</h6>
+              <p>{decision.userAnswer}</p>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatDecisionTimestamp(timestamp: string): string {
+  try {
+    return decisionTimestampFormatter.format(new Date(timestamp));
+  } catch {
+    return timestamp;
+  }
 }
 
 function DiffSection({ promptEventId, blobIds, blobCache, blobLoadingById, hasCodeDiffArtifacts }: {
@@ -953,6 +1044,33 @@ function ArtifactRow({ artifact }: { artifact: PromptDetailArtifactViewModel }) 
 function ChipBadge({ label }: { label: string }) {
   return (
     <span className="inline-flex items-center h-[16px] px-1.5 rounded text-[9px] font-medium bg-gz-2 text-t3">
+      {label}
+    </span>
+  );
+}
+
+function PromptOutcomeBadge({
+  label,
+  tone,
+  compact = false,
+}: {
+  label: string;
+  tone: "steered" | "plan" | null;
+  compact?: boolean;
+}) {
+  const classes =
+    tone === "plan"
+      ? "bg-sky-50 text-sky-700"
+      : "bg-amber-dim text-amber";
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded font-medium uppercase tracking-[0.08em]",
+        compact ? "h-[18px] px-2 text-[9px]" : "h-[16px] px-1.5 text-[9px]",
+        classes
+      )}
+    >
       {label}
     </span>
   );

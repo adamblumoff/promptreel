@@ -46,6 +46,8 @@ export type PromptRowViewModel = PromptListItem & {
   filesLabel: string;
   primaryLabel: string;
   primarySummary: string;
+  outcomeLabel: string | null;
+  outcomeTone: "steered" | "plan" | null;
   tone: "live" | "history";
   executionPathLabel: string;
 };
@@ -63,6 +65,22 @@ export type PromptDetailArtifactViewModel = {
   files: string[];
   blobId: string | null;
   planTraceSteps: string[];
+  planDecisions: PlanDecisionViewModel[];
+};
+
+export type PlanDecisionViewModel = {
+  promptEventId: string;
+  askedAt: string;
+  answeredAt: string;
+  question: string;
+  options: Array<{
+    id: string;
+    text: string;
+    isSelected: boolean;
+  }>;
+  userAnswer: string;
+  selectedText: string | null;
+  selectionMode: "explicit" | "freeform" | "ambiguous";
 };
 
 export type PromptDetailGitLinkViewModel = {
@@ -244,6 +262,7 @@ export function toPromptRowViewModel(prompt: PromptListItem): PromptRowViewModel
       : prompt.hasCodeDiff
         ? "Diff recorded"
         : "No file diff";
+  const outcome = derivePromptOutcome(prompt);
 
   return {
     ...prompt,
@@ -254,6 +273,8 @@ export function toPromptRowViewModel(prompt: PromptListItem): PromptRowViewModel
     filesLabel,
     primaryLabel,
     primarySummary: prompt.primaryArtifactSummary ?? "No primary artifact preview recorded yet.",
+    outcomeLabel: outcome?.label ?? null,
+    outcomeTone: outcome?.tone ?? null,
     tone: prompt.status === "in_progress" ? "live" : "history",
     executionPathLabel: prompt.executionPath ?? "Unknown folder"
   };
@@ -302,6 +323,7 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
       files: artifactFiles.map((f) => f.path),
       blobId: artifact.blobId,
       planTraceSteps: parseArtifactPlanSteps(artifact),
+      planDecisions: parseArtifactPlanDecisions(artifact),
     };
   });
 
@@ -378,28 +400,74 @@ function parseArtifactFiles(artifact: Artifact): FileStat[] {
 }
 
 function parseArtifactPlanSteps(artifact: Artifact): string[] {
-  if (!artifact.metadataJson) {
-    return [];
-  }
+  const parsed = parseArtifactMetadataObject(artifact);
+  return Array.isArray(parsed?.steps)
+    ? parsed.steps.filter((step): step is string => typeof step === "string" && step.trim().length > 0)
+    : [];
+}
 
-  try {
-    const parsed = JSON.parse(artifact.metadataJson) as { steps?: unknown };
-    return Array.isArray(parsed.steps)
-      ? parsed.steps.filter((step): step is string => typeof step === "string" && step.trim().length > 0)
+function parseArtifactPlanDecisions(artifact: Artifact): PlanDecisionViewModel[] {
+  const parsed = parseArtifactMetadataObject(artifact) as {
+    decisions?: Array<{
+      question?: unknown;
+      options?: Array<{ id?: unknown; text?: unknown }>;
+      userAnswer?: unknown;
+      selectedOptionId?: unknown;
+      selectedText?: unknown;
+      selectionMode?: unknown;
+      askedAt?: unknown;
+      answeredAt?: unknown;
+      promptEventId?: unknown;
+    }>;
+  } | null;
+  const decisions = Array.isArray(parsed?.decisions) ? parsed.decisions : [];
+  return decisions.flatMap((decision) => {
+    if (
+      typeof decision?.question !== "string"
+      || typeof decision?.userAnswer !== "string"
+      || typeof decision?.askedAt !== "string"
+      || typeof decision?.answeredAt !== "string"
+      || typeof decision?.promptEventId !== "string"
+    ) {
+      return [];
+    }
+
+    const options = Array.isArray(decision.options)
+      ? decision.options
+        .filter((option): option is { id: string; text: string } =>
+          typeof option?.id === "string" && typeof option?.text === "string" && option.text.trim().length > 0
+        )
+        .map((option) => ({
+          id: option.id,
+          text: option.text,
+          isSelected: decision.selectedOptionId === option.id,
+        }))
       : [];
-  } catch {
-    return [];
-  }
+
+    if (options.length < 2) {
+      return [];
+    }
+
+    return [{
+      promptEventId: decision.promptEventId,
+      askedAt: decision.askedAt,
+      answeredAt: decision.answeredAt,
+      question: decision.question,
+      options,
+      userAnswer: decision.userAnswer,
+      selectedText: typeof decision.selectedText === "string" ? decision.selectedText : null,
+      selectionMode:
+        decision.selectionMode === "explicit" || decision.selectionMode === "freeform" || decision.selectionMode === "ambiguous"
+          ? decision.selectionMode
+          : "ambiguous",
+    }];
+  });
 }
 
 function parseArtifactClassification(artifact: Artifact): ArtifactClassification | null {
-  if (!artifact.metadataJson) {
-    return null;
-  }
-
+  const parsed = parseArtifactMetadataObject(artifact) as { classification?: ArtifactClassification } | null;
   try {
-    const parsed = JSON.parse(artifact.metadataJson) as { classification?: ArtifactClassification };
-    const classification = parsed.classification;
+    const classification = parsed?.classification;
     if (!classification) {
       return null;
     }
@@ -411,6 +479,18 @@ function parseArtifactClassification(artifact: Artifact): ArtifactClassification
       return null;
     }
     return classification;
+  } catch {
+    return null;
+  }
+}
+
+function parseArtifactMetadataObject(artifact: Artifact): Record<string, unknown> | null {
+  if (!artifact.metadataJson) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(artifact.metadataJson) as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -428,6 +508,18 @@ function formatArtifactType(type: ArtifactType): string {
     return "final response";
   }
   return type.replace(/_/g, " ");
+}
+
+function derivePromptOutcome(prompt: PromptListItem): { label: string; tone: "steered" | "plan" } | null {
+  if (prompt.hasPlanArtifact) {
+    return { label: "plan", tone: "plan" };
+  }
+
+  if (prompt.status !== "in_progress" && prompt.boundaryReason === "next_user_prompt" && !prompt.hasFinalResponse) {
+    return { label: "steered", tone: "steered" };
+  }
+
+  return null;
 }
 
 function groupFilesByExtension(files: string[]): FileGroupViewModel[] {

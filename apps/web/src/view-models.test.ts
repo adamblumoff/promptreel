@@ -102,6 +102,7 @@ describe("web view models", () => {
       endedAt: "2026-03-30T14:24:00.000Z",
       boundaryReason: "turn_completed",
       status: "in_progress",
+      mode: "default",
       promptSummary: "Open the prompt.",
       primaryArtifactId: "artifact-1",
       baselineSnapshotId: null,
@@ -113,6 +114,8 @@ describe("web view models", () => {
       primaryArtifactType: "code_diff",
       primaryArtifactSummary: "Updated the app shell.",
       hasCodeDiff: true,
+      hasPlanArtifact: false,
+      hasFinalResponse: false,
       isLiveDerived: true
     } satisfies PromptListItem);
 
@@ -138,6 +141,7 @@ describe("web view models", () => {
       endedAt: "2026-03-30T14:24:00.000Z",
       boundaryReason: "turn_completed",
       status: "completed",
+      mode: "default",
       promptSummary: "Summarize what changed.",
       primaryArtifactId: "artifact-final",
       baselineSnapshotId: null,
@@ -149,10 +153,78 @@ describe("web view models", () => {
       primaryArtifactType: "final_output",
       primaryArtifactSummary: "Wrapped up the work.",
       hasCodeDiff: false,
+      hasPlanArtifact: false,
+      hasFinalResponse: true,
       isLiveDerived: false
     } satisfies PromptListItem);
 
     expect(row.primaryLabel).toBe("final response");
+  });
+
+  test("marks steered prompts when the user redirects before a final response", () => {
+    const row = toPromptRowViewModel({
+      id: "prompt-steered",
+      workspaceId: "workspace-a",
+      executionPath: "C:/work/alpha",
+      sessionId: "session-1",
+      threadId: "thread-1",
+      parentPromptEventId: null,
+      startedAt: "2026-03-30T14:22:00.000Z",
+      endedAt: "2026-03-30T14:24:00.000Z",
+      boundaryReason: "next_user_prompt",
+      status: "imported",
+      mode: "default",
+      promptSummary: "Change the answer rendering.",
+      primaryArtifactId: null,
+      baselineSnapshotId: null,
+      endSnapshotId: null,
+      filesTouched: [],
+      filesTouchedCount: 0,
+      childCount: 0,
+      artifactCount: 4,
+      primaryArtifactType: null,
+      primaryArtifactSummary: null,
+      hasCodeDiff: false,
+      hasPlanArtifact: false,
+      hasFinalResponse: false,
+      isLiveDerived: false
+    } satisfies PromptListItem);
+
+    expect(row.outcomeLabel).toBe("steered");
+    expect(row.outcomeTone).toBe("steered");
+  });
+
+  test("marks plan-mode prompts as plan events", () => {
+    const row = toPromptRowViewModel({
+      id: "prompt-plan",
+      workspaceId: "workspace-a",
+      executionPath: "C:/work/alpha",
+      sessionId: "session-1",
+      threadId: "thread-1",
+      parentPromptEventId: null,
+      startedAt: "2026-03-30T14:22:00.000Z",
+      endedAt: "2026-03-30T14:24:00.000Z",
+      boundaryReason: "next_user_prompt",
+      status: "imported",
+      mode: "plan",
+      promptSummary: "PLEASE IMPLEMENT THIS PLAN...",
+      primaryArtifactId: "artifact-plan",
+      baselineSnapshotId: null,
+      endSnapshotId: null,
+      filesTouched: [],
+      filesTouchedCount: 0,
+      childCount: 0,
+      artifactCount: 1,
+      primaryArtifactType: "plan",
+      primaryArtifactSummary: "Plan ready.",
+      hasCodeDiff: false,
+      hasPlanArtifact: true,
+      hasFinalResponse: false,
+      isLiveDerived: false
+    } satisfies PromptListItem);
+
+    expect(row.outcomeLabel).toBe("plan");
+    expect(row.outcomeTone).toBe("plan");
   });
 
   test("shapes prompt detail into featured response, plan, artifact summaries, and git summaries", () => {
@@ -167,11 +239,14 @@ describe("web view models", () => {
       endedAt: "2026-03-30T14:24:00.000Z",
       boundaryReason: "turn_completed",
       status: "completed",
+      mode: "plan",
       promptText: "Explain the change and summarize the diff.",
       promptSummary: "Explain the change.",
       primaryArtifactId: "artifact-diff",
       baselineSnapshotId: null,
       endSnapshotId: null,
+      hasPlanArtifact: true,
+      hasFinalResponse: true,
       artifacts: [
         {
           id: "artifact-final",
@@ -210,7 +285,28 @@ describe("web view models", () => {
           summary: "Outline the sidebar and accordion work.",
           blobId: "blob-2",
           fileStatsJson: null,
-          metadataJson: null
+          metadataJson: JSON.stringify({
+            steps: [
+              "Outline the sidebar and accordion work.",
+              "Polish the diff surface."
+            ],
+            decisions: [
+              {
+                promptEventId: "prompt-1",
+                askedAt: "2026-03-30T14:23:00.000Z",
+                answeredAt: "2026-03-30T14:24:00.000Z",
+                question: "Which direction should I take?",
+                options: [
+                  { id: "1", text: "Keep the first pass very small." },
+                  { id: "2", text: "Ship the fuller markdown renderer now." }
+                ],
+                userAnswer: "Let's do option 2.",
+                selectedOptionId: "2",
+                selectedText: "Ship the fuller markdown renderer now.",
+                selectionMode: "explicit"
+              }
+            ]
+          })
         },
         {
           id: "artifact-search",
@@ -258,7 +354,14 @@ describe("web view models", () => {
     expect(detail.featuredPlanArtifact).toMatchObject({
       id: "artifact-plan",
       label: "plan",
-      blobId: "blob-2"
+      blobId: "blob-2",
+      planDecisions: [
+        {
+          question: "Which direction should I take?",
+          selectedText: "Ship the fuller markdown renderer now.",
+          userAnswer: "Let's do option 2."
+        }
+      ]
     });
     expect(detail.featuredPlanBlobId).toBe("blob-2");
     expect(detail.artifactSummaries).toHaveLength(1);
@@ -282,11 +385,14 @@ describe("web view models", () => {
       endedAt: "2026-03-30T14:24:00.000Z",
       boundaryReason: "turn_completed",
       status: "completed",
+      mode: "default",
       promptText: "Summarize the work.",
       promptSummary: "Summarize the work.",
       primaryArtifactId: "artifact-final",
       baselineSnapshotId: null,
       endSnapshotId: null,
+      hasPlanArtifact: false,
+      hasFinalResponse: true,
       artifacts: [
         {
           id: "artifact-final",

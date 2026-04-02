@@ -10,6 +10,7 @@ import type {
   CodeDiffResult,
   IngestionStatus,
   LiveDoctorResult,
+  PromptMode,
   PromptEventRecord,
   RawEventRecord,
   RepoRegistration,
@@ -70,6 +71,23 @@ type SessionAgentMessage = {
   occurredAt: string;
   phase: string | null;
   text: string;
+};
+
+type PlanDecisionOption = {
+  id: string;
+  text: string;
+};
+
+type PlanDecisionMetadata = {
+  question: string;
+  options: PlanDecisionOption[];
+  userAnswer: string;
+  selectedOptionId: string | null;
+  selectedText: string | null;
+  selectionMode: "explicit" | "freeform" | "ambiguous";
+  askedAt: string;
+  answeredAt: string;
+  promptEventId: string;
 };
 
 type HistoricalRecoveredDiff = {
@@ -247,24 +265,281 @@ function extractEmbeddedPromptPlanText(promptText: string): string | null {
   return planText ? planText : null;
 }
 
+function readHistoricalPromptMode(window: SessionLine[]): PromptMode {
+  for (let index = window.length - 1; index >= 0; index -= 1) {
+    const line = window[index]!;
+    if (line.type !== "turn_context") {
+      continue;
+    }
+    const collaborationMode = line.payload?.collaboration_mode;
+    if (!collaborationMode || typeof collaborationMode !== "object" || Array.isArray(collaborationMode)) {
+      continue;
+    }
+    const mode = (collaborationMode as { mode?: unknown }).mode;
+    if (mode === "plan") {
+      return "plan";
+    }
+    if (mode === "default") {
+      return "default";
+    }
+  }
+
+  return "default";
+}
+
 function buildPlanMarkdownFromSteps(steps: string[]): string {
   return [
     "## Plan",
     "",
     ...steps.map((step, index) => `${index + 1}. ${step}`)
   ].join("\n");
+};
+
+type PlanArtifactMetadata = {
+  explanation: string | null;
+  steps: string[];
+  decisions?: PlanDecisionMetadata[];
+};
+
+function buildPlanMarkdownFromParsedPlan(plan: ReturnType<typeof extractPlan>): string {
+  if (!plan) {
+    return "";
+  }
+
+  const sections: string[] = [];
+  const explanation = plan.explanation?.replace(/\s*##\s+plan\s*$/i, "").trim() ?? "";
+  if (explanation) {
+    sections.push(explanation);
+  }
+  if (plan.steps.length > 0) {
+    sections.push(buildPlanMarkdownFromSteps(plan.steps));
+  }
+  return sections.join("\n\n").trim();
+}
+
+function hasExplicitPlanSection(finalText: string): boolean {
+  return /^\s*##\s+plan\b/im.test(finalText) || /^\s*#\s+.*\bplan\b/im.test(finalText);
+}
+
+function hasCommittedPlanLeadIn(finalText: string): boolean {
+  const normalized = finalText.slice(0, 400).toLowerCase();
+  return (
+    /\b(?:here(?:'s| is)|this is|below is|recommended|proposed|draft)\s+(?:the\s+)?plan\b/.test(normalized)
+    || /^\s*plan\s*[:\-]/im.test(finalText)
+  );
+}
+
+function shouldCreateFallbackPlanArtifact(
+  promptText: string,
+  finalText: string,
+  parsedPlan: NonNullable<ReturnType<typeof extractPlan>>
+): boolean {
+  if (hasExplicitPlanSection(finalText)) {
+    return true;
+  }
+
+  const explanation = parsedPlan.explanation?.trim() ?? "";
+  const explanationWordCount = explanation.split(/\s+/).filter(Boolean).length;
+  const hasPlanRequestHint = looksLikePlanRequest(promptText);
+  const hasLeadIn = hasCommittedPlanLeadIn(finalText);
+
+  if (parsedPlan.steps.length < 2) {
+    return false;
+  }
+
+  if (hasLeadIn && explanationWordCount <= 80) {
+    return true;
+  }
+
+  if (hasPlanRequestHint && explanationWordCount <= 18) {
+    return true;
+  }
+
+  return false;
+}
+
+function extractPlanDecision(
+  text: string,
+  nextUserPromptText: string | null,
+  promptEventId: string,
+  askedAt: string,
+  answeredAt: string
+): { decision: PlanDecisionMetadata; cleanedText: string } | null {
+  const userAnswer = nextUserPromptText?.trim() ?? "";
+  if (!userAnswer) {
+    return null;
+  }
+
+  const lines = text.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => /^\s*##\s+plan\b/i.test(line));
+  const preambleEnd = headingIndex >= 0 ? headingIndex : lines.length;
+  const preambleLines = lines.slice(0, preambleEnd);
+  const optionMatches = preambleLines
+    .map((line, index) => {
+      const match = line.match(/^\s*(?:[-*]|\d+[.)]|[A-Z][.)])\s+(.+?)\s*$/);
+      if (!match) {
+        return null;
+      }
+      return {
+        index,
+        text: match[1]!.trim(),
+      };
+    })
+    .filter((value): value is { index: number; text: string } => value !== null);
+
+  if (optionMatches.length < 2) {
+    return null;
+  }
+
+  const firstOptionIndex = optionMatches[0]!.index;
+  let questionEndIndex = firstOptionIndex - 1;
+  while (questionEndIndex >= 0 && preambleLines[questionEndIndex]!.trim() === "") {
+    questionEndIndex -= 1;
+  }
+  if (questionEndIndex < 0) {
+    return null;
+  }
+
+  let questionStartIndex = questionEndIndex;
+  while (questionStartIndex > 0 && preambleLines[questionStartIndex - 1]!.trim() !== "") {
+    questionStartIndex -= 1;
+  }
+
+  const question = preambleLines
+    .slice(questionStartIndex, questionEndIndex + 1)
+    .join("\n")
+    .replace(/^\s*#+\s*/gm, "")
+    .trim();
+  if (
+    !question
+    || !/[?]$/.test(question)
+    && !/\b(which|choose|pick|prefer|want|option|direction)\b/i.test(question)
+  ) {
+    return null;
+  }
+
+  const options = optionMatches.map((option, index) => ({
+    id: String(index + 1),
+    text: option.text,
+  }));
+  const selection = selectPlanDecisionOption(options, userAnswer);
+  const strippedPreambleText = preambleLines
+    .filter((_, index) => {
+      if (index >= questionStartIndex && index <= questionEndIndex) {
+        return false;
+      }
+      return !optionMatches.some((option) => option.index === index);
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const cleanedText = [strippedPreambleText, lines.slice(preambleEnd).join("\n")]
+    .filter((section) => section.trim().length > 0)
+    .join("\n\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return {
+    decision: {
+      question,
+      options,
+      userAnswer,
+      selectedOptionId: selection.selectedOptionId,
+      selectedText: selection.selectedText,
+      selectionMode: selection.selectionMode,
+      askedAt,
+      answeredAt,
+      promptEventId,
+    },
+    cleanedText,
+  };
+}
+
+function selectPlanDecisionOption(
+  options: PlanDecisionOption[],
+  userAnswer: string
+): Pick<PlanDecisionMetadata, "selectedOptionId" | "selectedText" | "selectionMode"> {
+  const normalizedAnswer = userAnswer.toLowerCase().trim();
+  const numericMatch = normalizedAnswer.match(/\b(?:option\s+)?(\d+)\b/);
+  if (numericMatch) {
+    const selected = options.find((option) => option.id === numericMatch[1]);
+    if (selected) {
+      return {
+        selectedOptionId: selected.id,
+        selectedText: selected.text,
+        selectionMode: "explicit",
+      };
+    }
+  }
+
+  const letterMatch = normalizedAnswer.match(/\b([a-z])(?:[\s.)]|$)/);
+  if (letterMatch) {
+    const letterIndex = letterMatch[1]!.charCodeAt(0) - 96;
+    const selected = options[letterIndex - 1];
+    if (selected) {
+      return {
+        selectedOptionId: selected.id,
+        selectedText: selected.text,
+        selectionMode: "explicit",
+      };
+    }
+  }
+
+  const normalizedOptions = options.map((option) => ({
+    ...option,
+    normalized: option.text.toLowerCase(),
+  }));
+  const directTextMatch = normalizedOptions.find((option) => normalizedAnswer.includes(option.normalized));
+  if (directTextMatch) {
+    return {
+      selectedOptionId: directTextMatch.id,
+      selectedText: directTextMatch.text,
+      selectionMode: "freeform",
+    };
+  }
+
+  const tokenizedAnswer = normalizedAnswer.split(/[^a-z0-9]+/).filter(Boolean);
+  let bestMatch: { option: PlanDecisionOption; score: number } | null = null;
+  for (const option of normalizedOptions) {
+    const tokens = option.normalized.split(/[^a-z0-9]+/).filter(Boolean);
+    const overlap = tokens.filter((token) => tokenizedAnswer.includes(token)).length;
+    if (overlap < 2) {
+      continue;
+    }
+    if (!bestMatch || overlap > bestMatch.score) {
+      bestMatch = { option, score: overlap };
+    }
+  }
+
+  if (bestMatch) {
+    return {
+      selectedOptionId: bestMatch.option.id,
+      selectedText: bestMatch.option.text,
+      selectionMode: "freeform",
+    };
+  }
+
+  return {
+    selectedOptionId: null,
+    selectedText: null,
+    selectionMode: "ambiguous",
+  };
 }
 
 function buildPlanArtifactContent(
   promptText: string,
   window: SessionLine[],
-  finalText: string
-): { blobContent: string; parsedPlan: ReturnType<typeof extractPlan> } | null {
+  finalText: string,
+  decisions: PlanDecisionMetadata[] = []
+): { blobContent: string; metadata: PlanArtifactMetadata } | null {
   const embeddedPromptPlanText = extractEmbeddedPromptPlanText(promptText);
   if (embeddedPromptPlanText) {
     return {
       blobContent: embeddedPromptPlanText,
-      parsedPlan: extractPlan(embeddedPromptPlanText),
+      metadata: {
+        ...(extractPlan(embeddedPromptPlanText) ?? { explanation: null, steps: [] }),
+        ...(decisions.length > 0 ? { decisions } : {}),
+      },
     };
   }
 
@@ -272,34 +547,41 @@ function buildPlanArtifactContent(
   if (explicitPlanText) {
     return {
       blobContent: explicitPlanText,
-      parsedPlan: extractPlan(explicitPlanText),
+      metadata: {
+        ...(extractPlan(explicitPlanText) ?? { explanation: null, steps: [] }),
+        ...(decisions.length > 0 ? { decisions } : {}),
+      },
     };
   }
 
-  if (!finalText || !looksLikePlanRequest(promptText)) {
+  if (!finalText) {
     return null;
   }
 
   const parsedPlan = extractPlan(finalText);
-  if (!parsedPlan) {
+  if (!parsedPlan || !shouldCreateFallbackPlanArtifact(promptText, finalText, parsedPlan)) {
     return null;
   }
 
   return {
-    blobContent: finalText,
-    parsedPlan,
+    blobContent: buildPlanMarkdownFromParsedPlan(parsedPlan),
+    metadata: {
+      explanation: parsedPlan.explanation,
+      steps: parsedPlan.steps,
+      ...(decisions.length > 0 ? { decisions } : {}),
+    },
   };
 }
 
 function buildLivePlanArtifactContent(
   promptText: string,
   planSteps: string[]
-): { blobContent: string; parsedPlan: ReturnType<typeof extractPlan> } | null {
+): { blobContent: string; metadata: PlanArtifactMetadata } | null {
   const embeddedPromptPlanText = extractEmbeddedPromptPlanText(promptText);
   if (embeddedPromptPlanText) {
     return {
       blobContent: embeddedPromptPlanText,
-      parsedPlan: extractPlan(embeddedPromptPlanText),
+      metadata: extractPlan(embeddedPromptPlanText) ?? { explanation: null, steps: [] },
     };
   }
 
@@ -310,9 +592,10 @@ function buildLivePlanArtifactContent(
   const blobContent = buildPlanMarkdownFromSteps(planSteps);
   return {
     blobContent,
-    parsedPlan: {
+    metadata: {
       explanation: null,
       steps: planSteps,
+      decisions: [],
     },
   };
 }
@@ -703,7 +986,7 @@ function importSessionFiles(
       gitDir: file.normalizedCwd ? join(file.normalizedCwd, ".git") : null,
       source: "auto_discovered"
     });
-    const cursorKey = `codex-session:v5:${file.filePath}`;
+    const cursorKey = `codex-session:v6:${file.filePath}`;
     const cursor = store.getIngestCursor(workspace.id, cursorKey);
     if (cursor && cursor.cursorValue === String(file.mtimeMs)) {
       continue;
@@ -713,6 +996,7 @@ function importSessionFiles(
     let importedPrompts = 0;
     let currentStart = -1;
     let promptIndex = 0;
+    let activePlanDecisions: PlanDecisionMetadata[] = [];
 
     const flushWindow = (endExclusive: number) => {
       if (currentStart < 0) {
@@ -728,6 +1012,7 @@ function importSessionFiles(
 
       const promptSeed = `${file.filePath}:${promptIndex}`;
       const promptId = stableId("prompt", promptSeed);
+      const promptMode = readHistoricalPromptMode(window);
       const snapshots = createHistoricalSnapshots(store, workspace.id, file.normalizedCwd, promptSeed);
       const prompt: PromptEventRecord = {
         id: promptId,
@@ -748,6 +1033,7 @@ function importSessionFiles(
               ? "next_user_prompt"
               : "import_end",
         status: options.tailOpenPrompt && endExclusive === lines.length ? "in_progress" : "imported",
+        mode: promptMode,
         promptText,
         promptSummary: summarizePrompt(promptText),
         primaryArtifactId: null,
@@ -778,7 +1064,23 @@ function importSessionFiles(
         });
       }
 
-      const planArtifactContent = buildPlanArtifactContent(promptText, window, finalText);
+      const nextUserPromptText =
+        endExclusive < lines.length
+          ? isUserMessage(lines[endExclusive]!) ?? null
+          : null;
+      const askedAt = window.at(-1)?.timestamp ?? userLine?.timestamp ?? nowIso();
+      const answeredAt =
+        endExclusive < lines.length
+          ? lines[endExclusive]?.timestamp ?? askedAt
+          : askedAt;
+      const extractedPlanDecision = extractPlanDecision(finalText, nextUserPromptText, promptId, askedAt, answeredAt);
+      const currentPlanDecision = extractedPlanDecision?.decision ?? null;
+      const planSourceText = extractedPlanDecision ? extractedPlanDecision.cleanedText : finalText;
+      const candidatePlanDecisions = currentPlanDecision
+        ? [...activePlanDecisions, currentPlanDecision]
+        : [...activePlanDecisions];
+      const planArtifactContent = buildPlanArtifactContent(promptText, window, planSourceText, candidatePlanDecisions);
+      const planDecisions = currentPlanDecision || planArtifactContent ? candidatePlanDecisions : [];
       if (planArtifactContent) {
         const blobId = store.writeBlob(workspace.id, planArtifactContent.blobContent);
         artifacts.push({
@@ -787,13 +1089,15 @@ function importSessionFiles(
           type: "plan",
           role: "secondary",
           summary:
-            planArtifactContent.parsedPlan?.steps[0]
+            planArtifactContent.metadata.steps[0]
             ?? summarizePrompt(planArtifactContent.blobContent.replace(/^#+\s*/m, "")),
           blobId,
           fileStatsJson: null,
-          metadataJson: JSON.stringify(planArtifactContent.parsedPlan ?? { explanation: null, steps: [] })
+          metadataJson: JSON.stringify(planArtifactContent.metadata)
         });
       }
+
+      activePlanDecisions = planDecisions;
 
       const recoveredDiff = recoverHistoricalCodeDiff(toolEvents);
       if (recoveredDiff) {
@@ -1206,6 +1510,7 @@ export async function runLiveDoctor(
     let finalText = "";
     let latestDiff = "";
     let planSteps: string[] = [];
+    let promptMode: PromptMode = "default";
     let completed = false;
     let notificationCount = 0;
     const rawEvents: Array<{ record: RawEventRecord; payload: unknown }> = [];
@@ -1235,6 +1540,7 @@ export async function runLiveDoctor(
         } else if (notification.method === "item/agentMessage/delta") {
           finalText += String(notification.params.delta ?? "");
         } else if (notification.method === "turn/plan/updated") {
+          promptMode = "plan";
           planSteps = Array.isArray(notification.params.plan)
             ? notification.params.plan.map((step) => String((step as { step: string }).step))
             : [];
@@ -1272,6 +1578,7 @@ export async function runLiveDoctor(
       endedAt: nowIso(),
       boundaryReason: "turn_completed",
       status: "completed",
+      mode: promptMode,
       promptText: "Run `git status -sb`, then reply with exactly `promptline live ok`.",
       promptSummary: "Live Codex app-server doctor turn",
       primaryArtifactId: null,
@@ -1308,11 +1615,11 @@ export async function runLiveDoctor(
         type: "plan",
         role: "secondary",
         summary:
-          livePlanArtifactContent.parsedPlan?.steps[0]
+          livePlanArtifactContent.metadata.steps[0]
           ?? summarizePrompt(livePlanArtifactContent.blobContent.replace(/^#+\s*/m, "")),
         blobId: store.writeBlob(repo.id, livePlanArtifactContent.blobContent),
         fileStatsJson: null,
-        metadataJson: JSON.stringify(livePlanArtifactContent.parsedPlan ?? { explanation: null, steps: [] })
+        metadataJson: JSON.stringify(livePlanArtifactContent.metadata)
       });
     }
 
