@@ -328,8 +328,8 @@ export function PromptFeed({
   }
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
-      <section className="min-w-0 rounded-xl border border-brd bg-white overflow-hidden">
+    <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)] lg:items-start">
+      <section className="min-w-0 rounded-xl border border-brd bg-white overflow-hidden lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100dvh-8rem)] lg:flex-col">
         <div className="flex items-center justify-between gap-3 px-4 py-3 bg-gz-1 border-b border-brd">
           <div>
             <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-t4">Thread</h2>
@@ -345,7 +345,7 @@ export function PromptFeed({
           </div>
         </div>
 
-        <div className="relative px-4 py-3">
+        <div className="relative px-4 py-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
           <div className="absolute left-[27.5px] top-5 bottom-5 w-px bg-brd" />
           <div key={`thread-order-${promptOrder}`} className="flex flex-col gap-2">
             {rows.map((prompt, i) => (
@@ -363,7 +363,7 @@ export function PromptFeed({
         </div>
       </section>
 
-      <section className="min-w-0">
+      <section className="min-w-0 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-8rem)] lg:min-h-0">
         {expandedId ? (
           <PromptReviewPane
             prompt={rows.find((row) => row.id === expandedId) ?? null}
@@ -386,8 +386,8 @@ export function PromptFeed({
 
 function PromptFeedLoadingState() {
   return (
-    <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
-      <section className="min-w-0 rounded-xl border border-brd bg-white overflow-hidden slidein">
+    <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)] lg:items-start">
+      <section className="min-w-0 rounded-xl border border-brd bg-white overflow-hidden slidein lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100dvh-8rem)] lg:flex-col">
         <div className="flex items-center justify-between gap-3 px-4 py-3 bg-gz-1 border-b border-brd">
           <div>
             <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-t4">Thread</h2>
@@ -395,7 +395,7 @@ function PromptFeedLoadingState() {
           </div>
         </div>
 
-        <div className="relative px-4 py-3">
+        <div className="relative px-4 py-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
           <div className="absolute left-[27.5px] top-5 bottom-5 w-px bg-brd" />
           <div className="flex flex-col gap-2">
             {Array.from({ length: 5 }, (_, index) => (
@@ -420,7 +420,10 @@ function PromptFeedLoadingState() {
         </div>
       </section>
 
-      <section className="min-w-0 slidein" style={{ animationDelay: "80ms" }}>
+      <section
+        className="min-w-0 slidein lg:sticky lg:top-6 lg:max-h-[calc(100dvh-8rem)] lg:min-h-0"
+        style={{ animationDelay: "80ms" }}
+      >
         <div className="rounded-xl border border-brd bg-white shadow-sm shadow-black/5 overflow-hidden">
           <div className="px-5 py-4 border-b border-brd bg-gz-1">
             <div className="mb-2 h-3 w-28 rounded bg-gz-2 animate-pulse" />
@@ -430,7 +433,7 @@ function PromptFeedLoadingState() {
               <div className="h-4 w-2/3 rounded bg-gz-2 animate-pulse" />
             </div>
           </div>
-          <div className="px-5 py-5 space-y-5">
+          <div className="px-5 py-5 space-y-5 lg:max-h-[calc(100dvh-16rem)] lg:overflow-y-auto">
             {Array.from({ length: 3 }, (_, index) => (
               <div key={index} className="rounded-xl border border-brd bg-white overflow-hidden">
                 <div className="flex items-center gap-3 px-4 py-3 bg-gz-1 border-b border-brd">
@@ -572,7 +575,7 @@ function PromptReviewPane({
   blobLoadingById?: Record<string, boolean>;
 }) {
   return (
-    <div className="rounded-xl border border-brd bg-white shadow-sm shadow-black/5 overflow-hidden">
+    <div className="rounded-xl border border-brd bg-white shadow-sm shadow-black/5 overflow-hidden lg:flex lg:max-h-[calc(100dvh-8rem)] lg:flex-col">
       {prompt && (
         <div className="px-5 py-4 border-b border-brd bg-gz-1">
           <div className="min-w-0 mb-2">
@@ -601,24 +604,26 @@ function PromptReviewPane({
       )}
 
       {!detail && !error && (
-        <div className="px-5 py-5">
+        <div className="px-5 py-5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
           <PromptDetailLoadingState />
         </div>
       )}
       {error && !detail && (
-        <div className="px-5 py-5">
+        <div className="px-5 py-5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
           <p className="text-[13px] text-red">{error}</p>
         </div>
       )}
       {detail && (
-        <ExpandedDetail
-          detail={detail}
-          transcriptOrder={transcriptOrder}
-          onToggleTranscriptOrder={onToggleTranscriptOrder}
-          onLoadBlob={onLoadBlob}
-          blobCache={blobCache}
-          blobLoadingById={blobLoadingById}
-        />
+        <div className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+          <ExpandedDetail
+            detail={detail}
+            transcriptOrder={transcriptOrder}
+            onToggleTranscriptOrder={onToggleTranscriptOrder}
+            onLoadBlob={onLoadBlob}
+            blobCache={blobCache}
+            blobLoadingById={blobLoadingById}
+          />
+        </div>
       )}
     </div>
   );
