@@ -38,6 +38,64 @@ const decisionTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 
+function PromptlineMark({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+      className={className}
+    >
+      <rect
+        x="1"
+        y="1"
+        width="14"
+        height="14"
+        rx="3"
+        fill="#fcfcfd"
+        stroke="#d8dde5"
+      />
+      <path
+        d="M5.5 3.5v9"
+        stroke="#b6bdc8"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+      <circle
+        cx="5.5"
+        cy="4.25"
+        r="1.35"
+        fill="#ffffff"
+        stroke="#c8cfd8"
+        strokeWidth="0.9"
+      />
+      <circle
+        cx="5.5"
+        cy="8"
+        r="1.55"
+        fill="#34d399"
+      />
+      <circle
+        cx="5.5"
+        cy="11.75"
+        r="1.35"
+        fill="#ffffff"
+        stroke="#c8cfd8"
+        strokeWidth="0.9"
+      />
+      <rect
+        x="8.4"
+        y="6.4"
+        width="3.6"
+        height="3.2"
+        rx="1.05"
+        fill="#161b22"
+        opacity="0.9"
+      />
+    </svg>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
    TOP BAR
    ════════════════════════════════════════════════════════════════════════════ */
@@ -75,10 +133,8 @@ export function TopBar({
       <div className="flex items-center gap-4">
         {/* Logo */}
         <div className="flex items-center gap-2.5">
-          <div className="size-7 rounded-md bg-t1 flex items-center justify-center">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="white">
-              <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h2A1.5 1.5 0 0 1 7 3.5v2A1.5 1.5 0 0 1 5.5 7H4v3h3.5A1.5 1.5 0 0 0 9 8.5V7h2v1.5A3.5 3.5 0 0 1 7.5 12H3.75a.75.75 0 0 1-.75-.75V7a2 2 0 0 1-1-1.732V3.5Z" />
-            </svg>
+          <div className="size-7 shrink-0">
+            <PromptlineMark className="size-7" />
           </div>
           <span className="text-sm font-semibold text-t1 tracking-tight">Promptline</span>
         </div>
