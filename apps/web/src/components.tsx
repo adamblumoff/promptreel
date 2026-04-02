@@ -573,12 +573,13 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
       )}
 
       {/* Diff */}
-      {detail.diffBlobIds.length > 0 && (
+      {(detail.diffBlobIds.length > 0 || detail.hasCodeDiffArtifacts) && (
         <div className="slidein" style={{ animationDelay: "200ms" }}>
           <DiffSection
             blobIds={detail.diffBlobIds}
             blobCache={blobCache ?? {}}
             blobLoadingById={blobLoadingById ?? {}}
+            hasCodeDiffArtifacts={detail.hasCodeDiffArtifacts}
           />
         </div>
       )}
@@ -597,10 +598,11 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
   );
 }
 
-function DiffSection({ blobIds, blobCache, blobLoadingById }: {
+function DiffSection({ blobIds, blobCache, blobLoadingById, hasCodeDiffArtifacts }: {
   blobIds: string[];
   blobCache: Record<string, string>;
   blobLoadingById: Record<string, boolean>;
+  hasCodeDiffArtifacts: boolean;
 }) {
   const anyLoading = blobIds.some((id) => blobLoadingById[id]);
   const combinedPatch = blobIds
@@ -622,6 +624,12 @@ function DiffSection({ blobIds, blobCache, blobLoadingById }: {
         </div>
       )}
       {combinedPatch && <DiffViewer patch={combinedPatch} />}
+      {!anyLoading && !combinedPatch && hasCodeDiffArtifacts && blobIds.length === 0 && (
+        <p className="text-[11px] text-t3 py-2">Diff content not stored for this artifact.</p>
+      )}
+      {!anyLoading && !combinedPatch && blobIds.length > 0 && (
+        <p className="text-[11px] text-t3 py-2">Failed to load diff content.</p>
+      )}
     </div>
   );
 }

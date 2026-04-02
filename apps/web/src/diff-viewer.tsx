@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Unified diff parser + renderer
+   Supports both standard unified diff and Codex patch format
    ═══════════════════════════════════════════════════════════════════════════ */
 
 type DiffLineType = "header" | "hunk" | "add" | "del" | "context";
@@ -21,9 +22,124 @@ type DiffFile = {
   lines: DiffLine[];
   additions: number;
   deletions: number;
+  isNew: boolean;
+  isDeleted: boolean;
 };
 
-function parseDiff(raw: string): DiffFile[] {
+/* ─── Codex patch format parser ────────────────────────────────────────── */
+
+function parseCodexPatch(raw: string): DiffFile[] {
+  const files: DiffFile[] = [];
+  const lines = raw.split("\n");
+  let current: DiffFile | null = null;
+  let lineNum = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (line === "*** Begin Patch" || line === "*** End Patch") {
+      current = null;
+      continue;
+    }
+
+    const addMatch = line.match(/^\*\*\* Add File:\s*(.+)/);
+    if (addMatch) {
+      const path = normalizePath(addMatch[1].trim());
+      current = { fromPath: "/dev/null", toPath: path, displayPath: path, lines: [], additions: 0, deletions: 0, isNew: true, isDeleted: false };
+      files.push(current);
+      lineNum = 0;
+      continue;
+    }
+
+    const deleteMatch = line.match(/^\*\*\* Delete File:\s*(.+)/);
+    if (deleteMatch) {
+      const path = normalizePath(deleteMatch[1].trim());
+      // If the next line is an Add File for the same path, this is a replace — skip the delete-only entry
+      const nextLine = lines[i + 1];
+      if (nextLine) {
+        const nextAdd = nextLine.match(/^\*\*\* Add File:\s*(.+)/);
+        if (nextAdd && normalizePath(nextAdd[1].trim()) === path) {
+          continue; // skip, the Add File will create the entry
+        }
+      }
+      current = { fromPath: path, toPath: "/dev/null", displayPath: path, lines: [], additions: 0, deletions: 0, isNew: false, isDeleted: true };
+      files.push(current);
+      lineNum = 0;
+      continue;
+    }
+
+    const updateMatch = line.match(/^\*\*\* Update File:\s*(.+)/);
+    if (updateMatch) {
+      const path = normalizePath(updateMatch[1].trim());
+      current = { fromPath: path, toPath: path, displayPath: path, lines: [], additions: 0, deletions: 0, isNew: false, isDeleted: false };
+      files.push(current);
+      lineNum = 0;
+      continue;
+    }
+
+    if (!current) continue;
+
+    // Codex @@ is a section separator (no line numbers)
+    if (line === "@@") {
+      current.lines.push({ type: "hunk", content: "@@", oldNum: null, newNum: null });
+      continue;
+    }
+
+    if (line.startsWith("+")) {
+      lineNum++;
+      current.lines.push({ type: "add", content: line.slice(1), oldNum: null, newNum: lineNum });
+      current.additions++;
+    } else if (line.startsWith("-")) {
+      current.lines.push({ type: "del", content: line.slice(1), oldNum: lineNum, newNum: null });
+      current.deletions++;
+    } else if (line.startsWith(" ")) {
+      lineNum++;
+      current.lines.push({ type: "context", content: line.slice(1), oldNum: lineNum, newNum: lineNum });
+    }
+  }
+
+  // Merge files with the same displayPath (Codex emits Delete+Add pairs for rewrites)
+  return mergeFiles(files);
+}
+
+function mergeFiles(files: DiffFile[]): DiffFile[] {
+  const merged = new Map<string, DiffFile>();
+  for (const file of files) {
+    const existing = merged.get(file.displayPath);
+    if (existing) {
+      existing.lines.push(...file.lines);
+      existing.additions += file.additions;
+      existing.deletions += file.deletions;
+      if (file.isNew) existing.isNew = false; // Delete+Add = update
+      if (file.isDeleted) existing.isDeleted = false;
+    } else {
+      merged.set(file.displayPath, { ...file });
+    }
+  }
+  return [...merged.values()];
+}
+
+function normalizePath(p: string): string {
+  // Strip absolute Windows paths to relative
+  const winMatch = p.match(/^[A-Za-z]:[/\\].*?[/\\]([^/\\]+[/\\].+)$/);
+  if (winMatch) {
+    // Try to find a reasonable relative path — take from the last recognizable root
+    const parts = p.replace(/\\/g, "/").split("/");
+    // Find common project roots like src/, tests/, etc.
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (["src", "tests", "test", "lib", "pkg", "cmd", "internal", "scripts", "host"].includes(parts[i])) {
+        return parts.slice(i).join("/");
+      }
+    }
+    // Fallback: last 3 segments
+    return parts.slice(-3).join("/");
+  }
+  return p.replace(/\\/g, "/");
+}
+
+/* ─── Standard unified diff parser ─────────────────────────────────────── */
+
+function parseUnifiedDiff(raw: string): DiffFile[] {
   const files: DiffFile[] = [];
   const lines = raw.split("\n");
   let current: DiffFile | null = null;
@@ -33,11 +149,7 @@ function parseDiff(raw: string): DiffFile[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    // New file header
-    if (line.startsWith("diff --git") || line.startsWith("--- a/") && lines[i + 1]?.startsWith("+++ b/")) {
-      // skip diff --git line, we'll pick up --- / +++ below
-      if (line.startsWith("diff --git")) continue;
-    }
+    if (line.startsWith("diff --git")) continue;
 
     if (line.startsWith("--- ")) {
       const next = lines[i + 1];
@@ -45,30 +157,26 @@ function parseDiff(raw: string): DiffFile[] {
         const fromPath = line.slice(4).replace(/^a\//, "");
         const toPath = next.slice(4).replace(/^b\//, "");
         const displayPath = toPath === "/dev/null" ? fromPath : toPath;
-        current = { fromPath, toPath, displayPath, lines: [], additions: 0, deletions: 0 };
+        current = {
+          fromPath, toPath, displayPath, lines: [], additions: 0, deletions: 0,
+          isNew: fromPath === "/dev/null", isDeleted: toPath === "/dev/null"
+        };
         files.push(current);
-        i++; // skip +++ line
+        i++;
         continue;
       }
     }
 
     if (!current) continue;
 
-    // Hunk header
     const hunkMatch = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@(.*)/);
     if (hunkMatch) {
       oldNum = parseInt(hunkMatch[1], 10);
       newNum = parseInt(hunkMatch[2], 10);
-      current.lines.push({
-        type: "hunk",
-        content: line,
-        oldNum: null,
-        newNum: null,
-      });
+      current.lines.push({ type: "hunk", content: line, oldNum: null, newNum: null });
       continue;
     }
 
-    // Diff content lines
     if (line.startsWith("+")) {
       current.lines.push({ type: "add", content: line.slice(1), oldNum: null, newNum: newNum++ });
       current.additions++;
@@ -77,18 +185,27 @@ function parseDiff(raw: string): DiffFile[] {
       current.deletions++;
     } else if (line.startsWith(" ")) {
       current.lines.push({ type: "context", content: line.slice(1), oldNum: oldNum++, newNum: newNum++ });
-    } else if (line.startsWith("\\")) {
-      // "\ No newline at end of file" — skip
-    } else if (line.startsWith("index ") || line.startsWith("new file") || line.startsWith("deleted file") || line.startsWith("similarity") || line.startsWith("rename") || line.startsWith("old mode") || line.startsWith("new mode")) {
-      // Git metadata lines — skip
+    } else if (line.startsWith("\\") || line.startsWith("index ") || line.startsWith("new file") ||
+               line.startsWith("deleted file") || line.startsWith("similarity") || line.startsWith("rename") ||
+               line.startsWith("old mode") || line.startsWith("new mode")) {
+      // skip metadata
     }
   }
 
   return files;
 }
 
+/* ─── Auto-detect and parse ────────────────────────────────────────────── */
+
+function parseDiff(raw: string): DiffFile[] {
+  if (raw.includes("*** Begin Patch") || raw.includes("*** Add File:") || raw.includes("*** Update File:")) {
+    return parseCodexPatch(raw);
+  }
+  return parseUnifiedDiff(raw);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
-   DiffViewer — renders a full unified diff
+   DiffViewer — renders a full diff
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export function DiffViewer({ patch }: { patch: string }) {
@@ -102,7 +219,6 @@ export function DiffViewer({ patch }: { patch: string }) {
     );
   }
 
-  // Summary counts
   const totalAdd = files.reduce((s, f) => s + f.additions, 0);
   const totalDel = files.reduce((s, f) => s + f.deletions, 0);
 
@@ -128,8 +244,6 @@ export function DiffViewer({ patch }: { patch: string }) {
 
 function FileDiff({ file, defaultOpen, index }: { file: DiffFile; defaultOpen: boolean; index: number }) {
   const [open, setOpen] = useState(defaultOpen);
-  const isNew = file.fromPath === "/dev/null";
-  const isDeleted = file.toPath === "/dev/null";
 
   return (
     <div
@@ -152,8 +266,8 @@ function FileDiff({ file, defaultOpen, index }: { file: DiffFile; defaultOpen: b
         <code className="text-[12px] font-mono text-t1 font-medium truncate flex-1">{file.displayPath}</code>
 
         <div className="flex items-center gap-2 shrink-0">
-          {isNew && <span className="text-[9px] font-semibold uppercase tracking-wider text-green bg-green-dim px-1.5 py-px rounded">new</span>}
-          {isDeleted && <span className="text-[9px] font-semibold uppercase tracking-wider text-red bg-red-dim px-1.5 py-px rounded">deleted</span>}
+          {file.isNew && <span className="text-[9px] font-semibold uppercase tracking-wider text-green bg-green-dim px-1.5 py-px rounded">new</span>}
+          {file.isDeleted && <span className="text-[9px] font-semibold uppercase tracking-wider text-red bg-red-dim px-1.5 py-px rounded">deleted</span>}
           {file.additions > 0 && <span className="text-[10px] font-mono text-green">+{file.additions}</span>}
           {file.deletions > 0 && <span className="text-[10px] font-mono text-red">-{file.deletions}</span>}
           <DiffBar additions={file.additions} deletions={file.deletions} />

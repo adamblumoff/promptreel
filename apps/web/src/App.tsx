@@ -248,8 +248,8 @@ export function App() {
     try {
       const content = await fetchBlob(wsId, blobId);
       setBlobCache((c) => ({ ...c, [blobId]: content }));
-    } catch {
-      // Silently fail — blob might not exist
+    } catch (e) {
+      console.warn(`[loadBlob] Failed to fetch blob ${blobId}:`, e);
     } finally {
       setBlobLoadingById((c) => ({ ...c, [blobId]: false }));
     }
@@ -299,6 +299,11 @@ export function App() {
     if (!selectedWorkspaceId || !expandedPromptId) return;
     const detail = promptDetails[expandedPromptId];
     if (!detail) return;
+    console.log("[diff-debug] detail for", expandedPromptId, {
+      diffBlobIds: detail.diffBlobIds,
+      hasCodeDiffArtifacts: detail.hasCodeDiffArtifacts,
+      artifactSummaries: detail.artifactSummaries.map(a => ({ type: a.type, blobId: a.blobId })),
+    });
     for (const blobId of detail.diffBlobIds) {
       void loadBlob(selectedWorkspaceId, blobId);
     }

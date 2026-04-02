@@ -82,6 +82,7 @@ export type PromptDetailViewModel = {
   fileGroups: FileGroupViewModel[];
   artifactSummaries: PromptDetailArtifactViewModel[];
   diffBlobIds: string[];
+  hasCodeDiffArtifacts: boolean;
   gitSummaries: PromptDetailGitLinkViewModel[];
 };
 
@@ -295,6 +296,7 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
     diffBlobIds: prompt.artifacts
       .filter((a) => a.type === "code_diff" && a.blobId)
       .map((a) => a.blobId!),
+    hasCodeDiffArtifacts: prompt.artifacts.some((a) => a.type === "code_diff"),
     gitSummaries: prompt.gitLinks.map((gitLink) => ({
       id: gitLink.id,
       commitSha: gitLink.commitSha,
