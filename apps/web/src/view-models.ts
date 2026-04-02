@@ -50,6 +50,8 @@ export type PromptRowViewModel = PromptListItem & {
   outcomeTone: "steered" | "plan" | null;
   tone: "live" | "history";
   executionPathLabel: string;
+  totalAdditions: number;
+  totalDeletions: number;
 };
 
 export type PromptDetailArtifactViewModel = {
@@ -296,7 +298,9 @@ export function toPromptRowViewModel(prompt: PromptListItem): PromptRowViewModel
     outcomeLabel: outcome?.label ?? null,
     outcomeTone: outcome?.tone ?? null,
     tone: prompt.status === "in_progress" ? "live" : "history",
-    executionPathLabel: prompt.executionPath ?? "Unknown folder"
+    executionPathLabel: prompt.executionPath ?? "Unknown folder",
+    totalAdditions: prompt.additions ?? 0,
+    totalDeletions: prompt.deletions ?? 0,
   };
 }
 

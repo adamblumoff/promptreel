@@ -571,7 +571,7 @@ function PromptTimelineItem({
           onClick={onSelect}
           className="group block w-full rounded-xl border-0 bg-transparent px-4 py-3 text-left"
         >
-          <div className="flex items-start gap-3 mb-2">
+          <div className="mb-2 flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <div className="mb-1.5">
                 <span className="text-[11px] font-mono text-t4 tabular-nums">{prompt.timestampLabel}</span>
@@ -588,6 +588,11 @@ function PromptTimelineItem({
                 {displayedPromptText}
               </p>
             </div>
+            {prompt.hasCodeDiff && (prompt.totalAdditions > 0 || prompt.totalDeletions > 0) && (
+              <div className="shrink-0 pt-0.5">
+                <InlineDiffSummary additions={prompt.totalAdditions} deletions={prompt.totalDeletions} />
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-2 flex-wrap text-[10px] text-t3">
@@ -604,6 +609,36 @@ function PromptTimelineItem({
             />
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function InlineDiffSummary({
+  additions,
+  deletions,
+}: {
+  additions: number;
+  deletions: number;
+}) {
+  const total = additions + deletions;
+  if (total === 0) return null;
+
+  const segments = 5;
+  const addSegs = Math.round((additions / total) * segments);
+  const delSegs = segments - addSegs;
+
+  return (
+    <div className="flex items-center gap-1 text-[11px]">
+      {additions > 0 && <span className="text-green font-mono">+{additions}</span>}
+      {deletions > 0 && <span className="text-red font-mono">-{deletions}</span>}
+      <div className="ml-0.5 flex gap-px">
+        {Array.from({ length: addSegs }, (_, index) => (
+          <span key={`a${index}`} className="size-[6px] rounded-[1px] bg-green" />
+        ))}
+        {Array.from({ length: delSegs }, (_, index) => (
+          <span key={`d${index}`} className="size-[6px] rounded-[1px] bg-red" />
+        ))}
       </div>
     </div>
   );

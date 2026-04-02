@@ -484,6 +484,7 @@ export class PromptlineStore {
     const result = prompts.map((prompt) => {
       const artifacts = artifactsByPrompt.get(prompt.id) ?? [];
       const files = new Set<string>();
+      const diffSummary = summarizeCodeDiffArtifacts(this, workspaceId, artifacts);
       const primaryArtifact =
         artifacts.find((artifact) => artifact.id === prompt.primaryArtifactId)
         ?? artifacts.find((artifact) => artifact.role === "primary")
@@ -503,6 +504,8 @@ export class PromptlineStore {
         childCount: childCounts.get(prompt.id) ?? 0,
         filesTouched: [...files],
         filesTouchedCount: files.size,
+        additions: diffSummary.additions,
+        deletions: diffSummary.deletions,
         primaryArtifactType: primaryArtifact?.type ?? null,
         primaryArtifactSummary: primaryArtifact?.summary ?? null,
         hasCodeDiff: artifacts.some((artifact) => artifact.type === "code_diff"),
@@ -1029,6 +1032,48 @@ export function safeJsonParse<T>(input: string | null | undefined, fallback: T):
   } catch {
     return fallback;
   }
+}
+
+function summarizeCodeDiffArtifacts(
+  store: PromptlineStore,
+  workspaceId: string,
+  artifacts: ArtifactRecord[]
+): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+
+  for (const artifact of artifacts) {
+    if (artifact.type !== "code_diff" || !artifact.blobId) {
+      continue;
+    }
+
+    const patch = store.readBlob(workspaceId, artifact.blobId);
+    const summary = countDiffPatchLines(patch);
+    additions += summary.additions;
+    deletions += summary.deletions;
+  }
+
+  return { additions, deletions };
+}
+
+function countDiffPatchLines(patch: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+
+  for (const line of patch.split(/\r?\n/)) {
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      continue;
+    }
+    if (line.startsWith("+")) {
+      additions += 1;
+      continue;
+    }
+    if (line.startsWith("-")) {
+      deletions += 1;
+    }
+  }
+
+  return { additions, deletions };
 }
 
 export function getFileMtimeMs(path: string): number | null {

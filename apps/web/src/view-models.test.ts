@@ -116,7 +116,9 @@ describe("web view models", () => {
       hasCodeDiff: true,
       hasPlanArtifact: false,
       hasFinalResponse: false,
-      isLiveDerived: true
+      isLiveDerived: true,
+      additions: 12,
+      deletions: 4
     } satisfies PromptListItem);
 
     expect(thread.promptCountLabel).toBe("4 prompts");
@@ -127,6 +129,8 @@ describe("web view models", () => {
     expect(row.childLabel).toBe("3 child prompts");
     expect(row.primaryLabel).toBe("code diff");
     expect(row.executionPathLabel).toBe("C:/work/alpha");
+    expect(row.totalAdditions).toBe(12);
+    expect(row.totalDeletions).toBe(4);
   });
 
   test("labels final output prompts as final response", () => {

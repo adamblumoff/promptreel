@@ -237,6 +237,8 @@ export interface PromptEventListItem {
   childCount: number;
   filesTouched: string[];
   filesTouchedCount: number;
+  additions?: number;
+  deletions?: number;
   promptSummary: string;
   primaryArtifactId: string | null;
   baselineSnapshotId: string | null;

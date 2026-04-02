@@ -97,6 +97,8 @@ export type PromptListItem = {
   filesTouchedCount: number;
   childCount: number;
   artifactCount: number;
+  additions?: number;
+  deletions?: number;
   primaryArtifactType: ArtifactType | null;
   primaryArtifactSummary: string | null;
   hasCodeDiff: boolean;
