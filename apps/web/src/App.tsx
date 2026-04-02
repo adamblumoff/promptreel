@@ -78,6 +78,7 @@ export function App() {
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [promptsLoading, setPromptsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<ContentTab>("prompts");
+  const [promptOrder, setPromptOrder] = useState<"desc" | "asc">("desc");
   const [visible, setVisible] = useState(() =>
     typeof document === "undefined" ? true : !document.hidden
   );
@@ -278,13 +279,22 @@ export function App() {
   const threadRows = threads.map(toThreadRowViewModel);
   const selThreadRow = threadRows.find((t) => t.id === selectedThreadId) ?? null;
 
-  const promptRows = prompts
-    .filter((p) => {
-      if (filter === "open") return p.status === "in_progress";
-      if (filter === "imported") return p.status !== "in_progress";
-      return true;
-    })
-    .map(toPromptRowViewModel);
+  const promptRows = useMemo(
+    () =>
+      [...prompts
+        .filter((p) => {
+          if (filter === "open") return p.status === "in_progress";
+          if (filter === "imported") return p.status !== "in_progress";
+          return true;
+        })
+        .map(toPromptRowViewModel)]
+        .sort((left, right) =>
+          promptOrder === "desc"
+            ? right.startedAt.localeCompare(left.startedAt)
+            : left.startedAt.localeCompare(right.startedAt)
+        ),
+    [filter, promptOrder, prompts]
+  );
 
   const promptDetails = useMemo(
     () =>
@@ -364,6 +374,12 @@ export function App() {
     }
   };
 
+  const handleTogglePromptOrder = () => {
+    startTransition(() => {
+      setPromptOrder((current) => (current === "desc" ? "asc" : "desc"));
+    });
+  };
+
   /* ── render ───────────────────────────────────────────────────────────── */
 
   return (
@@ -402,6 +418,8 @@ export function App() {
             errorById={detailErrorById}
             expandedId={expandedPromptId}
             onToggle={handleTogglePrompt}
+            promptOrder={promptOrder}
+            onTogglePromptOrder={handleTogglePromptOrder}
             isLoading={promptsLoading}
             blobCache={blobCache}
             blobLoadingById={blobLoadingById}

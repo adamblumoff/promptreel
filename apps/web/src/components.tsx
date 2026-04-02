@@ -346,6 +346,8 @@ export function PromptFeed({
   errorById,
   expandedId,
   onToggle,
+  promptOrder,
+  onTogglePromptOrder,
   isLoading,
   blobCache,
   blobLoadingById,
@@ -356,6 +358,8 @@ export function PromptFeed({
   errorById: Record<string, string | null>;
   expandedId: string | null;
   onToggle: (id: string) => void;
+  promptOrder: "desc" | "asc";
+  onTogglePromptOrder: () => void;
   isLoading: boolean;
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
@@ -384,15 +388,44 @@ export function PromptFeed({
             <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-t4">Thread</h2>
             <p className="text-[12px] text-t3 mt-1">Prompt events in review order.</p>
           </div>
-          {isLoading && <span className="text-[11px] text-t4">Refreshing…</span>}
+          <div className="flex items-center gap-2">
+            {isLoading && <span className="text-[11px] text-t4">Refreshing…</span>}
+            <button
+              type="button"
+              onClick={onTogglePromptOrder}
+              aria-label="toggle ascending/descending"
+              title="toggle ascending/descending"
+              className="size-7 rounded-md border border-brd bg-white text-t3 flex items-center justify-center transition-colors hover:bg-gz-1 hover:text-t1 pressable"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                {promptOrder === "desc" ? (
+                  <>
+                    <path d="M5 3.25v9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M2.75 10.5 5 12.75l2.25-2.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M9.5 4.25h3.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M9.5 8h2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M9.5 11.75h1.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </>
+                ) : (
+                  <>
+                    <path d="M5 3.25v9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M2.75 5.5 5 3.25 7.25 5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M9.5 4.25h1.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M9.5 8h2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M9.5 11.75h3.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </>
+                )}
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div className="relative px-4 py-3">
           <div className="absolute left-[27.5px] top-5 bottom-5 w-px bg-brd" />
-          <div className="flex flex-col gap-2">
+          <div key={`thread-order-${promptOrder}`} className="flex flex-col gap-2">
             {rows.map((prompt, i) => (
               <PromptTimelineItem
-                key={prompt.id}
+                key={`${promptOrder}:${prompt.id}`}
                 prompt={prompt}
                 isSelected={expandedId === prompt.id}
                 isLoading={loadingById[prompt.id] ?? false}
