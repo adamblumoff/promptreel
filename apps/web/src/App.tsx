@@ -56,6 +56,10 @@ function isAbort(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
+async function warmDiffViewer() {
+  await import("./diff-viewer");
+}
+
 const WORKSPACE_POLL_MS = 20_000;
 const ACTIVE_THREADS_POLL_MS = 5_000;
 const IDLE_THREADS_POLL_MS = 12_000;
@@ -259,6 +263,24 @@ export function App() {
     const id = setInterval(() => void loadDetail(selectedWorkspaceId, expandedPromptId, true), ACTIVE_DETAIL_POLL_MS);
     return () => clearInterval(id);
   }, [expandedPromptId, visible, detailsById, prompts, selectedWorkspaceId]);
+
+  useEffect(() => {
+    if (!selectedWorkspaceId || !expandedPromptId) return;
+
+    const detail = detailsById[expandedPromptId];
+    if (!detail) return;
+
+    const diffBlobIds = detail.artifacts
+      .filter((artifact) => artifact.type === "code_diff" && artifact.blobId)
+      .map((artifact) => artifact.blobId!);
+
+    if (diffBlobIds.length === 0) return;
+
+    void warmDiffViewer();
+    for (const blobId of diffBlobIds) {
+      void loadBlob(selectedWorkspaceId, blobId);
+    }
+  }, [blobLoadingById, blobCache, detailsById, expandedPromptId, selectedWorkspaceId]);
 
   useEffect(() => {
     if (!selectedWorkspaceId || prompts.length === 0) {

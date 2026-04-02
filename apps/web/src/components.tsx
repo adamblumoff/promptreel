@@ -661,7 +661,7 @@ function PromptReviewPane({
 
       {!detail && !error && (
         <div className="px-5 py-5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
-          <PromptDetailLoadingState />
+          <PromptDetailLoadingState showDiffPlaceholder={Boolean(prompt?.hasCodeDiff)} />
         </div>
       )}
       {error && !detail && (
@@ -694,7 +694,11 @@ function EmptyPromptReview() {
   );
 }
 
-function PromptDetailLoadingState() {
+function PromptDetailLoadingState({
+  showDiffPlaceholder,
+}: {
+  showDiffPlaceholder: boolean;
+}) {
   return (
     <div className="flex flex-col gap-5">
       <LoadingSectionCard
@@ -711,22 +715,24 @@ function PromptDetailLoadingState() {
         </div>
       </LoadingSectionCard>
 
-      <LoadingSectionCard
-        title="Code changes"
-        subtitle="Loading focused git-style diff review..."
-      >
-        <div className="px-4 py-4">
-          <div className="rounded-xl border border-brd bg-white p-4">
-            <div className="animate-pulse space-y-3">
-              <div className="h-3 w-32 rounded bg-gz-2" />
-              <div className="h-3 w-full rounded bg-gz-2" />
-              <div className="h-3 w-[92%] rounded bg-gz-2" />
-              <div className="h-3 w-[88%] rounded bg-gz-2" />
-              <div className="h-3 w-[76%] rounded bg-gz-2" />
+      {showDiffPlaceholder && (
+        <LoadingSectionCard
+          title="Code changes"
+          subtitle="Loading focused git-style diff review..."
+        >
+          <div className="px-4 py-4">
+            <div className="rounded-xl border border-brd bg-white p-4">
+              <div className="animate-pulse space-y-3">
+                <div className="h-3 w-32 rounded bg-gz-2" />
+                <div className="h-3 w-full rounded bg-gz-2" />
+                <div className="h-3 w-[92%] rounded bg-gz-2" />
+                <div className="h-3 w-[88%] rounded bg-gz-2" />
+                <div className="h-3 w-[76%] rounded bg-gz-2" />
+              </div>
             </div>
           </div>
-        </div>
-      </LoadingSectionCard>
+        </LoadingSectionCard>
+      )}
     </div>
   );
 }
