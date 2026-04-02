@@ -56,6 +56,7 @@ export type PromptDetailArtifactViewModel = {
   fileCountLabel: string | null;
   relationCountLabel: string | null;
   files: string[];
+  blobId: string | null;
 };
 
 export type PromptDetailGitLinkViewModel = {
@@ -80,6 +81,7 @@ export type PromptDetailViewModel = {
   touchedFilesLabel: string;
   fileGroups: FileGroupViewModel[];
   artifactSummaries: PromptDetailArtifactViewModel[];
+  diffBlobIds: string[];
   gitSummaries: PromptDetailGitLinkViewModel[];
 };
 
@@ -286,9 +288,13 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
           relationCount > 0
             ? `${relationCount} link${relationCount === 1 ? "" : "s"}`
             : null,
-        files: artifactFiles.map((f) => f.path)
+        files: artifactFiles.map((f) => f.path),
+        blobId: artifact.blobId
       };
     }),
+    diffBlobIds: prompt.artifacts
+      .filter((a) => a.type === "code_diff" && a.blobId)
+      .map((a) => a.blobId!),
     gitSummaries: prompt.gitLinks.map((gitLink) => ({
       id: gitLink.id,
       commitSha: gitLink.commitSha,

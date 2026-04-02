@@ -11,10 +11,10 @@ import type {
 } from "./view-models";
 import type { Workspace } from "./types";
 import { cn } from "@/lib/utils";
+import { DiffViewer } from "./diff-viewer";
 
 /* ════════════════════════════════════════════════════════════════════════════
    TOP BAR
-   Workspace dropdown on the left, status on the right. Thin, minimal.
    ════════════════════════════════════════════════════════════════════════════ */
 
 export function TopBar({
@@ -37,19 +37,17 @@ export function TopBar({
 
   return (
     <header className="sticky top-0 z-50 h-13 flex items-center justify-between px-5 bg-white/80 backdrop-blur-xl border-b border-brd">
-      {/* Left: logo + workspace picker */}
       <div className="flex items-center gap-4">
         {/* Logo */}
         <div className="flex items-center gap-2.5">
           <div className="size-7 rounded-md bg-t1 flex items-center justify-center">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="white" className="invert">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="white">
               <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h2A1.5 1.5 0 0 1 7 3.5v2A1.5 1.5 0 0 1 5.5 7H4v3h3.5A1.5 1.5 0 0 0 9 8.5V7h2v1.5A3.5 3.5 0 0 1 7.5 12H3.75a.75.75 0 0 1-.75-.75V7a2 2 0 0 1-1-1.732V3.5Z" />
             </svg>
           </div>
           <span className="text-sm font-semibold text-t1 tracking-tight">Promptline</span>
         </div>
 
-        {/* Divider */}
         <div className="w-px h-5 bg-brd" />
 
         {/* Workspace dropdown */}
@@ -57,16 +55,19 @@ export function TopBar({
           <button
             type="button"
             onClick={() => setDropdownOpen((o) => !o)}
-            className="flex items-center gap-2 h-8 px-3 rounded-lg border border-brd bg-white text-t2 text-sm cursor-pointer hover:bg-gz-2 hover:text-t1 transition-colors"
+            className="flex items-center gap-2 h-8 px-3 rounded-lg border border-brd bg-white text-t2 text-sm cursor-pointer hover:bg-gz-1 hover:text-t1 hoverlift-sm transition-colors"
           >
             {selected && (
-              <span className="size-5 rounded bg-gz-4 text-[9px] font-bold flex items-center justify-center text-t2">
+              <span className="size-5 rounded bg-gz-3 text-[9px] font-bold flex items-center justify-center text-t2">
                 {selected.slug.slice(0, 2).toUpperCase()}
               </span>
             )}
             <span className="max-w-[180px] truncate">{selected?.slug ?? "Select workspace"}</span>
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" className="opacity-40">
-              <path d="M4.427 9.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 9H4.604a.25.25 0 00-.177.427zM4.423 6.573l3.396-3.396a.25.25 0 01.354 0l3.396 3.396A.25.25 0 0111.396 7H4.604a.25.25 0 01-.177-.427z" />
+            <svg
+              width="12" height="12" viewBox="0 0 16 16" fill="currentColor"
+              className={cn("opacity-40 transition-transform duration-200", dropdownOpen && "rotate-180")}
+            >
+              <path d="M4.427 9.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 9H4.604a.25.25 0 00-.177.427z" />
             </svg>
           </button>
 
@@ -77,25 +78,26 @@ export function TopBar({
                 className="fixed inset-0 z-40 bg-transparent border-0 cursor-default"
                 onClick={() => setDropdownOpen(false)}
               />
-              <div className="absolute left-0 top-full mt-1 z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-brd-strong bg-white shadow-xl shadow-black/8 slidein">
+              <div className="absolute left-0 top-full mt-1 z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-brd-strong bg-white shadow-xl shadow-black/8 popout">
                 <div className="p-1.5">
-                  {workspaces.map((ws) => (
+                  {workspaces.map((ws, i) => (
                     <button
                       key={ws.id}
                       type="button"
                       onClick={() => { onSelectWorkspace(ws.id); setDropdownOpen(false); }}
+                      style={{ animationDelay: `${i * 30}ms` }}
                       className={cn(
-                        "w-full flex items-center gap-3 px-3 py-2 rounded-lg border-0 cursor-pointer text-left transition-colors",
+                        "w-full flex items-center gap-3 px-3 py-2 rounded-lg border-0 cursor-pointer text-left transition-colors fadein pressable",
                         ws.id === selectedWorkspaceId
-                          ? "bg-violet-dim text-t1"
-                          : "bg-transparent text-t2 hover:bg-gz-2 hover:text-t1"
+                          ? "bg-gz-1 text-t1"
+                          : "bg-transparent text-t2 hover:bg-gz-1 hover:text-t1"
                       )}
                     >
                       <span className={cn(
-                        "shrink-0 size-7 rounded-md text-[10px] font-bold flex items-center justify-center",
+                        "shrink-0 size-7 rounded-md text-[10px] font-bold flex items-center justify-center transition-colors",
                         ws.id === selectedWorkspaceId
                           ? "bg-t1 text-white"
-                          : "bg-gz-4 text-t3"
+                          : "bg-gz-3 text-t3"
                       )}>
                         {ws.slug.slice(0, 2).toUpperCase()}
                       </span>
@@ -104,7 +106,7 @@ export function TopBar({
                         <p className="text-[11px] text-t3 truncate">{ws.pathLabel}</p>
                       </div>
                       {ws.mode === "watching" && (
-                        <span className="shrink-0 size-2 rounded-full bg-green" />
+                        <span className="shrink-0 size-2 rounded-full bg-green breathe" />
                       )}
                     </button>
                   ))}
@@ -118,7 +120,7 @@ export function TopBar({
         </div>
       </div>
 
-      {/* Right: status + rescan */}
+      {/* Right */}
       <div className="flex items-center gap-3">
         {workspaceStatus && (
           <span className={cn(
@@ -136,7 +138,7 @@ export function TopBar({
           onClick={onRescan}
           disabled={isRescanning}
           title="Rescan sessions"
-          className="size-7 flex items-center justify-center rounded-md border-0 bg-transparent text-t3 hover:text-t2 hover:bg-gz-2 disabled:opacity-30 cursor-pointer transition-colors"
+          className="size-7 flex items-center justify-center rounded-md border-0 bg-transparent text-t3 hover:text-t2 hover:bg-gz-1 disabled:opacity-30 cursor-pointer transition-colors pressable"
         >
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" className={isRescanning ? "spinner" : undefined}>
             <path
@@ -152,7 +154,7 @@ export function TopBar({
 
 /* ════════════════════════════════════════════════════════════════════════════
    THREAD BAR
-   Horizontal scrollable row of thread chips.
+   Horizontal scrollable row of thread chips with staggered entrance.
    ════════════════════════════════════════════════════════════════════════════ */
 
 export function ThreadBar({
@@ -170,7 +172,7 @@ export function ThreadBar({
 
   if (threads.length === 0) {
     return (
-      <div className="border-b border-brd px-5 py-4">
+      <div className="border-b border-brd px-5 py-4 fadein">
         <p className="text-[13px] text-t3">
           {isLoading ? "Loading threads\u2026" : "No threads yet. Threads appear when sessions produce prompt data."}
         </p>
@@ -180,8 +182,8 @@ export function ThreadBar({
 
   return (
     <div className="border-b border-brd">
-      <div ref={scrollRef} className="flex gap-1 px-5 py-2 overflow-x-auto">
-        {threads.map((thread) => {
+      <div ref={scrollRef} className="flex gap-1.5 px-5 py-2.5 overflow-x-auto">
+        {threads.map((thread, i) => {
           const active = thread.id === selectedThreadId;
           const isOpen = thread.status === "open";
           return (
@@ -189,20 +191,28 @@ export function ThreadBar({
               key={thread.id}
               type="button"
               onClick={() => onSelectThread(thread.id)}
+              style={{ animationDelay: `${i * 40}ms` }}
               className={cn(
-                "shrink-0 flex items-center gap-2 h-9 px-3.5 rounded-full border text-[12px] cursor-pointer transition-all duration-150",
+                "shrink-0 flex items-center gap-2 h-9 px-3.5 rounded-full border text-[12px] cursor-pointer transition-all duration-200 threadslide pressable",
                 active
                   ? "border-t1 bg-t1 text-white font-medium shadow-sm"
-                  : "border-brd bg-white text-t2 hover:bg-white hover:text-t1 hover:border-brd-strong"
+                  : "border-brd bg-white text-t2 hover:bg-gz-1 hover:text-t1 hover:border-brd-strong hoverlift-sm"
               )}
             >
               <span className={cn(
-                "size-1.5 rounded-full shrink-0",
-                isOpen ? "bg-green" : "bg-t4"
+                "size-1.5 rounded-full shrink-0 transition-colors",
+                isOpen
+                  ? active ? "bg-green-400" : "bg-green"
+                  : active ? "bg-gz-5" : "bg-t4"
               )} />
               <span className="max-w-[200px] truncate">{thread.title}</span>
               {isOpen && thread.openPromptCount > 0 && (
-                <span className="size-4 rounded-full bg-green-dim text-green text-[9px] font-bold flex items-center justify-center">
+                <span className={cn(
+                  "size-4 rounded-full text-[9px] font-bold flex items-center justify-center transition-colors",
+                  active
+                    ? "bg-white/20 text-white"
+                    : "bg-green-dim text-green"
+                )}>
                   {thread.openPromptCount}
                 </span>
               )}
@@ -216,7 +226,6 @@ export function ThreadBar({
 
 /* ════════════════════════════════════════════════════════════════════════════
    CONTENT HEADER
-   Shows selected thread info + filter/tab controls.
    ════════════════════════════════════════════════════════════════════════════ */
 
 export type ContentTab = "prompts" | "health";
@@ -238,17 +247,16 @@ export function ContentHeader({
 }) {
   if (!thread) {
     return (
-      <div className="py-12 text-center">
+      <div className="py-12 text-center fadein">
         <p className="text-t3 text-[14px]">Select a thread above to view its prompt history.</p>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-4 mb-6">
-      {/* Thread title + meta */}
+    <div className="flex flex-col gap-4 mb-6 slidein">
       <div>
-        <h1 className="text-xl font-semibold text-t1 leading-tight mb-2">{thread.title}</h1>
+        <h1 className="text-xl font-semibold text-t1 leading-tight mb-2 tracking-tight">{thread.title}</h1>
         <div className="flex items-center gap-3 flex-wrap">
           <StatusBadge status={thread.status} />
           <span className="text-[11px] text-t3 tabular-nums">{thread.promptCountLabel}</span>
@@ -258,12 +266,14 @@ export function ContentHeader({
         </div>
       </div>
 
-      {/* Tabs + filters */}
       <div className="flex items-center justify-between gap-4 border-b border-brd pb-px">
         <div className="flex items-center gap-0.5">
           <TabButton active={activeTab === "prompts"} onClick={() => onTabChange("prompts")}>
             Prompts
-            <span className={cn("text-[10px] tabular-nums ml-1", activeTab === "prompts" ? "text-t2" : "text-t4")}>
+            <span className={cn(
+              "text-[10px] tabular-nums ml-1 countup",
+              activeTab === "prompts" ? "text-t2" : "text-t4"
+            )}>
               {promptCount}
             </span>
           </TabButton>
@@ -273,15 +283,15 @@ export function ContentHeader({
         </div>
 
         {activeTab === "prompts" && (
-          <div className="flex items-center rounded-md overflow-hidden border border-brd">
+          <div className="flex items-center rounded-md overflow-hidden border border-brd fadein">
             {(["all", "open", "imported"] as const).map((f) => (
               <button
                 key={f}
                 type="button"
                 onClick={() => onFilterChange(f)}
                 className={cn(
-                  "h-6 px-2 text-[10px] font-medium border-0 cursor-pointer transition-colors uppercase tracking-wider",
-                  filter === f ? "bg-gz-3 text-t1" : "bg-white text-t3 hover:text-t2"
+                  "h-6 px-2 text-[10px] font-medium border-0 cursor-pointer transition-all duration-150 uppercase tracking-wider",
+                  filter === f ? "bg-t1 text-white" : "bg-white text-t3 hover:text-t2 hover:bg-gz-1"
                 )}
               >
                 {f}
@@ -300,7 +310,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
       type="button"
       onClick={onClick}
       className={cn(
-        "h-9 px-3 text-[13px] font-medium border-0 border-b-2 cursor-pointer transition-colors bg-transparent flex items-center",
+        "h-9 px-3 text-[13px] font-medium border-0 border-b-2 cursor-pointer transition-all duration-200 bg-transparent flex items-center",
         active
           ? "text-t1 border-b-t1"
           : "text-t3 border-b-transparent hover:text-t2"
@@ -326,8 +336,7 @@ function StatusBadge({ status }: { status: "open" | "closed" }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   PROMPT FEED
-   Full-width vertical list of prompt cards.
+   PROMPT FEED — staggered card entrance
    ════════════════════════════════════════════════════════════════════════════ */
 
 export function PromptFeed({
@@ -338,6 +347,9 @@ export function PromptFeed({
   expandedId,
   onToggle,
   isLoading,
+  blobCache,
+  blobLoadingById,
+  onLoadBlob,
 }: {
   rows: PromptRowViewModel[];
   details: Record<string, PromptDetailViewModel>;
@@ -346,11 +358,14 @@ export function PromptFeed({
   expandedId: string | null;
   onToggle: (id: string) => void;
   isLoading: boolean;
+  blobCache?: Record<string, string>;
+  blobLoadingById?: Record<string, boolean>;
+  onLoadBlob?: (blobId: string) => void;
 }) {
   if (rows.length === 0) {
     return (
       <div className="py-20 text-center slidein">
-        <div className="size-14 rounded-2xl bg-gz-2 border border-brd flex items-center justify-center mx-auto mb-4">
+        <div className="size-14 rounded-2xl bg-gz-1 border border-brd flex items-center justify-center mx-auto mb-4">
           <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
             <path d="M8 1v6m0 0 3-3m-3 3L5 4M3 9v3a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V9"
               stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
@@ -364,11 +379,11 @@ export function PromptFeed({
   }
 
   return (
-    <div className="flex flex-col gap-2 slidein">
+    <div className="flex flex-col gap-2">
       {isLoading && rows.length === 0 && (
         <p className="text-[12px] text-t4 py-2">Loading...</p>
       )}
-      {rows.map((prompt) => (
+      {rows.map((prompt, i) => (
         <PromptCard
           key={prompt.id}
           prompt={prompt}
@@ -377,6 +392,10 @@ export function PromptFeed({
           isLoading={loadingById[prompt.id] ?? false}
           error={errorById[prompt.id] ?? null}
           onToggle={() => onToggle(prompt.id)}
+          index={i}
+          blobCache={blobCache}
+          blobLoadingById={blobLoadingById}
+          onLoadBlob={onLoadBlob}
         />
       ))}
     </div>
@@ -384,7 +403,7 @@ export function PromptFeed({
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   PROMPT CARD
+   PROMPT CARD — with entrance animation + hover lift + expand transition
    ════════════════════════════════════════════════════════════════════════════ */
 
 function PromptCard({
@@ -394,6 +413,10 @@ function PromptCard({
   isLoading,
   error,
   onToggle,
+  index,
+  blobCache,
+  blobLoadingById,
+  onLoadBlob,
 }: {
   prompt: PromptRowViewModel;
   detail: PromptDetailViewModel | undefined;
@@ -401,33 +424,38 @@ function PromptCard({
   isLoading: boolean;
   error: string | null;
   onToggle: () => void;
+  index: number;
+  blobCache?: Record<string, string>;
+  blobLoadingById?: Record<string, boolean>;
+  onLoadBlob?: (blobId: string) => void;
 }) {
   const live = prompt.status === "in_progress";
 
   return (
-    <div className={cn(
-      "rounded-xl border transition-all duration-150",
-      isExpanded
-        ? "border-brd-strong bg-white shadow-md shadow-black/5"
-        : "border-brd bg-white hover:border-brd-strong"
-    )}>
-      {/* Header row */}
+    <div
+      style={{ animationDelay: `${Math.min(index * 50, 400)}ms` }}
+      className={cn(
+        "rounded-xl border transition-all duration-200 cardenter",
+        isExpanded
+          ? "border-brd-strong bg-white shadow-md shadow-black/5"
+          : "border-brd bg-white hover:border-brd-strong hoverlift"
+      )}
+    >
       <button
         type="button"
         onClick={onToggle}
         className="w-full border-0 bg-transparent text-left cursor-pointer p-4 flex items-start gap-4"
       >
-        {/* Left accent bar */}
+        {/* Accent bar */}
         <div className={cn(
-          "shrink-0 w-[3px] self-stretch rounded-full min-h-[32px]",
+          "shrink-0 w-[3px] self-stretch rounded-full min-h-[32px] transition-colors duration-300",
           live ? "bg-green" : prompt.status === "completed" ? "bg-t1" : "bg-gz-4"
         )} />
 
-        {/* Content */}
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3 mb-1.5">
             <p className={cn(
-              "text-[14px] leading-snug line-clamp-2",
+              "text-[14px] leading-snug line-clamp-2 transition-colors duration-150",
               isExpanded ? "text-t1 font-medium" : "text-t2"
             )}>
               {prompt.promptSummary}
@@ -461,7 +489,7 @@ function PromptCard({
 
       {/* Expanded detail */}
       {isExpanded && (
-        <div className="border-t border-brd slidein">
+        <div className="border-t border-brd expandin">
           {isLoading && !detail && (
             <div className="px-4 py-6 flex items-center justify-center">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="spinner text-t3">
@@ -474,7 +502,7 @@ function PromptCard({
               <p className="text-[13px] text-red">{error}</p>
             </div>
           )}
-          {detail && <ExpandedDetail detail={detail} />}
+          {detail && <ExpandedDetail detail={detail} blobCache={blobCache} blobLoadingById={blobLoadingById} onLoadBlob={onLoadBlob} />}
         </div>
       )}
     </div>
@@ -484,10 +512,10 @@ function PromptCard({
 function PromptStatusPill({ status, label }: { status: string; label: string }) {
   return (
     <span className={cn(
-      "inline-flex items-center h-[20px] px-2 rounded-md text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap",
+      "inline-flex items-center h-[20px] px-2 rounded-md text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors",
       status === "in_progress" && "bg-green-dim text-green",
       status === "completed" && "bg-gz-2 text-t1",
-      status === "imported" && "bg-gz-3 text-t3"
+      status === "imported" && "bg-gz-2 text-t3"
     )}>
       {label}
     </span>
@@ -499,24 +527,28 @@ function Dot() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   EXPANDED DETAIL
-   Prompt text, artifacts, files, git — all inside the expanded card.
+   EXPANDED DETAIL — sections stagger in
    ════════════════════════════════════════════════════════════════════════════ */
 
-function ExpandedDetail({ detail }: { detail: PromptDetailViewModel }) {
+function ExpandedDetail({ detail, blobCache, blobLoadingById, onLoadBlob }: {
+  detail: PromptDetailViewModel;
+  blobCache?: Record<string, string>;
+  blobLoadingById?: Record<string, boolean>;
+  onLoadBlob?: (blobId: string) => void;
+}) {
   return (
     <div className="px-4 py-4 flex flex-col gap-5">
-      {/* Prompt text block */}
-      <div className="relative rounded-lg bg-white border border-brd overflow-hidden">
+      {/* Prompt text */}
+      <div className="relative rounded-lg bg-gz-1 border border-brd overflow-hidden slidein">
         <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-t1" />
-        <div className="pl-5 pr-4 py-3 text-[13px] leading-relaxed text-t2 whitespace-pre-wrap font-sans">
+        <div className="pl-5 pr-4 py-3 text-[13px] leading-relaxed text-t2 whitespace-pre-wrap">
           {detail.promptText}
         </div>
       </div>
 
-      {/* Meta line */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <code className="text-[11px] font-mono text-t3 bg-gz-2 border border-brd px-2 py-0.5 rounded-md">
+      {/* Meta */}
+      <div className="flex items-center gap-3 flex-wrap slidein" style={{ animationDelay: "50ms" }}>
+        <code className="text-[11px] font-mono text-t3 bg-gz-1 border border-brd px-2 py-0.5 rounded-md">
           {detail.executionPathLabel}
         </code>
         {detail.primaryArtifactSummary && (
@@ -526,30 +558,88 @@ function ExpandedDetail({ detail }: { detail: PromptDetailViewModel }) {
 
       {/* Artifacts */}
       {detail.artifactSummaries.length > 0 && (
-        <Section title="Artifacts">
-          {detail.artifactSummaries.map((a) => (
-            <ArtifactRow key={a.id} artifact={a} />
-          ))}
-        </Section>
+        <div className="slidein" style={{ animationDelay: "100ms" }}>
+          <Section title="Artifacts">
+            {detail.artifactSummaries.map((a) => (
+              <ArtifactRow key={a.id} artifact={a} />
+            ))}
+          </Section>
+        </div>
       )}
 
       {/* Files */}
       {detail.fileGroups.length > 0 && (
-        <Section title="Files changed" badge={detail.touchedFilesLabel}>
-          {detail.fileGroups.map((g) => (
-            <FileGroupRow key={g.extension} group={g} />
-          ))}
-        </Section>
+        <div className="slidein" style={{ animationDelay: "150ms" }}>
+          <Section title="Files changed" badge={detail.touchedFilesLabel}>
+            {detail.fileGroups.map((g) => (
+              <FileGroupRow key={g.extension} group={g} />
+            ))}
+          </Section>
+        </div>
+      )}
+
+      {/* Diff */}
+      {detail.diffBlobIds.length > 0 && onLoadBlob && (
+        <div className="slidein" style={{ animationDelay: "200ms" }}>
+          <DiffSection
+            blobIds={detail.diffBlobIds}
+            blobCache={blobCache ?? {}}
+            blobLoadingById={blobLoadingById ?? {}}
+            onLoadBlob={onLoadBlob}
+          />
+        </div>
       )}
 
       {/* Git */}
       {detail.gitSummaries.length > 0 && (
-        <Section title="Git">
-          {detail.gitSummaries.map((gl) => (
-            <GitRow key={gl.id} link={gl} />
-          ))}
-        </Section>
+        <div className="slidein" style={{ animationDelay: `${detail.diffBlobIds.length > 0 ? 250 : 200}ms` }}>
+          <Section title="Git">
+            {detail.gitSummaries.map((gl) => (
+              <GitRow key={gl.id} link={gl} />
+            ))}
+          </Section>
+        </div>
       )}
+    </div>
+  );
+}
+
+function DiffSection({ blobIds, blobCache, blobLoadingById, onLoadBlob }: {
+  blobIds: string[];
+  blobCache: Record<string, string>;
+  blobLoadingById: Record<string, boolean>;
+  onLoadBlob: (blobId: string) => void;
+}) {
+  const allLoaded = blobIds.every((id) => blobCache[id] !== undefined);
+  const anyLoading = blobIds.some((id) => blobLoadingById[id]);
+  const combinedPatch = blobIds
+    .map((id) => blobCache[id])
+    .filter((c): c is string => c !== undefined)
+    .join("\n");
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2">
+        <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4">Code changes</h3>
+        {!allLoaded && !anyLoading && (
+          <button
+            type="button"
+            onClick={() => blobIds.forEach((id) => { if (!blobCache[id]) onLoadBlob(id); })}
+            className="text-[10px] font-medium text-t1 bg-gz-1 border border-brd px-2 py-0.5 rounded-md cursor-pointer hover:bg-gz-2 transition-colors pressable"
+          >
+            Load diff
+          </button>
+        )}
+        {anyLoading && (
+          <span className="inline-flex items-center gap-1.5 text-[10px] text-t3">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" className="spinner">
+              <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            Loading...
+          </span>
+        )}
+      </div>
+      {combinedPatch && <DiffViewer patch={combinedPatch} />}
     </div>
   );
 }
@@ -559,7 +649,7 @@ function Section({ title, badge, children }: { title: string; badge?: string; ch
     <div>
       <div className="flex items-center gap-2 mb-2">
         <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4">{title}</h3>
-        {badge && <span className="text-[10px] text-t3 bg-gz-2 px-1.5 py-px rounded">{badge}</span>}
+        {badge && <span className="text-[10px] text-t3 bg-gz-1 px-1.5 py-px rounded">{badge}</span>}
       </div>
       <div className="rounded-lg border border-brd overflow-hidden divide-y divide-brd">
         {children}
@@ -583,15 +673,15 @@ function ArtifactRow({ artifact }: { artifact: PromptDetailArtifactViewModel }) 
   const d = iconPaths[artifact.type] ?? "M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z";
 
   return (
-    <div className="flex items-start gap-3 px-3 py-2.5 bg-white">
+    <div className="flex items-start gap-3 px-3 py-2.5 bg-white hover:bg-gz-1 transition-colors">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="shrink-0 text-t4 mt-0.5">
         <path d={d} />
       </svg>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap mb-0.5">
           <span className="text-[12px] font-medium text-t1">{artifact.label}</span>
-          {artifact.fileCountLabel && <Chip label={artifact.fileCountLabel} />}
-          {artifact.relationCountLabel && <Chip label={artifact.relationCountLabel} />}
+          {artifact.fileCountLabel && <ChipBadge label={artifact.fileCountLabel} />}
+          {artifact.relationCountLabel && <ChipBadge label={artifact.relationCountLabel} />}
         </div>
         <p className="text-[11px] text-t3 line-clamp-2">{artifact.summary}</p>
         {artifact.files.length > 0 && (
@@ -609,15 +699,15 @@ function ArtifactRow({ artifact }: { artifact: PromptDetailArtifactViewModel }) 
   );
 }
 
-function Chip({ label }: { label: string }) {
+function ChipBadge({ label }: { label: string }) {
   return (
-    <span className="inline-flex items-center h-[16px] px-1.5 rounded text-[9px] font-medium bg-gz-3 text-t3">
+    <span className="inline-flex items-center h-[16px] px-1.5 rounded text-[9px] font-medium bg-gz-2 text-t3">
       {label}
     </span>
   );
 }
 
-/* ─── File group (collapsible) ──────────────────────────────────────────── */
+/* ─── File group (collapsible with animation) ───────────────────────────── */
 
 function FileGroupRow({ group }: { group: FileGroupViewModel }) {
   const [open, setOpen] = useState(false);
@@ -627,11 +717,11 @@ function FileGroupRow({ group }: { group: FileGroupViewModel }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2 border-0 bg-transparent text-left cursor-pointer hover:bg-gz-2 transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2 border-0 bg-transparent text-left cursor-pointer hover:bg-gz-1 transition-colors"
       >
         <svg
           width="10" height="10" viewBox="0 0 16 16" fill="currentColor"
-          className={cn("shrink-0 text-t4 transition-transform duration-150", open && "rotate-90")}
+          className={cn("shrink-0 text-t4 transition-transform duration-200 ease-out", open && "rotate-90")}
         >
           <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
         </svg>
@@ -639,7 +729,7 @@ function FileGroupRow({ group }: { group: FileGroupViewModel }) {
         <span className="text-[10px] text-t4 ml-auto tabular-nums">{group.files.length}</span>
       </button>
       {open && (
-        <div className="flex flex-col pl-7 pr-3 pb-2 slidein">
+        <div className="flex flex-col pl-7 pr-3 pb-2 slidedown">
           {group.files.map((path) => (
             <code key={path} className="block py-px text-[10px] text-t3 font-mono truncate">{path}</code>
           ))}
@@ -665,11 +755,11 @@ function GitRow({ link }: { link: PromptDetailGitLinkViewModel }) {
     green: "bg-green-dim text-green",
     amber: "bg-amber-dim text-amber",
     red: "bg-red-dim text-red",
-    default: "bg-gz-3 text-t3",
+    default: "bg-gz-2 text-t3",
   };
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2 bg-white">
+    <div className="flex items-center gap-3 px-3 py-2 bg-white hover:bg-gz-1 transition-colors">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="shrink-0 text-t4">
         <path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z" />
       </svg>
@@ -686,13 +776,13 @@ function GitRow({ link }: { link: PromptDetailGitLinkViewModel }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   HEALTH VIEW
+   HEALTH VIEW — with count-up entrance
    ════════════════════════════════════════════════════════════════════════════ */
 
 export function HealthView({ status }: { status: WorkspaceStatusViewModel | null }) {
   if (!status) {
     return (
-      <div className="py-16 text-center">
+      <div className="py-16 text-center fadein">
         <p className="text-t3 text-[14px]">No health data available.</p>
       </div>
     );
@@ -710,18 +800,24 @@ export function HealthView({ status }: { status: WorkspaceStatusViewModel | null
       <p className="text-[14px] text-t2 mb-5">{status.headline}</p>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {cards.map((c) => (
-          <div key={c.label} className={cn(
-            "rounded-xl border p-5 transition-all",
-            c.glow
-              ? "border-green/20 bg-green-dim"
-              : "border-brd bg-white"
-          )}>
+        {cards.map((c, i) => (
+          <div
+            key={c.label}
+            style={{ animationDelay: `${i * 60}ms` }}
+            className={cn(
+              "rounded-xl border p-5 cardenter hoverlift",
+              c.glow
+                ? "border-green/20 bg-green-dim"
+                : "border-brd bg-white"
+            )}
+          >
             <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-t4 mb-2">{c.label}</p>
             <p className={cn(
-              "text-2xl font-bold tabular-nums",
+              "text-2xl font-bold tabular-nums countup",
               c.glow ? "text-green" : "text-t1"
-            )}>
+            )}
+              style={{ animationDelay: `${i * 60 + 150}ms` }}
+            >
               {c.value}
             </p>
           </div>

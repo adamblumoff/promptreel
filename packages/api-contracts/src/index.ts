@@ -72,3 +72,8 @@ export interface RescanSessionsResponse {
   ok: true;
   ingestion: IngestionStatus;
 }
+
+export interface BlobResponse {
+  blobId: string;
+  content: string;
+}

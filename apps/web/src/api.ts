@@ -82,3 +82,15 @@ export async function rescanSessions(options: RequestOptions = {}): Promise<Heal
   const data = await postJson<{ ok: true; ingestion: Health["ingestion"] }>("/workspaces/rescan", options);
   return data.ingestion;
 }
+
+export async function fetchBlob(
+  workspaceId: string,
+  blobId: string,
+  options: RequestOptions = {}
+): Promise<string> {
+  const data = await getJson<{ blobId: string; content: string }>(
+    `/blobs/${encodeURIComponent(blobId)}?workspaceId=${encodeURIComponent(workspaceId)}`,
+    options
+  );
+  return data.content;
+}

@@ -1,5 +1,6 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import {
+  fetchBlob,
   fetchHealth,
   fetchPromptDetail,
   fetchPrompts,
@@ -81,6 +82,8 @@ export function App() {
     typeof document === "undefined" ? true : !document.hidden
   );
 
+  const [blobCache, setBlobCache] = useState<Record<string, string>>({});
+  const [blobLoadingById, setBlobLoadingById] = useState<Record<string, boolean>>({});
   const detailControllers = useRef<Record<string, AbortController | undefined>>({});
 
   /* visibility */
@@ -239,6 +242,19 @@ export function App() {
     }
   }
 
+  async function loadBlob(wsId: string, blobId: string) {
+    if (blobCache[blobId] || blobLoadingById[blobId]) return;
+    setBlobLoadingById((c) => ({ ...c, [blobId]: true }));
+    try {
+      const content = await fetchBlob(wsId, blobId);
+      setBlobCache((c) => ({ ...c, [blobId]: content }));
+    } catch {
+      // Silently fail — blob might not exist
+    } finally {
+      setBlobLoadingById((c) => ({ ...c, [blobId]: false }));
+    }
+  }
+
   useEffect(() => {
     if (!selectedWorkspaceId || !expandedPromptId || !visible) return;
     const ep = prompts.find((p) => p.id === expandedPromptId);
@@ -359,6 +375,9 @@ export function App() {
             expandedId={expandedPromptId}
             onToggle={handleTogglePrompt}
             isLoading={promptsLoading}
+            blobCache={blobCache}
+            blobLoadingById={blobLoadingById}
+            onLoadBlob={selectedWorkspaceId ? (blobId: string) => void loadBlob(selectedWorkspaceId, blobId) : undefined}
           />
         )}
 

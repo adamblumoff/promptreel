@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { fileURLToPath } from "node:url";
 import type {
+  BlobResponse,
   FileHistoryResponse,
   HealthResponse,
   PlanTraceResponse,
@@ -126,6 +127,19 @@ export function buildServer() {
         steps: trace.steps,
         linkedArtifactIds: trace.linkedArtifactIds
       };
+    }
+  );
+
+  app.get<{ Querystring: { workspaceId?: string; repoId?: string }; Params: { blobId: string } }>(
+    "/api/blobs/:blobId",
+    async (request, reply): Promise<BlobResponse> => {
+      const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
+      try {
+        const content = store.readBlob(workspaceId, request.params.blobId);
+        return { blobId: request.params.blobId, content };
+      } catch {
+        throw notFound("Blob not found");
+      }
     }
   );
 
