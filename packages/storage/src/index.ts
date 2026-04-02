@@ -1091,11 +1091,26 @@ function summarizeTranscriptCommand(command: string): string {
 }
 
 function summarizeTranscriptOutput(value: string | null): string | null {
-  const trimmed = value?.trim() ?? "";
+  const trimmed = normalizeTranscriptActivityDetail(value);
   if (!trimmed) {
     return null;
   }
   return trimmed.length > 600 ? `${trimmed.slice(0, 600).trimEnd()}…` : trimmed;
+}
+
+function normalizeTranscriptActivityDetail(value: string | null): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) {
+    return null;
+  }
+
+  const wrappedOutputMatch = trimmed.match(/(?:^|\n)Output:\s*\r?\n([\s\S]*)$/);
+  if (trimmed.startsWith("Command:") && wrappedOutputMatch) {
+    const outputOnly = wrappedOutputMatch[1]?.trim() ?? "";
+    return outputOnly || null;
+  }
+
+  return trimmed;
 }
 
 function buildTranscriptActivityEntry(input: {
@@ -1115,6 +1130,34 @@ function buildTranscriptActivityEntry(input: {
     detail: summarizeTranscriptOutput(input.detail ?? null),
     status: input.status ?? null,
   };
+}
+
+function isApplyPatchActivity(payload: Record<string, unknown>): boolean {
+  return String(payload.name ?? "").trim() === "apply_patch";
+}
+
+function summarizeToolActivity(payload: Record<string, unknown>): string {
+  if (isApplyPatchActivity(payload)) {
+    return "Updated files via apply_patch";
+  }
+
+  const input = typeof payload.input === "string" ? payload.input.trim() : "";
+  return input ? summarizeTranscriptCommand(input) : String(payload.name ?? "tool").trim() || "tool";
+}
+
+function normalizeToolActivityDetail(
+  payload: Record<string, unknown>,
+  output: string | null
+): string | null {
+  if (isApplyPatchActivity(payload)) {
+    const trimmed = output?.trim() ?? "";
+    if (!trimmed) {
+      return null;
+    }
+    return /\b(failed|error|verification failed)\b/i.test(trimmed) ? trimmed : null;
+  }
+
+  return summarizeTranscriptOutput(output);
 }
 
 function buildCompletedActivityEntry(
@@ -1188,9 +1231,7 @@ function upsertResponseItemActivity(
       occurredAt,
       activityType: "tool",
       label: String(safePayload.name ?? "tool").trim() || "tool",
-      summary: typeof safePayload.input === "string" && safePayload.input.trim()
-        ? summarizeTranscriptCommand(safePayload.input)
-        : String(safePayload.name ?? "tool").trim() || "tool",
+      summary: summarizeToolActivity(safePayload),
       detail: null,
       status: typeof safePayload.status === "string" ? safePayload.status : null,
     });
@@ -1204,7 +1245,10 @@ function upsertResponseItemActivity(
     if (!entry) {
       return null;
     }
-    entry.detail = summarizeTranscriptOutput(typeof safePayload.output === "string" ? safePayload.output : null);
+    entry.detail = normalizeToolActivityDetail(
+      safePayload,
+      typeof safePayload.output === "string" ? safePayload.output : null
+    );
     return entry;
   }
 

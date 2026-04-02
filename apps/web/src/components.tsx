@@ -658,6 +658,7 @@ function TranscriptSection({
   const [open, setOpen] = usePromptDisclosureState(promptEventId, "transcript");
   const [pageSize, setPageSize] = useState<(typeof transcriptPageSizeOptions)[number] | "all">(10);
   const [visibleCount, setVisibleCount] = useState(10);
+  const [expandedEntries, setExpandedEntries] = useState<Record<string, boolean>>({});
   const visibleTranscript =
     pageSize === "all" ? transcript : transcript.slice(0, visibleCount);
   const remainingCount = transcript.length - visibleTranscript.length;
@@ -710,9 +711,22 @@ function TranscriptSection({
           <div className="relative">
             <div className="absolute left-[10px] top-2 bottom-2 w-px bg-brd" />
             <div className="space-y-5">
-              {visibleTranscript.map((entry, index) => (
-                <TranscriptEntryRow key={`${entry.kind}:${entry.occurredAt}:${index}`} entry={entry} />
-              ))}
+              {visibleTranscript.map((entry, index) => {
+                const entryId = `${entry.kind}:${entry.occurredAt}:${index}`;
+                return (
+                  <TranscriptEntryRow
+                    key={entryId}
+                    entry={entry}
+                    expanded={Boolean(expandedEntries[entryId])}
+                    onToggle={() =>
+                      setExpandedEntries((current) => ({
+                        ...current,
+                        [entryId]: !current[entryId],
+                      }))
+                    }
+                  />
+                );
+              })}
             </div>
           </div>
           {pageSize !== "all" && remainingCount > 0 && (
@@ -734,8 +748,12 @@ function TranscriptSection({
 
 function TranscriptEntryRow({
   entry,
+  expanded,
+  onToggle,
 }: {
   entry: PromptDetailViewModel["transcript"][number];
+  expanded: boolean;
+  onToggle: () => void;
 }) {
   const isMessage = entry.kind === "message";
   const markerClassName = isMessage
@@ -743,6 +761,18 @@ function TranscriptEntryRow({
       ? "bg-t1"
       : "bg-white border border-brd-strong"
     : "bg-gz-3";
+  const isExpandable = isTranscriptEntryExpandable(entry);
+  const summaryText = getTranscriptEntrySummary(entry);
+  const detailText = entry.kind === "activity" ? entry.detail : null;
+  const shouldShowExpanded = isExpandable && expanded;
+  const entryLabel =
+    entry.kind === "message"
+      ? entry.role === "user" ? "prompt" : "assistant"
+      : entry.label;
+  const metaLabel =
+    entry.kind === "message"
+      ? entry.phase ? entry.phase.replace(/_/g, " ") : null
+      : entry.status;
 
   return (
     <div className="grid grid-cols-[20px_minmax(0,1fr)] gap-4">
@@ -750,39 +780,79 @@ function TranscriptEntryRow({
         <span className={cn("mt-[3px] size-2.5 rounded-full", markerClassName)} />
       </div>
       <div className="min-w-0">
-        <div className="mb-1.5 flex min-h-[14px] items-center gap-2 flex-wrap text-[10px] uppercase tracking-[0.08em] text-t4">
-          <span className="font-semibold">
-            {entry.kind === "message"
-              ? entry.role === "user" ? "prompt" : "assistant"
-              : entry.label}
-          </span>
-          {entry.kind === "message" && entry.phase && (
-            <span>{entry.phase.replace(/_/g, " ")}</span>
-          )}
-          {entry.kind === "activity" && entry.status && (
-            <span>{entry.status}</span>
-          )}
-          <span className="font-mono tracking-normal text-[10px] tabular-nums normal-case">{entry.timestampLabel}</span>
-        </div>
-        {entry.kind === "message" ? (
-          <MarkdownPlanDocument markdown={entry.text} variant="thread" />
-        ) : (
-          <div className="space-y-1">
-            <p className={cn(
-              "text-[13px] leading-6 text-t2",
-              entry.activityType === "command" && "font-mono text-[12px]"
-            )}>
-              {entry.summary}
-            </p>
-            {entry.detail && (
-              <pre className="overflow-x-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-t3 font-mono">
-                {entry.detail}
-              </pre>
+        {isExpandable ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            className="w-full border-0 bg-transparent p-0 text-left cursor-pointer"
+          >
+            <div className="flex min-w-0 items-baseline gap-2 text-[10px] uppercase tracking-[0.08em] text-t4">
+              <span className="shrink-0 font-semibold">{entryLabel}</span>
+              {metaLabel && <span className="shrink-0">{metaLabel}</span>}
+              <span className="shrink-0 font-mono tracking-normal tabular-nums normal-case">{entry.timestampLabel}</span>
+              <span
+                className={cn(
+                  "min-w-0 flex-1 normal-case tracking-normal",
+                  entry.kind === "activity"
+                    ? "font-mono text-[11px] font-semibold text-t1"
+                    : "text-[12px] text-t2"
+                )}
+              >
+                <span className={cn("block min-w-0", !shouldShowExpanded && "truncate")}>
+                  {summaryText}
+                  {!shouldShowExpanded && "…"}
+                </span>
+              </span>
+            </div>
+            {shouldShowExpanded && detailText && (
+              <div className="mt-1.5 border-l border-brd pl-3">
+                <p className="text-[11px] leading-5 font-mono text-t4 whitespace-pre-wrap break-words">
+                  {detailText}
+                </p>
+              </div>
             )}
+          </button>
+        ) : (
+          <div className="flex min-w-0 items-baseline gap-2 text-[10px] uppercase tracking-[0.08em] text-t4">
+            <span className="shrink-0 font-semibold">{entryLabel}</span>
+            {metaLabel && <span className="shrink-0">{metaLabel}</span>}
+            <span className="shrink-0 font-mono tracking-normal tabular-nums normal-case">{entry.timestampLabel}</span>
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate normal-case tracking-normal",
+                entry.kind === "activity"
+                  ? "font-mono text-[11px] font-semibold text-t1"
+                  : "text-[12px] text-t2"
+              )}
+            >
+              {summaryText}
+            </span>
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+function getTranscriptEntrySummary(entry: PromptDetailViewModel["transcript"][number]): string {
+  if (entry.kind === "activity") {
+    return entry.summary;
+  }
+
+  return entry.text
+    .replace(/[#>*_`[\]\-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isTranscriptEntryExpandable(entry: PromptDetailViewModel["transcript"][number]): boolean {
+  if (entry.kind === "message") {
+    return entry.text.length > 140 || entry.text.includes("\n");
+  }
+
+  return (
+    entry.summary.length > 120
+    || Boolean(entry.detail && entry.detail.trim().length > 0)
   );
 }
 
