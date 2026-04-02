@@ -563,11 +563,9 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
 }) {
   const hasDiffPane = detail.diffBlobIds.length > 0 || detail.hasCodeDiffArtifacts;
   const transcriptSectionCount = detail.transcript.length > 0 ? 1 : 0;
-  const finalResponseSectionCount = detail.featuredFinalResponseArtifact ? 1 : 0;
   const planSectionCount = detail.featuredPlanArtifact ? 1 : 0;
   const leadingSectionCount =
     transcriptSectionCount
-    + finalResponseSectionCount
     + planSectionCount;
   const detailSectionCount = leadingSectionCount + (hasDiffPane ? 1 : 0);
 
@@ -579,25 +577,13 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
         </div>
       )}
 
-      {detail.featuredFinalResponseArtifact && (
-        <div className="slidein" style={{ animationDelay: transcriptSectionCount > 0 ? "50ms" : undefined }}>
-          <FinalResponseSection
-            promptEventId={detail.id}
-            blobId={detail.featuredFinalResponseBlobId}
-            blobCache={blobCache ?? {}}
-            blobLoadingById={blobLoadingById ?? {}}
-            hasFinalResponseArtifact
-          />
-        </div>
-      )}
-
       {detail.featuredPlanArtifact && (
         <div
           className="slidein"
           style={{
             animationDelay:
-              transcriptSectionCount + finalResponseSectionCount > 0
-                ? `${(transcriptSectionCount + finalResponseSectionCount) * 50}ms`
+              transcriptSectionCount + planSectionCount > 0
+                ? `${transcriptSectionCount * 50}ms`
                 : undefined
           }}
         >
@@ -713,15 +699,21 @@ function TranscriptSection({
             <div className="space-y-5">
               {visibleTranscript.map((entry, index) => {
                 const entryId = `${entry.kind}:${entry.occurredAt}:${index}`;
+                const isFinalMessage =
+                  entry.kind === "message"
+                  && isTranscriptMarkdownEntry(entry);
+                const entryExpanded =
+                  expandedEntries[entryId]
+                  ?? (isFinalMessage ? true : false);
                 return (
                   <TranscriptEntryRow
                     key={entryId}
                     entry={entry}
-                    expanded={Boolean(expandedEntries[entryId])}
+                    expanded={entryExpanded}
                     onToggle={() =>
                       setExpandedEntries((current) => ({
                         ...current,
-                        [entryId]: !current[entryId],
+                        [entryId]: !entryExpanded,
                       }))
                     }
                   />
@@ -764,23 +756,22 @@ function TranscriptEntryRow({
   const isExpandable = isTranscriptEntryExpandable(entry);
   const summaryText = getTranscriptEntrySummary(entry);
   const detailText = entry.kind === "activity" ? entry.detail : null;
+  const isFinalMessage = entry.kind === "message" && isTranscriptMarkdownEntry(entry);
   const shouldShowExpanded = isExpandable && expanded;
   const entryLabel =
-    entry.kind === "message"
+    isFinalMessage
+      ? "final message"
+      : entry.kind === "message"
       ? entry.role === "user" ? "prompt" : "assistant"
       : entry.label;
-  const metaLabel =
-    entry.kind === "message"
-      ? entry.phase ? entry.phase.replace(/_/g, " ") : null
-      : entry.status;
 
   return (
     <div className="grid grid-cols-[20px_minmax(0,1fr)] gap-4">
       <div className="relative flex justify-center">
-        <span className={cn("mt-[6px] size-2.5 rounded-full", markerClassName)} />
+        <span className={cn("mt-[5px] size-2.5 rounded-full", markerClassName)} />
       </div>
       <div className="min-w-0">
-        {isExpandable ? (
+        {isFinalMessage ? (
           <button
             type="button"
             onClick={onToggle}
@@ -789,12 +780,30 @@ function TranscriptEntryRow({
             <TranscriptEntryLine
               entry={entry}
               entryLabel={entryLabel}
-              metaLabel={metaLabel}
+              summaryText=""
+              timestampLabel={entry.timestampLabel}
+              expanded
+            />
+            {shouldShowExpanded && (
+              <div className="mt-1.5">
+                <MarkdownPlanDocument markdown={entry.text} variant="thread" />
+              </div>
+            )}
+          </button>
+        ) : isExpandable ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            className="w-full border-0 bg-transparent p-0 text-left cursor-pointer"
+          >
+            <TranscriptEntryLine
+              entry={entry}
+              entryLabel={entryLabel}
               summaryText={summaryText}
               timestampLabel={entry.timestampLabel}
               expanded={shouldShowExpanded}
             />
-            {shouldShowExpanded && detailText && (
+            {shouldShowExpanded && !isTranscriptMarkdownEntry(entry) && detailText && (
               <div className="mt-1.5 border-l border-brd pl-3">
                 <p className="text-[11px] leading-5 font-mono text-t4 whitespace-pre-wrap break-words">
                   {detailText}
@@ -807,7 +816,6 @@ function TranscriptEntryRow({
               <TranscriptEntryLine
                 entry={entry}
                 entryLabel={entryLabel}
-                metaLabel={metaLabel}
                 summaryText={summaryText}
                 timestampLabel={entry.timestampLabel}
                 expanded
@@ -822,23 +830,20 @@ function TranscriptEntryRow({
 function TranscriptEntryLine({
   entry,
   entryLabel,
-  metaLabel,
   summaryText,
   timestampLabel,
   expanded,
 }: {
   entry: PromptDetailViewModel["transcript"][number];
   entryLabel: string;
-  metaLabel: string | null;
   summaryText: string;
   timestampLabel: string;
   expanded: boolean;
 }) {
   return (
-    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-0.5">
+    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-0.5">
       <div className="flex min-w-0 items-baseline gap-2 text-[10px] uppercase tracking-[0.08em] text-t4">
         <span className="shrink-0 font-semibold">{entryLabel}</span>
-        {metaLabel && <span className="shrink-0">{metaLabel}</span>}
       </div>
       <div
         className={cn(
@@ -848,15 +853,17 @@ function TranscriptEntryLine({
             : "text-[12px] text-t2"
         )}
       >
-        <span
-          className={cn(
-            "block min-w-0 leading-5",
-            !expanded && "truncate"
-          )}
-        >
-          {summaryText}
-          {!expanded && "…"}
-        </span>
+        {summaryText && (
+          <span
+            className={cn(
+              "block min-w-0 leading-5",
+              !expanded && "truncate"
+            )}
+          >
+            {summaryText}
+            {!expanded && "…"}
+          </span>
+        )}
       </div>
       <span className="shrink-0 pt-px font-mono text-[10px] text-t4 tabular-nums normal-case">
         {timestampLabel}
@@ -887,66 +894,10 @@ function isTranscriptEntryExpandable(entry: PromptDetailViewModel["transcript"][
   );
 }
 
-function FinalResponseSection({
-  promptEventId,
-  blobId,
-  blobCache,
-  blobLoadingById,
-  hasFinalResponseArtifact,
-}: {
-  promptEventId: string;
-  blobId: string | null;
-  blobCache: Record<string, string>;
-  blobLoadingById: Record<string, boolean>;
-  hasFinalResponseArtifact: boolean;
-}) {
-  const [open, setOpen] = usePromptDisclosureState(promptEventId, "final-response");
-  const rawContent = blobId ? blobCache[blobId] : null;
-  const isLoading = blobId ? Boolean(blobLoadingById[blobId]) && rawContent === undefined : false;
-  const markdown = rawContent?.trim() ?? "";
-
-  return (
-    <div>
-      <div className="rounded-xl border border-brd bg-white overflow-hidden">
-        <button
-          type="button"
-          onClick={() => setOpen((value) => !value)}
-          className="w-full flex items-center gap-3 px-4 py-3 border-0 bg-gz-1 text-left cursor-pointer hover:bg-gz-2 transition-colors"
-        >
-          <ChevronRight className={cn("size-3 shrink-0 text-t4 transition-transform duration-200", open && "rotate-90")} />
-          <div className="min-w-0 flex-1">
-            <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Final response</h3>
-            <p className="text-[12px] text-t2">Rendered markdown final response</p>
-          </div>
-          {markdown && (
-            <span className="text-[10px] text-t3 bg-white px-1.5 py-px rounded border border-brd">markdown</span>
-          )}
-        </button>
-
-        {open && (
-          <div className="p-3 border-t border-brd slidedown">
-            {isLoading && (
-              <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
-                <RefreshCw className="size-3.5 spinner text-t4" />
-                <span className="text-[11px] text-t3">Loading final response...</span>
-              </div>
-            )}
-            {!isLoading && markdown && <MarkdownPlanDocument markdown={markdown} />}
-            {!isLoading && !markdown && hasFinalResponseArtifact && !blobId && (
-              <div className="rounded-xl border border-brd bg-white px-4 py-3">
-                <p className="text-[11px] text-t3">Final response content not stored for this artifact.</p>
-              </div>
-            )}
-            {!isLoading && !markdown && hasFinalResponseArtifact && blobId && (
-              <div className="rounded-xl border border-brd bg-white px-4 py-3">
-                <p className="text-[11px] text-t3">Failed to load final response content.</p>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+function isTranscriptMarkdownEntry(entry: PromptDetailViewModel["transcript"][number]) {
+  return entry.kind === "message"
+    && entry.role === "assistant"
+    && (entry.phase === "final_answer" || entry.phase === null);
 }
 
 function PlanSection({
