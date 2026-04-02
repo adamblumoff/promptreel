@@ -303,6 +303,10 @@ export function App() {
       ) as Record<string, PromptDetailViewModel>,
     [detailsById]
   );
+  const selectedPromptRow =
+    (expandedPromptId ? promptRows.find((row) => row.id === expandedPromptId) : null)
+    ?? promptRows[0]
+    ?? null;
 
   useEffect(() => {
     if (!selectedWorkspaceId) return;
@@ -403,6 +407,7 @@ export function App() {
       <main className="w-full px-5 py-6">
         <ContentHeader
           thread={selThreadRow}
+          selectedPromptStatus={selectedPromptRow?.status ?? null}
           activeTab={activeTab}
           onTabChange={setActiveTab}
           filter={filter}

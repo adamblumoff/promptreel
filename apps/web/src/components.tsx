@@ -232,6 +232,7 @@ export type ContentTab = "prompts" | "health";
 
 export function ContentHeader({
   thread,
+  selectedPromptStatus,
   activeTab,
   onTabChange,
   filter,
@@ -239,6 +240,7 @@ export function ContentHeader({
   promptCount,
 }: {
   thread: ThreadRowViewModel | null;
+  selectedPromptStatus: PromptRowViewModel["status"] | null;
   activeTab: ContentTab;
   onTabChange: (t: ContentTab) => void;
   filter: "all" | "active" | "idle";
@@ -258,7 +260,7 @@ export function ContentHeader({
       <div>
         <h1 className="text-xl font-semibold text-t1 leading-tight mb-2 tracking-tight">{thread.title}</h1>
         <div className="flex items-center gap-3 flex-wrap">
-          <StatusBadge status={thread.status} />
+          <StatusBadge status={selectedPromptStatus} />
           <span className="text-[11px] text-t3 tabular-nums">{thread.promptCountLabel}</span>
           <span className="text-[11px] text-t4">&middot;</span>
           <span className="text-[11px] text-t3 tabular-nums">{thread.activityLabel}</span>
@@ -321,17 +323,18 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   );
 }
 
-function StatusBadge({ status }: { status: "open" | "closed" }) {
-  const label = status === "open" ? "active" : "idle";
+function StatusBadge({ status }: { status: PromptRowViewModel["status"] | null }) {
+  const isActive = status === "in_progress";
+  const label = isActive ? "active" : "idle";
 
   return (
     <span className={cn(
       "inline-flex items-center gap-1.5 h-5 px-2 rounded-full text-[10px] font-semibold uppercase tracking-wider",
-      status === "open"
+      isActive
         ? "bg-green-dim text-green"
         : "bg-gz-2 text-t3"
     )}>
-      {status === "open" && <span className="size-1.5 rounded-full bg-green breathe" />}
+      {isActive && <span className="size-1.5 rounded-full bg-green breathe" />}
       {label}
     </span>
   );
