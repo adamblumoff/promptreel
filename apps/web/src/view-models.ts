@@ -336,6 +336,7 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
       (artifact) =>
         artifact.id !== featuredPlanArtifactId
         && artifact.id !== featuredFinalResponseArtifactId
+        && artifact.type !== "code_diff"
         && !(featuredPlanArtifactId && artifact.type === "final_output")
     ),
     diffBlobIds: prompt.artifacts

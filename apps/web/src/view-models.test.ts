@@ -261,13 +261,8 @@ describe("web view models", () => {
       blobId: "blob-2"
     });
     expect(detail.featuredPlanBlobId).toBe("blob-2");
-    expect(detail.artifactSummaries).toHaveLength(2);
+    expect(detail.artifactSummaries).toHaveLength(1);
     expect(detail.artifactSummaries[0]).toMatchObject({
-      label: "code diff",
-      fileCountLabel: "2 files",
-      relationCountLabel: "1 link"
-    });
-    expect(detail.artifactSummaries[1]).toMatchObject({
       label: "search",
       family: "execution",
       subtype: "execution.search",
