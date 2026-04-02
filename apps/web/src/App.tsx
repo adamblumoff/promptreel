@@ -52,6 +52,13 @@ function isAbort(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
+const WORKSPACE_POLL_MS = 20_000;
+const ACTIVE_THREADS_POLL_MS = 5_000;
+const IDLE_THREADS_POLL_MS = 12_000;
+const ACTIVE_PROMPTS_POLL_MS = 2_000;
+const IDLE_PROMPTS_POLL_MS = 10_000;
+const ACTIVE_DETAIL_POLL_MS = 3_000;
+
 /* ─── App ───────────────────────────────────────────────────────────────── */
 
 export function App() {
@@ -114,12 +121,13 @@ export function App() {
     };
 
     void go();
-    const id = setInterval(() => void go(), 10_000);
+    const id = setInterval(() => void go(), WORKSPACE_POLL_MS);
     return () => { live = false; ctrl?.abort(); clearInterval(id); };
   }, [visible]);
 
   /* ── fetch threads ────────────────────────────────────────────────────── */
 
+  const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
   const cachedThreads = selectedWorkspaceId ? threadsByWs[selectedWorkspaceId] : undefined;
 
   useEffect(() => {
@@ -127,6 +135,7 @@ export function App() {
     let live = true;
     let ctrl: AbortController | null = null;
     const hasCached = Boolean(cachedThreads);
+    const interval = selectedWorkspace?.isGenerating ? ACTIVE_THREADS_POLL_MS : IDLE_THREADS_POLL_MS;
 
     const go = async () => {
       ctrl?.abort();
@@ -144,9 +153,9 @@ export function App() {
     };
 
     void go();
-    const id = setInterval(() => void go(), 5_000);
+    const id = setInterval(() => void go(), interval);
     return () => { live = false; ctrl?.abort(); clearInterval(id); };
-  }, [cachedThreads, visible, selectedWorkspaceId]);
+  }, [cachedThreads, selectedWorkspace?.isGenerating, visible, selectedWorkspaceId]);
 
   /* ── fetch prompts ────────────────────────────────────────────────────── */
 
@@ -164,7 +173,7 @@ export function App() {
     let ctrl: AbortController | null = null;
     const ck = cacheKey(selectedWorkspaceId, selectedThreadId);
     const hasCached = Boolean(cachedPrompts);
-    const interval = selThread?.openPromptCount ? 2_000 : 5_000;
+    const interval = selThread?.openPromptCount ? ACTIVE_PROMPTS_POLL_MS : IDLE_PROMPTS_POLL_MS;
 
     const go = async () => {
       ctrl?.abort();
@@ -233,7 +242,7 @@ export function App() {
     if (!detailsById[expandedPromptId]) void loadDetail(selectedWorkspaceId, expandedPromptId);
     if (ep.status !== "in_progress") return;
 
-    const id = setInterval(() => void loadDetail(selectedWorkspaceId, expandedPromptId, true), 2_000);
+    const id = setInterval(() => void loadDetail(selectedWorkspaceId, expandedPromptId, true), ACTIVE_DETAIL_POLL_MS);
     return () => clearInterval(id);
   }, [expandedPromptId, visible, detailsById, prompts, selectedWorkspaceId]);
 
