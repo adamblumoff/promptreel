@@ -377,24 +377,47 @@ export function PromptFeed({
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      {isLoading && rows.length === 0 && (
-        <p className="text-[12px] text-t4 py-2">Loading...</p>
-      )}
-      {rows.map((prompt, i) => (
-        <PromptCard
-          key={prompt.id}
-          prompt={prompt}
-          detail={details[prompt.id]}
-          isExpanded={expandedId === prompt.id}
-          isLoading={loadingById[prompt.id] ?? false}
-          error={errorById[prompt.id] ?? null}
-          onToggle={() => onToggle(prompt.id)}
-          index={i}
-          blobCache={blobCache}
-          blobLoadingById={blobLoadingById}
-        />
-      ))}
+    <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
+      <section className="min-w-0 rounded-xl border border-brd bg-white overflow-hidden">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 bg-gz-1 border-b border-brd">
+          <div>
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-t4">Thread</h2>
+            <p className="text-[12px] text-t3 mt-1">Prompt events in review order.</p>
+          </div>
+          {isLoading && <span className="text-[11px] text-t4">Refreshing…</span>}
+        </div>
+
+        <div className="relative px-4 py-3">
+          <div className="absolute left-[27.5px] top-5 bottom-5 w-px bg-brd" />
+          <div className="flex flex-col gap-2">
+            {rows.map((prompt, i) => (
+              <PromptTimelineItem
+                key={prompt.id}
+                prompt={prompt}
+                isSelected={expandedId === prompt.id}
+                isLoading={loadingById[prompt.id] ?? false}
+                onSelect={() => onToggle(prompt.id)}
+                index={i}
+              />
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="min-w-0">
+        {expandedId ? (
+          <PromptReviewPane
+            prompt={rows.find((row) => row.id === expandedId) ?? null}
+            detail={details[expandedId]}
+            isLoading={loadingById[expandedId] ?? false}
+            error={errorById[expandedId] ?? null}
+            blobCache={blobCache}
+            blobLoadingById={blobLoadingById}
+          />
+        ) : (
+          <EmptyPromptReview />
+        )}
+      </section>
     </div>
   );
 }
@@ -403,117 +426,134 @@ export function PromptFeed({
    PROMPT CARD — with entrance animation + hover lift + expand transition
    ════════════════════════════════════════════════════════════════════════════ */
 
-function PromptCard({
+function PromptTimelineItem({
   prompt,
-  detail,
-  isExpanded,
+  isSelected,
   isLoading,
-  error,
-  onToggle,
+  onSelect,
   index,
-  blobCache,
-  blobLoadingById,
 }: {
   prompt: PromptRowViewModel;
-  detail: PromptDetailViewModel | undefined;
-  isExpanded: boolean;
+  isSelected: boolean;
   isLoading: boolean;
-  error: string | null;
-  onToggle: () => void;
+  onSelect: () => void;
   index: number;
-  blobCache?: Record<string, string>;
-  blobLoadingById?: Record<string, boolean>;
 }) {
   const live = prompt.status === "in_progress";
 
   return (
     <div
       style={{ animationDelay: `${Math.min(index * 50, 400)}ms` }}
-      className={cn(
-        "rounded-xl border transition-all duration-200 cardenter",
-        isExpanded
-          ? "border-brd-strong bg-white shadow-md shadow-black/5"
-          : "border-brd bg-white hover:border-brd-strong hoverlift"
-      )}
+      className="grid grid-cols-[24px_minmax(0,1fr)] items-stretch gap-3 cardenter"
     >
+      <div className="relative flex self-stretch items-center justify-center">
+        <span
+          className={cn(
+            "size-4 rounded-full border-[3px] transition-colors",
+            isSelected
+              ? "border-white bg-t1 shadow-sm"
+              : live
+                ? "border-white bg-green"
+                : "border-white bg-gz-4"
+          )}
+        />
+      </div>
+
       <button
         type="button"
-        onClick={onToggle}
-        className="w-full border-0 bg-transparent text-left cursor-pointer p-4 flex items-start gap-4"
+        onClick={onSelect}
+        className={cn(
+          "group rounded-xl border px-4 py-3 text-left transition-all duration-200",
+          isSelected
+            ? "border-brd-strong bg-white shadow-md shadow-black/5"
+            : "border-brd bg-white hover:border-brd-strong hover:bg-gz-1 hoverlift"
+        )}
       >
-        {/* Accent bar */}
-        <div className={cn(
-          "shrink-0 w-[3px] self-stretch rounded-full min-h-[32px] transition-colors duration-300",
-          live ? "bg-green" : prompt.status === "completed" ? "bg-t1" : "bg-gz-4"
-        )} />
-
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3 mb-1.5">
+        <div className="flex items-start gap-3 mb-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[11px] font-mono text-t4 tabular-nums">{prompt.timestampLabel}</span>
+              {live && <span className="size-1.5 rounded-full bg-green breathe" />}
+            </div>
             <p className={cn(
-              "text-[14px] leading-snug line-clamp-2 transition-colors duration-150",
-              isExpanded ? "text-t1 font-medium" : "text-t2"
+              "text-[13px] leading-snug transition-colors duration-150",
+              isSelected ? "text-t1 font-medium" : "text-t2"
             )}>
               {prompt.promptSummary}
             </p>
-            <div className="shrink-0 flex items-center gap-2">
-              {live && <span className="size-2 rounded-full bg-green breathe" />}
-              <PromptStatusPill status={prompt.status} label={prompt.statusLabel} />
-            </div>
           </div>
-          <div className="flex items-center gap-2 text-[11px] text-t3 flex-wrap">
-            <span className="tabular-nums">{prompt.timestampLabel}</span>
-            <Dot />
-            <span>{prompt.primaryLabel}</span>
-            <Dot />
-            <span>{prompt.filesLabel}</span>
-            {prompt.artifactCount > 0 && (
-              <>
-                <Dot />
-                <span>{prompt.artifactLabel}</span>
-              </>
-            )}
-            {prompt.childCount > 0 && (
-              <>
-                <Dot />
-                <span>{prompt.childLabel}</span>
-              </>
-            )}
-          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap text-[10px] text-t3">
+          <ChipBadge label={prompt.primaryLabel} />
+          {prompt.filesTouchedCount > 0 && <ChipBadge label={prompt.filesLabel} />}
+          {prompt.artifactCount > 0 && <ChipBadge label={prompt.artifactLabel} />}
+          {prompt.childCount > 0 && <ChipBadge label={prompt.childLabel} />}
+          {isLoading && <span className="text-t4">Loading…</span>}
         </div>
       </button>
-
-      {/* Expanded detail */}
-      {isExpanded && (
-        <div className="border-t border-brd expandin">
-          {isLoading && !detail && (
-            <div className="px-4 py-6 flex items-center justify-center">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="spinner text-t3">
-                <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-            </div>
-          )}
-          {error && !detail && (
-            <div className="px-4 py-4">
-              <p className="text-[13px] text-red">{error}</p>
-            </div>
-          )}
-          {detail && <ExpandedDetail detail={detail} blobCache={blobCache} blobLoadingById={blobLoadingById} />}
-        </div>
-      )}
     </div>
   );
 }
 
-function PromptStatusPill({ status, label }: { status: string; label: string }) {
+function PromptReviewPane({
+  prompt,
+  detail,
+  isLoading,
+  error,
+  blobCache,
+  blobLoadingById,
+}: {
+  prompt: PromptRowViewModel | null;
+  detail: PromptDetailViewModel | undefined;
+  isLoading: boolean;
+  error: string | null;
+  blobCache?: Record<string, string>;
+  blobLoadingById?: Record<string, boolean>;
+}) {
   return (
-    <span className={cn(
-      "inline-flex items-center h-[20px] px-2 rounded-md text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors",
-      status === "in_progress" && "bg-green-dim text-green",
-      status === "completed" && "bg-gz-2 text-t1",
-      status === "imported" && "bg-gz-2 text-t3"
-    )}>
-      {label}
-    </span>
+    <div className="rounded-xl border border-brd bg-white shadow-sm shadow-black/5 overflow-hidden">
+      {prompt && (
+        <div className="px-5 py-4 border-b border-brd bg-gz-1">
+          <div className="min-w-0 mb-2">
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-t4 mb-1">
+              Selected Prompt
+            </h2>
+            <p className="text-[15px] leading-snug text-t1 font-medium">{prompt.promptSummary}</p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap text-[11px] text-t3">
+            <span className="font-mono tabular-nums">{prompt.timestampLabel}</span>
+            <Dot />
+            <span>{prompt.executionPathLabel}</span>
+            <Dot />
+            <span>{prompt.statusLabel}</span>
+          </div>
+        </div>
+      )}
+
+      {isLoading && !detail && (
+        <div className="px-5 py-10 flex items-center justify-center">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="spinner text-t3">
+            <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </div>
+      )}
+      {error && !detail && (
+        <div className="px-5 py-5">
+          <p className="text-[13px] text-red">{error}</p>
+        </div>
+      )}
+      {detail && <ExpandedDetail detail={detail} blobCache={blobCache} blobLoadingById={blobLoadingById} />}
+    </div>
+  );
+}
+
+function EmptyPromptReview() {
+  return (
+    <div className="rounded-xl border border-dashed border-brd bg-gz-1/70 px-6 py-10 text-center">
+      <p className="text-[14px] text-t2 mb-1">Select a prompt event</p>
+      <p className="text-[12px] text-t4">Choose a point in the thread to inspect its artifacts and diff.</p>
+    </div>
   );
 }
 
@@ -533,74 +573,62 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
   const hasDiffPane = detail.diffBlobIds.length > 0 || detail.hasCodeDiffArtifacts;
 
   return (
-    <div className={cn(
-      "px-4 py-4",
-      hasDiffPane && "lg:grid lg:grid-cols-[minmax(0,0.95fr)_minmax(340px,1.05fr)] lg:gap-5 lg:items-start"
-    )}>
-      <div className="min-w-0 flex flex-col gap-5">
-        {/* Prompt text */}
-        <div className="relative rounded-lg bg-gz-1 border border-brd overflow-hidden slidein">
-          <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-t1" />
-          <div className="pl-5 pr-4 py-3 text-[13px] leading-relaxed text-t2 whitespace-pre-wrap">
-            {detail.promptText}
-          </div>
+    <div className="px-5 py-5 flex flex-col gap-5">
+      {hasDiffPane && (
+        <div className="slidein">
+          <DiffSection
+            blobIds={detail.diffBlobIds}
+            blobCache={blobCache ?? {}}
+            blobLoadingById={blobLoadingById ?? {}}
+            hasCodeDiffArtifacts={detail.hasCodeDiffArtifacts}
+          />
         </div>
+      )}
 
-        {/* Meta */}
-        <div className="flex items-center gap-3 flex-wrap slidein" style={{ animationDelay: "50ms" }}>
-          <code className="text-[11px] font-mono text-t3 bg-gz-1 border border-brd px-2 py-0.5 rounded-md">
-            {detail.executionPathLabel}
-          </code>
-          {detail.primaryArtifactSummary && (
-            <p className="text-[12px] text-t3 truncate">{detail.primaryArtifactSummary}</p>
-          )}
+      <div className="relative rounded-xl bg-gz-1 border border-brd overflow-hidden slidein" style={{ animationDelay: "50ms" }}>
+        <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-t1" />
+        <div className="pl-5 pr-4 py-3 text-[13px] leading-relaxed text-t2 whitespace-pre-wrap">
+          {detail.promptText}
         </div>
-
-        {/* Artifacts */}
-        {detail.artifactSummaries.length > 0 && (
-          <div className="slidein" style={{ animationDelay: "100ms" }}>
-            <Section title="Artifacts">
-              {detail.artifactSummaries.map((a) => (
-                <ArtifactRow key={a.id} artifact={a} />
-              ))}
-            </Section>
-          </div>
-        )}
-
-        {/* Files */}
-        {detail.fileGroups.length > 0 && (
-          <div className="slidein" style={{ animationDelay: "150ms" }}>
-            <Section title="Files changed" badge={detail.touchedFilesLabel}>
-              {detail.fileGroups.map((g) => (
-                <FileGroupRow key={g.extension} group={g} />
-              ))}
-            </Section>
-          </div>
-        )}
-
-        {/* Git */}
-        {detail.gitSummaries.length > 0 && (
-          <div className="slidein" style={{ animationDelay: `${hasDiffPane ? 150 : 200}ms` }}>
-            <Section title="Git">
-              {detail.gitSummaries.map((gl) => (
-                <GitRow key={gl.id} link={gl} />
-              ))}
-            </Section>
-          </div>
-        )}
       </div>
 
-      {hasDiffPane && (
-        <aside className="min-w-0 mt-5 lg:mt-0 slidein" style={{ animationDelay: "200ms" }}>
-          <div className="lg:sticky lg:top-4">
-            <DiffSection
-              blobIds={detail.diffBlobIds}
-              blobCache={blobCache ?? {}}
-              blobLoadingById={blobLoadingById ?? {}}
-              hasCodeDiffArtifacts={detail.hasCodeDiffArtifacts}
-            />
+      {detail.primaryArtifactSummary && (
+        <div className="slidein" style={{ animationDelay: "100ms" }}>
+          <div className="rounded-xl border border-brd bg-white px-4 py-3">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Summary</h3>
+            <p className="text-[12px] text-t3">{detail.primaryArtifactSummary}</p>
           </div>
-        </aside>
+        </div>
+      )}
+
+      {detail.artifactSummaries.length > 0 && (
+        <div className="slidein" style={{ animationDelay: "150ms" }}>
+          <Section title="Artifacts">
+            {detail.artifactSummaries.map((a) => (
+              <ArtifactRow key={a.id} artifact={a} />
+            ))}
+          </Section>
+        </div>
+      )}
+
+      {detail.fileGroups.length > 0 && (
+        <div className="slidein" style={{ animationDelay: "200ms" }}>
+          <Section title="Files changed" badge={detail.touchedFilesLabel}>
+            {detail.fileGroups.map((g) => (
+              <FileGroupRow key={g.extension} group={g} />
+            ))}
+          </Section>
+        </div>
+      )}
+
+      {detail.gitSummaries.length > 0 && (
+        <div className="slidein" style={{ animationDelay: "250ms" }}>
+          <Section title="Git">
+            {detail.gitSummaries.map((gl) => (
+              <GitRow key={gl.id} link={gl} />
+            ))}
+          </Section>
+        </div>
       )}
     </div>
   );
@@ -612,6 +640,7 @@ function DiffSection({ blobIds, blobCache, blobLoadingById, hasCodeDiffArtifacts
   blobLoadingById: Record<string, boolean>;
   hasCodeDiffArtifacts: boolean;
 }) {
+  const [open, setOpen] = useState(true);
   const anyLoading = blobIds.some((id) => blobLoadingById[id]);
   const combinedPatch = blobIds
     .map((id) => blobCache[id])
@@ -620,31 +649,51 @@ function DiffSection({ blobIds, blobCache, blobLoadingById, hasCodeDiffArtifacts
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-2 px-1">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4">Code changes</h3>
-        {blobIds.length > 0 && (
-          <span className="text-[10px] text-t3 bg-gz-1 px-1.5 py-px rounded">git diff</span>
+      <div className="rounded-xl border border-brd bg-white overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="w-full flex items-center gap-3 px-4 py-3 border-0 bg-gz-1 text-left cursor-pointer hover:bg-gz-2 transition-colors"
+        >
+          <svg
+            width="10" height="10" viewBox="0 0 16 16" fill="currentColor"
+            className={cn("shrink-0 text-t4 transition-transform duration-200", open && "rotate-90")}
+          >
+            <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
+          </svg>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Code changes</h3>
+            <p className="text-[12px] text-t2">Focused git-style diff review</p>
+          </div>
+          {blobIds.length > 0 && (
+            <span className="text-[10px] text-t3 bg-white px-1.5 py-px rounded border border-brd">git diff</span>
+          )}
+        </button>
+
+        {open && (
+          <div className="p-3 border-t border-brd slidedown">
+            {anyLoading && !combinedPatch && (
+              <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="spinner text-t4">
+                  <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+                <span className="text-[11px] text-t3">Loading diff...</span>
+              </div>
+            )}
+            {combinedPatch && <DiffViewer patch={combinedPatch} mode="focused" />}
+            {!anyLoading && !combinedPatch && hasCodeDiffArtifacts && blobIds.length === 0 && (
+              <div className="rounded-xl border border-brd bg-white px-4 py-3">
+                <p className="text-[11px] text-t3">Diff content not stored for this artifact.</p>
+              </div>
+            )}
+            {!anyLoading && !combinedPatch && blobIds.length > 0 && (
+              <div className="rounded-xl border border-brd bg-white px-4 py-3">
+                <p className="text-[11px] text-t3">Failed to load diff content.</p>
+              </div>
+            )}
+          </div>
         )}
       </div>
-      {anyLoading && !combinedPatch && (
-        <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="spinner text-t4">
-            <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-          <span className="text-[11px] text-t3">Loading diff...</span>
-        </div>
-      )}
-      {combinedPatch && <DiffViewer patch={combinedPatch} mode="focused" />}
-      {!anyLoading && !combinedPatch && hasCodeDiffArtifacts && blobIds.length === 0 && (
-        <div className="rounded-xl border border-brd bg-white px-4 py-3">
-          <p className="text-[11px] text-t3">Diff content not stored for this artifact.</p>
-        </div>
-      )}
-      {!anyLoading && !combinedPatch && blobIds.length > 0 && (
-        <div className="rounded-xl border border-brd bg-white px-4 py-3">
-          <p className="text-[11px] text-t3">Failed to load diff content.</p>
-        </div>
-      )}
     </div>
   );
 }

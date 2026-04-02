@@ -294,6 +294,24 @@ export function App() {
     [detailsById]
   );
 
+  useEffect(() => {
+    if (!selectedWorkspaceId) return;
+    if (promptRows.length === 0) {
+      if (expandedPromptId) {
+        setExpandedPromptId(null);
+      }
+      return;
+    }
+    if (expandedPromptId && promptRows.some((row) => row.id === expandedPromptId)) {
+      return;
+    }
+    const nextPromptId = promptRows[0]!.id;
+    setExpandedPromptId(nextPromptId);
+    if (!detailsById[nextPromptId]) {
+      void loadDetail(selectedWorkspaceId, nextPromptId);
+    }
+  }, [selectedWorkspaceId, promptRows, expandedPromptId, detailsById]);
+
   // Auto-load diff blobs when a prompt detail becomes available
   useEffect(() => {
     if (!selectedWorkspaceId || !expandedPromptId) return;
