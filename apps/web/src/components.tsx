@@ -322,6 +322,8 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
 }
 
 function StatusBadge({ status }: { status: "open" | "closed" }) {
+  const label = status === "open" ? "active" : "idle";
+
   return (
     <span className={cn(
       "inline-flex items-center gap-1.5 h-5 px-2 rounded-full text-[10px] font-semibold uppercase tracking-wider",
@@ -330,7 +332,7 @@ function StatusBadge({ status }: { status: "open" | "closed" }) {
         : "bg-gz-2 text-t3"
     )}>
       {status === "open" && <span className="size-1.5 rounded-full bg-green breathe" />}
-      {status}
+      {label}
     </span>
   );
 }
@@ -636,11 +638,7 @@ function ExpandedDetail({ detail, blobCache, blobLoadingById }: {
 
       {detail.artifactSummaries.length > 0 && (
         <div className="slidein" style={{ animationDelay: "150ms" }}>
-          <Section title="Artifacts">
-            {detail.artifactSummaries.map((a) => (
-              <ArtifactRow key={a.id} artifact={a} />
-            ))}
-          </Section>
+          <ArtifactSection key={detail.id} artifacts={detail.artifactSummaries} />
         </div>
       )}
 
@@ -731,17 +729,88 @@ function DiffSection({ blobIds, blobCache, blobLoadingById, hasCodeDiffArtifacts
   );
 }
 
-function Section({ title, badge, children }: { title: string; badge?: string; children: ReactNode }) {
+function Section({
+  title,
+  badge,
+  actions,
+  children,
+}: {
+  title: string;
+  badge?: string;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <div>
-      <div className="flex items-center gap-2 mb-2">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4">{title}</h3>
-        {badge && <span className="text-[10px] text-t3 bg-gz-1 px-1.5 py-px rounded">{badge}</span>}
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4">{title}</h3>
+          {badge && <span className="text-[10px] text-t3 bg-gz-1 px-1.5 py-px rounded">{badge}</span>}
+        </div>
+        {actions && <div className="shrink-0">{actions}</div>}
       </div>
       <div className="rounded-lg border border-brd overflow-hidden divide-y divide-brd">
         {children}
       </div>
     </div>
+  );
+}
+
+const artifactPageSizeOptions = [10, 20, 50] as const;
+
+function ArtifactSection({ artifacts }: { artifacts: PromptDetailArtifactViewModel[] }) {
+  const [pageSize, setPageSize] = useState<(typeof artifactPageSizeOptions)[number] | "all">(10);
+  const [visibleCount, setVisibleCount] = useState(10);
+
+  const visibleArtifacts =
+    pageSize === "all" ? artifacts : artifacts.slice(0, visibleCount);
+  const remainingCount = artifacts.length - visibleArtifacts.length;
+  const nextBatchCount =
+    pageSize === "all" ? 0 : Math.min(pageSize, Math.max(remainingCount, 0));
+
+  return (
+    <Section
+      title="Artifacts"
+      badge={`${artifacts.length} item${artifacts.length === 1 ? "" : "s"}`}
+      actions={
+        <label className="flex items-center gap-2 text-[10px] text-t3">
+          <span className="uppercase tracking-[0.1em] text-t4">Show</span>
+          <select
+            aria-label="Artifacts per page"
+            className="h-6 rounded-md border border-brd bg-white px-2 text-[11px] text-t2 outline-none transition-colors hover:border-brd-strong focus:border-brd-strong"
+            value={pageSize}
+            onChange={(event) => {
+              const nextValue =
+                event.target.value === "all" ? "all" : Number(event.target.value) as (typeof artifactPageSizeOptions)[number];
+              setPageSize(nextValue);
+              setVisibleCount(nextValue === "all" ? artifacts.length : nextValue);
+            }}
+          >
+            {artifactPageSizeOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+            <option value="all">All</option>
+          </select>
+        </label>
+      }
+    >
+      {visibleArtifacts.map((artifact) => (
+        <ArtifactRow key={artifact.id} artifact={artifact} />
+      ))}
+      {pageSize !== "all" && remainingCount > 0 && (
+        <div className="bg-white px-3 py-2.5">
+          <button
+            type="button"
+            onClick={() => setVisibleCount((current) => Math.min(current + pageSize, artifacts.length))}
+            className="w-full rounded-md border border-brd bg-gz-1 px-3 py-2 text-[11px] font-medium text-t2 transition-colors hover:bg-gz-2 hover:text-t1"
+          >
+            Show {nextBatchCount} more
+          </button>
+        </div>
+      )}
+    </Section>
   );
 }
 
