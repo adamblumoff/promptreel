@@ -19,10 +19,10 @@ export function CliLoginPage() {
     <div className="min-h-dvh bg-gz-0 px-5 py-10 text-t1">
       <div className="mx-auto flex min-h-[70vh] max-w-xl flex-col justify-center gap-6">
         <div className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-t3">Promptline Cloud</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-t3">Promptreel Cloud</p>
           <h1 className="text-3xl font-semibold tracking-[-0.03em] text-balance">Connect this machine</h1>
           <p className="text-sm leading-7 text-t2">
-            Sign in with GitHub to connect your local Promptline daemon to your hosted account.
+            Sign in with GitHub to connect your local Promptreel daemon to your hosted account.
           </p>
         </div>
 
@@ -101,16 +101,16 @@ export function CloudViewerGate(props: { children: ReactNode }) {
         <div className="min-h-dvh bg-gz-0 px-5 py-10 text-t1">
           <div className="mx-auto flex min-h-[70vh] max-w-xl flex-col justify-center gap-6">
             <div className="space-y-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-t3">Promptline Cloud</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-t3">Promptreel Cloud</p>
               <h1 className="text-3xl font-semibold tracking-[-0.03em] text-balance">Sign in to view your prompts</h1>
               <p className="text-sm leading-7 text-t2">
-                Connect with GitHub to load your synced Promptline history from the hosted service.
+                Connect with GitHub to load your synced Promptreel history from the hosted service.
               </p>
             </div>
             <AuthCard>
               <div className="space-y-4">
                 <p className="text-sm leading-7 text-t2">
-                  Once you sign in, Promptline will load the prompt history uploaded from your linked local machine.
+                  Once you sign in, Promptreel will load the prompt history uploaded from your linked local machine.
                 </p>
                 <SignInButton mode="modal">
                   <button
@@ -191,7 +191,7 @@ function CliLoginApprovalCard(props: {
         <div className="space-y-3">
           <p className="text-sm font-medium text-t1">Linking your machine…</p>
           <p className="text-sm leading-7 text-t2">
-            Promptline is connecting this browser session to the local CLI handshake.
+            Promptreel is connecting this browser session to the local CLI handshake.
           </p>
         </div>
       ) : null}
@@ -200,8 +200,8 @@ function CliLoginApprovalCard(props: {
         <div className="space-y-3">
           <p className="text-sm font-medium text-t1">This machine is connected.</p>
           <p className="text-sm leading-7 text-t2">
-            Promptline stored the cloud link for this machine and will use <code>{getApiBaseUrl()}</code> for future
-            Promptline Cloud requests.
+            Promptreel stored the cloud link for this machine and will use <code>{getApiBaseUrl()}</code> for future
+            Promptreel Cloud requests.
           </p>
           <div className="rounded-2xl border border-brd bg-gz-1 px-4 py-4">
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-t3">Next steps</p>
@@ -224,7 +224,7 @@ function CliLoginApprovalCard(props: {
               onClick={() => window.location.assign("/")}
               className="inline-flex items-center rounded-full border border-brd bg-white px-4 py-2 text-sm font-medium text-t1 transition hover:bg-gz-1"
             >
-              Go to Promptline
+              Go to Promptreel
             </button>
           </div>
         </div>

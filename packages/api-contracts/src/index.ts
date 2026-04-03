@@ -9,7 +9,7 @@ import type {
   ThreadSummary,
   WorkspaceGroup,
   WorkspaceListItem
-} from "@promptline/domain";
+} from "@promptreel/domain";
 
 export interface HealthResponse {
   ok: true;

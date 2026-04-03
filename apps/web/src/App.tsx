@@ -36,9 +36,9 @@ import {
 /* ─── Storage helpers ───────────────────────────────────────────────────── */
 
 const KEYS = {
-  workspace: "promptline:selected-workspace-id",
-  thread: "promptline:selected-thread-id",
-  transcriptOrder: "promptline:transcript-order",
+  workspace: "promptreel:selected-workspace-id",
+  thread: "promptreel:selected-thread-id",
+  transcriptOrder: "promptreel:transcript-order",
 } as const;
 
 function stored(key: string): string {

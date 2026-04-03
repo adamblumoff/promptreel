@@ -5,12 +5,12 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": resolve("apps/web/src"),
-      "@promptline/domain": resolve("packages/domain/src/index.ts"),
-      "@promptline/storage": resolve("packages/storage/src/index.ts"),
-      "@promptline/codex-adapter": resolve("packages/codex-adapter/src/index.ts"),
-      "@promptline/git-integration": resolve("packages/git-integration/src/index.ts"),
-      "@promptline/api-contracts": resolve("packages/api-contracts/src/index.ts"),
-      "@promptline/test-fixtures": resolve("packages/test-fixtures/src/index.ts")
+      "@promptreel/domain": resolve("packages/domain/src/index.ts"),
+      "@promptreel/storage": resolve("packages/storage/src/index.ts"),
+      "@promptreel/codex-adapter": resolve("packages/codex-adapter/src/index.ts"),
+      "@promptreel/git-integration": resolve("packages/git-integration/src/index.ts"),
+      "@promptreel/api-contracts": resolve("packages/api-contracts/src/index.ts"),
+      "@promptreel/test-fixtures": resolve("packages/test-fixtures/src/index.ts")
     }
   },
   test: {

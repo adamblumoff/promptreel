@@ -30,7 +30,7 @@ async function getJson<T>(path: string, options: RequestOptions = {}): Promise<T
     signal: options.signal,
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(token && CLOUD_VIEWER_MODE ? { "x-promptline-cloud-viewer": "1" } : {}),
+      ...(token && CLOUD_VIEWER_MODE ? { "x-promptreel-cloud-viewer": "1" } : {}),
     }
   });
   if (!response.ok) {
@@ -46,7 +46,7 @@ async function postJson<T>(path: string, options: RequestOptions = {}): Promise<
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(token && CLOUD_VIEWER_MODE ? { "x-promptline-cloud-viewer": "1" } : {}),
+      ...(token && CLOUD_VIEWER_MODE ? { "x-promptreel-cloud-viewer": "1" } : {}),
     },
     body: "{}",
     signal: options.signal
@@ -68,7 +68,7 @@ async function postJsonWithBody<T>(
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(token && CLOUD_VIEWER_MODE ? { "x-promptline-cloud-viewer": "1" } : {}),
+      ...(token && CLOUD_VIEWER_MODE ? { "x-promptreel-cloud-viewer": "1" } : {}),
       ...(options.headers ?? {})
     },
     body: JSON.stringify(body),
@@ -152,9 +152,9 @@ export async function completeCliLogin(
     ...options,
     headers: {
       Authorization: `Bearer ${sessionToken}`,
-      ...(userProfile.email ? { "x-promptline-email": userProfile.email } : {}),
-      ...(userProfile.name ? { "x-promptline-name": userProfile.name } : {}),
-      ...(userProfile.avatarUrl ? { "x-promptline-avatar": userProfile.avatarUrl } : {}),
+      ...(userProfile.email ? { "x-promptreel-email": userProfile.email } : {}),
+      ...(userProfile.name ? { "x-promptreel-name": userProfile.name } : {}),
+      ...(userProfile.avatarUrl ? { "x-promptreel-avatar": userProfile.avatarUrl } : {}),
     },
   });
 }

@@ -12,12 +12,12 @@
     "sourceMap": true,
     "resolveJsonModule": true,
     "paths": {
-      "@promptline/domain": ["packages/domain/src/index.ts"],
-      "@promptline/storage": ["packages/storage/src/index.ts"],
-      "@promptline/codex-adapter": ["packages/codex-adapter/src/index.ts"],
-      "@promptline/git-integration": ["packages/git-integration/src/index.ts"],
-      "@promptline/api-contracts": ["packages/api-contracts/src/index.ts"],
-      "@promptline/test-fixtures": ["packages/test-fixtures/src/index.ts"]
+      "@promptreel/domain": ["packages/domain/src/index.ts"],
+      "@promptreel/storage": ["packages/storage/src/index.ts"],
+      "@promptreel/codex-adapter": ["packages/codex-adapter/src/index.ts"],
+      "@promptreel/git-integration": ["packages/git-integration/src/index.ts"],
+      "@promptreel/api-contracts": ["packages/api-contracts/src/index.ts"],
+      "@promptreel/test-fixtures": ["packages/test-fixtures/src/index.ts"]
     }
   }
 }

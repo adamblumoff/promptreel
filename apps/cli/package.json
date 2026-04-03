@@ -1,5 +1,5 @@
 {
-  "name": "@promptline/cli",
+  "name": "@promptreel/cli",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,10 +13,10 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "@promptline/api-contracts": "workspace:*",
-    "@promptline/codex-adapter": "workspace:*",
-    "@promptline/domain": "workspace:*",
-    "@promptline/storage": "workspace:*",
+    "@promptreel/api-contracts": "workspace:*",
+    "@promptreel/codex-adapter": "workspace:*",
+    "@promptreel/domain": "workspace:*",
+    "@promptreel/storage": "workspace:*",
     "commander": "^14.0.1"
   }
 }

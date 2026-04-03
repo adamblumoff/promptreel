@@ -1,5 +1,5 @@
 {
-  "name": "promptline",
+  "name": "promptreel",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,10 +10,10 @@
     "typecheck": "pnpm -r typecheck",
     "test": "vitest run",
     "rebuild:imported-prompts": "tsx scripts/rebuild-imported-prompts.ts",
-    "dev:daemon": "pnpm --filter @promptline/daemon dev",
-    "dev:cli": "pnpm --filter @promptline/cli exec tsx src/index.ts",
-    "dev:cli:watch": "pnpm --filter @promptline/cli dev",
-    "dev:web": "pnpm --filter @promptline/web dev"
+    "dev:daemon": "pnpm --filter @promptreel/daemon dev",
+    "dev:cli": "pnpm --filter @promptreel/cli exec tsx src/index.ts",
+    "dev:cli:watch": "pnpm --filter @promptreel/cli dev",
+    "dev:web": "pnpm --filter @promptreel/web dev"
   },
   "devDependencies": {
     "@types/node": "^24.7.2",

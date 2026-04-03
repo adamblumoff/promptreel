@@ -3,13 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
-import { SAMPLE_CODEX_SESSION } from "@promptline/test-fixtures";
-import { PromptlineStore } from "@promptline/storage";
+import { SAMPLE_CODEX_SESSION } from "@promptreel/test-fixtures";
+import { PromptreelStore } from "@promptreel/storage";
 import { importCodexSessions } from "./index";
 
 describe("importCodexSessions", () => {
   test("segments prompt-to-idle windows from Codex session jsonl", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-");
 
     const escapedPath = repoPath.replace(/\\/g, "\\\\");
     writeFileSync(
@@ -18,7 +18,7 @@ describe("importCodexSessions", () => {
       "utf8"
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     const result = importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompts = store.listPrompts(workspace.id);
@@ -33,7 +33,7 @@ describe("importCodexSessions", () => {
   });
 
   test("imports explicit plan items as dedicated plan artifacts", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-explicit-plan-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-explicit-plan-");
     const explicitPlan = [
       "# Shipping Plan",
       "",
@@ -72,7 +72,7 @@ describe("importCodexSessions", () => {
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -89,7 +89,7 @@ describe("importCodexSessions", () => {
   });
 
   test("imports embedded user-supplied plans from implementation prompts", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-user-plan-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-user-plan-");
     const embeddedPlan = [
       "# Importer Plan",
       "",
@@ -120,7 +120,7 @@ describe("importCodexSessions", () => {
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -136,7 +136,7 @@ describe("importCodexSessions", () => {
   });
 
   test("uses only final-answer agent messages for imported final output and plan fallback", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-final-answer-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-final-answer-");
     const finalAnswer = [
       "Here is the plan.",
       "",
@@ -164,7 +164,7 @@ describe("importCodexSessions", () => {
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -185,7 +185,7 @@ describe("importCodexSessions", () => {
   });
 
   test("stores plan-mode decision details inside the plan artifact and keeps the final plan clean", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-plan-decisions-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-plan-decisions-");
     const finalAnswer = [
       "Which direction should I take?",
       "",
@@ -210,7 +210,7 @@ describe("importCodexSessions", () => {
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const promptWithPlan = store.listPrompts(workspace.id).find((prompt) => prompt.hasPlanArtifact)!;
@@ -242,7 +242,7 @@ describe("importCodexSessions", () => {
   });
 
   test("does not turn conceptual answers about plan artifacts into plan artifacts", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-conceptual-plan-talk-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-conceptual-plan-talk-");
     const finalAnswer = [
       "I think this is worth doing, and I’d keep it very narrow at first.",
       "",
@@ -265,7 +265,7 @@ describe("importCodexSessions", () => {
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -276,7 +276,7 @@ describe("importCodexSessions", () => {
   });
 
   test("does not invent plan artifacts for non-plan prompts with bullet lists", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-no-plan-fallback-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-no-plan-fallback-");
     const finalAnswer = [
       "Implemented the importer fix.",
       "",
@@ -295,7 +295,7 @@ describe("importCodexSessions", () => {
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -306,7 +306,7 @@ describe("importCodexSessions", () => {
   });
 
   test("keeps the terminal prompt open while tailing active sessions", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-open-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-open-");
 
     const escapedPath = repoPath.replace(/\\/g, "\\\\");
     writeFileSync(
@@ -319,7 +319,7 @@ describe("importCodexSessions", () => {
       "utf8"
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"), { tailOpenPrompt: true });
     const workspace = store.listWorkspaces()[0]!;
     const prompts = store.listPrompts(workspace.id);
@@ -331,7 +331,7 @@ describe("importCodexSessions", () => {
   });
 
   test("keeps embedded plans clean while tailing active sessions", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-open-user-plan-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-open-user-plan-");
     const embeddedPlan = [
       "# Clean Tail Plan",
       "",
@@ -358,7 +358,7 @@ describe("importCodexSessions", () => {
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"), { tailOpenPrompt: true });
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -371,7 +371,7 @@ describe("importCodexSessions", () => {
   });
 
   test("carries plan-mode decisions forward to a later final plan artifact", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-plan-decision-chain-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-plan-decision-chain-");
 
     writeCodexSession(
       sessionsRoot,
@@ -405,7 +405,7 @@ describe("importCodexSessions", () => {
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompts = store.listPrompts(workspace.id);
@@ -438,7 +438,7 @@ describe("importCodexSessions", () => {
   });
 
   test("recovers code diffs from successful apply_patch custom tool calls", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-apply-patch-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-apply-patch-");
     const patch = `*** Begin Patch
 *** Add File: ${repoPath.replace(/\\/g, "/")}/src/helper.ts
 +export const helper = true;
@@ -460,7 +460,7 @@ describe("importCodexSessions", () => {
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompts = store.listPrompts(workspace.id);
@@ -475,7 +475,7 @@ describe("importCodexSessions", () => {
   });
 
   test("ignores failed apply_patch attempts when a later retry succeeds", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-apply-patch-retry-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-apply-patch-retry-");
     const failedPatch = `*** Begin Patch
 *** Update File: src/old.ts
 @@
@@ -509,7 +509,7 @@ describe("importCodexSessions", () => {
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -521,7 +521,7 @@ describe("importCodexSessions", () => {
   });
 
   test("falls back to git diff command output when no apply_patch diff exists", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-git-diff-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-git-diff-");
     const gitDiffOutput = `Command: "pwsh" -Command 'git diff -- src/app.ts'
 Chunk ID: diff123
 Output:
@@ -551,7 +551,7 @@ index 1111111..2222222 100644
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -567,7 +567,7 @@ index 1111111..2222222 100644
   });
 
   test("leaves prompts without patch or git diff data unchanged", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-no-diff-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-no-diff-");
 
     writeCodexSession(
       sessionsRoot,
@@ -586,7 +586,7 @@ index 1111111..2222222 100644
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -596,7 +596,7 @@ index 1111111..2222222 100644
   });
 
   test("creates one command artifact per meaningful command and skips aggregate output artifacts", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-command-artifacts-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-command-artifacts-");
 
     writeCodexSession(
       sessionsRoot,
@@ -622,7 +622,7 @@ index 1111111..2222222 100644
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -645,7 +645,7 @@ index 1111111..2222222 100644
   });
 
   test("classifies non-test commands into simple execution families", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-command-classification-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-command-classification-");
 
     writeCodexSession(
       sessionsRoot,
@@ -671,7 +671,7 @@ index 1111111..2222222 100644
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -692,7 +692,7 @@ index 1111111..2222222 100644
   });
 
   test("does not misclassify filenames that contain test runner words as test runs", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-no-filename-test-match-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-no-filename-test-match-");
 
     writeCodexSession(
       sessionsRoot,
@@ -718,7 +718,7 @@ index 1111111..2222222 100644
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -729,7 +729,7 @@ index 1111111..2222222 100644
   });
 
   test("keeps recovered diffs on open tailed prompts", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-open-diff-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-open-diff-");
     const patch = `*** Begin Patch
 *** Add File: src/open.ts
 +export const open = true;
@@ -750,7 +750,7 @@ index 1111111..2222222 100644
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"), { tailOpenPrompt: true });
     const workspace = store.listWorkspaces()[0]!;
     const prompt = store.listPrompts(workspace.id)[0]!;
@@ -761,7 +761,7 @@ index 1111111..2222222 100644
   });
 
   test("keeps the next prompt's mirrored user response out of the previous transcript window", () => {
-    const { root, repoPath, sessionsRoot } = createImportHarness("promptline-import-next-user-boundary-");
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-import-next-user-boundary-");
 
     writeCodexSession(
       sessionsRoot,
@@ -776,7 +776,7 @@ index 1111111..2222222 100644
       ]
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
     const workspace = store.listWorkspaces()[0]!;
     const prompts = store.listPrompts(workspace.id);
@@ -795,7 +795,7 @@ index 1111111..2222222 100644
   });
 
   test("ignores nested cwd values unless that exact folder has its own .git directory", () => {
-    const root = mkdtempSync(join(tmpdir(), "promptline-import-grouping-"));
+    const root = mkdtempSync(join(tmpdir(), "promptreel-import-grouping-"));
     const repoPath = join(root, "repo");
     const nestedPath = join(repoPath, "packages", "ui");
     const sessionsRoot = join(root, "sessions", "2026", "03", "29");
@@ -818,7 +818,7 @@ index 1111111..2222222 100644
       "utf8"
     );
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     importCodexSessions(store, join(root, "sessions"));
 
     const workspaces = store.listWorkspaces();

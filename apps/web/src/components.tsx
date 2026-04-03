@@ -38,7 +38,7 @@ const decisionTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 
-function PromptlineMark({ className }: { className?: string }) {
+function PromptreelMark({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 16 16"
@@ -134,9 +134,9 @@ export function TopBar({
         {/* Logo */}
         <div className="flex items-center gap-2.5">
           <div className="size-7 shrink-0">
-            <PromptlineMark className="size-7" />
+            <PromptreelMark className="size-7" />
           </div>
-          <span className="text-sm font-semibold text-t1 tracking-tight">Promptline</span>
+          <span className="text-sm font-semibold text-t1 tracking-tight">Promptreel</span>
         </div>
 
         <div className="w-px h-5 bg-brd" />
@@ -1675,7 +1675,7 @@ function FileGroupRow({ promptEventId, group }: { promptEventId: string; group: 
   );
 }
 
-const disclosureStatePrefix = "promptline:prompt-disclosure";
+const disclosureStatePrefix = "promptreel:prompt-disclosure";
 
 function readDisclosureState(storageKey: string, defaultOpen: boolean): boolean {
   if (typeof window === "undefined") {

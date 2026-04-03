@@ -1,5 +1,5 @@
 {
-  "name": "@promptline/codex-adapter",
+  "name": "@promptreel/codex-adapter",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,9 +10,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@promptline/domain": "workspace:*",
-    "@promptline/git-integration": "workspace:*",
-    "@promptline/storage": "workspace:*",
+    "@promptreel/domain": "workspace:*",
+    "@promptreel/git-integration": "workspace:*",
+    "@promptreel/storage": "workspace:*",
     "ws": "^8.18.3"
   },
   "devDependencies": {

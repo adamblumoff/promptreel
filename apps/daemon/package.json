@@ -1,11 +1,11 @@
 {
-  "name": "@promptline/daemon",
+  "name": "@promptreel/daemon",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "dist/apps/daemon/src/server.js",
   "scripts": {
-    "build": "pnpm --filter @promptline/web build && pnpm --filter @promptline/daemon^... build && tsc -p tsconfig.json",
+    "build": "pnpm --filter @promptreel/web build && pnpm --filter @promptreel/daemon^... build && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch --include src --include ../../packages/codex-adapter/src --include ../../packages/domain/src --include ../../packages/storage/src --include ../../packages/git-integration/src --include ../../packages/api-contracts/src src/server.ts",
     "start": "node dist/apps/daemon/src/server.js"
@@ -14,11 +14,11 @@
     "@clerk/backend": "^2.14.0",
     "@fastify/cors": "^11.1.0",
     "@fastify/static": "^8.3.0",
-    "@promptline/api-contracts": "workspace:*",
-    "@promptline/codex-adapter": "workspace:*",
-    "@promptline/domain": "workspace:*",
-    "@promptline/git-integration": "workspace:*",
-    "@promptline/storage": "workspace:*",
+    "@promptreel/api-contracts": "workspace:*",
+    "@promptreel/codex-adapter": "workspace:*",
+    "@promptreel/domain": "workspace:*",
+    "@promptreel/git-integration": "workspace:*",
+    "@promptreel/storage": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.6.1",
     "pg": "^8.20.0"

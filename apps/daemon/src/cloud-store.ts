@@ -13,7 +13,7 @@ import { Pool } from "pg";
 import type {
   CloudBootstrapSyncRequest,
   CliLoginExchangeResponse,
-} from "@promptline/api-contracts";
+} from "@promptreel/api-contracts";
 import type {
   AuthDevice,
   AuthUserProfile,
@@ -21,9 +21,9 @@ import type {
   PromptEventListItem,
   ThreadSummary,
   WorkspaceListItem,
-} from "@promptline/domain";
-import { createId, nowIso } from "@promptline/domain";
-import { PromptlineStore } from "@promptline/storage";
+} from "@promptreel/domain";
+import { createId, nowIso } from "@promptreel/domain";
+import { PromptreelStore } from "@promptreel/storage";
 
 type CliLoginRequestRow = {
   loginCode: string;
@@ -201,12 +201,12 @@ const cloudBlobs = pgTable(
 );
 
 class SqliteCloudStoreAdapter implements CloudStore {
-  constructor(private readonly store: PromptlineStore) {}
+  constructor(private readonly store: PromptreelStore) {}
   async ensureReady(): Promise<void> {}
   async createCliLoginRequest(deviceId: string, deviceName: string | null, ttlMs?: number) {
     return this.store.createCliLoginRequest(deviceId, deviceName, ttlMs);
   }
-  async approveCliLoginRequest(input: Parameters<PromptlineStore["approveCliLoginRequest"]>[0]) {
+  async approveCliLoginRequest(input: Parameters<PromptreelStore["approveCliLoginRequest"]>[0]) {
     return this.store.approveCliLoginRequest(input);
   }
   async exchangeCliLoginRequest(loginCode: string, deviceId: string) {
@@ -713,7 +713,7 @@ class DrizzleCloudStore implements CloudStore {
   }
 }
 
-export function createCloudStore(store: PromptlineStore): CloudStore {
+export function createCloudStore(store: PromptreelStore): CloudStore {
   const connectionString = process.env.PROMPTLINE_CLOUD_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
   if (!connectionString) {
     return new SqliteCloudStoreAdapter(store);

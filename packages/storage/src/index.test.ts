@@ -3,21 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
-import type { ArtifactRecord, PromptEventDetail, PromptEventRecord, PromptEventListItem, ThreadSummary, WorkspaceListItem } from "@promptline/domain";
+import type { ArtifactRecord, PromptEventDetail, PromptEventRecord, PromptEventListItem, ThreadSummary, WorkspaceListItem } from "@promptreel/domain";
 import {
-  PromptlineStore,
+  PromptreelStore,
   isEligibleWindowsGitWorkspace,
   toEligibleWorkspacePath
 } from "./index";
 
-describe("PromptlineStore", () => {
-  test("registers repos idempotently under the Promptline home", () => {
-    const root = mkdtempSync(join(tmpdir(), "promptline-store-"));
+describe("PromptreelStore", () => {
+  test("registers repos idempotently under the Promptreel home", () => {
+    const root = mkdtempSync(join(tmpdir(), "promptreel-store-"));
     const repoPath = join(root, "repo");
     mkdirSync(repoPath, { recursive: true });
     execFileSync("git", ["init"], { cwd: repoPath, stdio: "ignore" });
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     const first = store.addRepo(repoPath);
     const second = store.addRepo(repoPath);
     const repos = store.listRepos();
@@ -30,13 +30,13 @@ describe("PromptlineStore", () => {
   });
 
   test("only exposes exact Windows directories with a direct .git folder", () => {
-    const root = mkdtempSync(join(tmpdir(), "promptline-store-workspace-"));
+    const root = mkdtempSync(join(tmpdir(), "promptreel-store-workspace-"));
     const repoPath = join(root, "repo");
     const nestedPath = join(repoPath, "packages", "ui");
     mkdirSync(nestedPath, { recursive: true });
     execFileSync("git", ["init"], { cwd: repoPath, stdio: "ignore" });
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     const workspace = store.ensureWorkspaceGroup(nestedPath);
     const workspaces = store.listWorkspaces();
 
@@ -48,12 +48,12 @@ describe("PromptlineStore", () => {
   });
 
   test("reimport replaces prompt-scoped artifacts, links, and git links", () => {
-    const root = mkdtempSync(join(tmpdir(), "promptline-store-reimport-"));
+    const root = mkdtempSync(join(tmpdir(), "promptreel-store-reimport-"));
     const repoPath = join(root, "repo");
     mkdirSync(repoPath, { recursive: true });
     execFileSync("git", ["init"], { cwd: repoPath, stdio: "ignore" });
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     const repo = store.addRepo(repoPath);
     const baseline = store.createSnapshot(repo.id, {
       repoPath,
@@ -172,12 +172,12 @@ describe("PromptlineStore", () => {
   });
 
   test("skips a legacy next-user boundary row when reading prompt transcripts", () => {
-    const root = mkdtempSync(join(tmpdir(), "promptline-store-legacy-boundary-"));
+    const root = mkdtempSync(join(tmpdir(), "promptreel-store-legacy-boundary-"));
     const repoPath = join(root, "repo");
     mkdirSync(repoPath, { recursive: true });
     execFileSync("git", ["init"], { cwd: repoPath, stdio: "ignore" });
 
-    const store = new PromptlineStore(join(root, ".pl"));
+    const store = new PromptreelStore(join(root, ".pl"));
     const repo = store.addRepo(repoPath);
     const baseline = store.createSnapshot(repo.id, {
       repoPath,
@@ -297,8 +297,8 @@ describe("PromptlineStore", () => {
   });
 
   test("stores and reads back cloud bootstrap bundles by user", () => {
-    const root = mkdtempSync(join(tmpdir(), "promptline-store-cloud-sync-"));
-    const store = new PromptlineStore(join(root, ".pl"));
+    const root = mkdtempSync(join(tmpdir(), "promptreel-store-cloud-sync-"));
+    const store = new PromptreelStore(join(root, ".pl"));
 
     const workspace: WorkspaceListItem = {
       id: "workspace_cloud",

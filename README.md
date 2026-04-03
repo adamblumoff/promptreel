@@ -1,10 +1,10 @@
-# Promptline
+# Promptreel
 
-Promptline is a Windows-first, local-first causal review layer for Codex-driven software work.
+Promptreel is a Windows-first, local-first causal review layer for Codex-driven software work.
 
 ## Workspace
 
-- `apps/daemon`: localhost Fastify API over the Promptline data spine
+- `apps/daemon`: localhost Fastify API over the Promptreel data spine
 - `apps/cli`: `pl` command for repo registration, imports, live checks, and prompt queries
 - `apps/web`: thin read-only Prompt Stream UI
 - `packages/domain`: shared types and causal rules

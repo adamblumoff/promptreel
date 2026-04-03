@@ -8,8 +8,8 @@ import type {
   CodeDiffResult,
   WorkspaceFileState,
   WorkspaceSnapshotData
-} from "@promptline/domain";
-import { createId, hashValue, nowIso } from "@promptline/domain";
+} from "@promptreel/domain";
+import { createId, hashValue, nowIso } from "@promptreel/domain";
 
 type FileChange = CodeDiffResult["files"][number];
 

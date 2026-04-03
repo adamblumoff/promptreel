@@ -29,7 +29,7 @@ import type {
   WorkspaceListItem,
   WorkspaceSnapshot,
   WorkspaceSnapshotData
-} from "@promptline/domain";
+} from "@promptreel/domain";
 import {
   createId,
   nowIso,
@@ -38,7 +38,7 @@ import {
   slugifyRepoPath,
   threadSummaryId,
   workspaceGroupId
-} from "@promptline/domain";
+} from "@promptreel/domain";
 
 export interface PersistPromptBundle {
   prompt: PromptEventRecord;
@@ -116,7 +116,7 @@ export interface CloudAuthState {
   linkedAt: string;
 }
 
-export class PromptlineStore {
+export class PromptreelStore {
   readonly homeDir: string;
   readonly registryPath: string;
 
@@ -1706,7 +1706,7 @@ export function safeJsonParse<T>(input: string | null | undefined, fallback: T):
 }
 
 function summarizeCodeDiffArtifacts(
-  store: PromptlineStore,
+  store: PromptreelStore,
   workspaceId: string,
   artifacts: ArtifactRecord[]
 ): { additions: number; deletions: number } {

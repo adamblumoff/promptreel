@@ -16,7 +16,7 @@ import type {
   RepoRegistration,
   WorkspaceSnapshot,
   WorkspaceIngestionStatus
-} from "@promptline/domain";
+} from "@promptreel/domain";
 import {
   choosePrimaryArtifactType,
   createId,
@@ -27,7 +27,7 @@ import {
   summarizePrompt,
   type GitLinkRecord,
   workspaceGroupId
-} from "@promptline/domain";
+} from "@promptreel/domain";
 import {
   buildCodeDiff,
   buildCodeDiffArtifact,
@@ -37,12 +37,12 @@ import {
   parseApplyPatchToCodeDiff,
   parseUnifiedDiffToCodeDiff,
   repoRelativePath
-} from "@promptline/git-integration";
+} from "@promptreel/git-integration";
 import {
-  PromptlineStore,
+  PromptreelStore,
   getFileMtimeMs,
   toEligibleWorkspacePath
-} from "@promptline/storage";
+} from "@promptreel/storage";
 
 interface JsonRpcResponse {
   id: number;
@@ -859,7 +859,7 @@ function buildArtifactMetadata(
 }
 
 function createHistoricalCommandArtifacts(
-  store: PromptlineStore,
+  store: PromptreelStore,
   workspaceId: string,
   promptId: string,
   promptSeed: string,
@@ -897,7 +897,7 @@ function createHistoricalCommandArtifacts(
 }
 
 function createLiveCommandArtifact(
-  store: PromptlineStore,
+  store: PromptreelStore,
   workspaceId: string,
   promptEventId: string,
   item: Record<string, unknown>
@@ -957,7 +957,7 @@ function safeParseJsonRecord(value: string | null): Record<string, unknown> | nu
 }
 
 function createHistoricalSnapshots(
-  store: PromptlineStore,
+  store: PromptreelStore,
   workspaceId: string,
   executionPath: string | null,
   seed: string
@@ -1007,7 +1007,7 @@ function accumulateWorkspaceResult(
 }
 
 function importSessionFiles(
-  store: PromptlineStore,
+  store: PromptreelStore,
   files: CodexSessionFileMatch[],
   options: ImportCodexSessionsOptions = {}
 ): ImportCodexSessionsResult {
@@ -1241,7 +1241,7 @@ export function discoverCodexSessionFiles(
 }
 
 export function importCodexSessions(
-  store: PromptlineStore,
+  store: PromptreelStore,
   sessionsRoot = join(homedir(), ".codex", "sessions"),
   options: ImportCodexSessionsOptions = {}
 ): ImportCodexSessionsResult {
@@ -1250,7 +1250,7 @@ export function importCodexSessions(
 }
 
 export function importCodexSessionsForRepo(
-  store: PromptlineStore,
+  store: PromptreelStore,
   repo: RepoRegistration,
   sessionsRoot = join(homedir(), ".codex", "sessions"),
   options: ImportCodexSessionsOptions = {}
@@ -1282,7 +1282,7 @@ export class CodexSessionTailer {
   private scanning = false;
 
   constructor(
-    private readonly store: PromptlineStore,
+    private readonly store: PromptreelStore,
     private readonly pollingIntervalMs = 3_000,
     private readonly sessionsRoot = join(homedir(), ".codex", "sessions")
   ) {}
@@ -1483,8 +1483,8 @@ class CodexAppServerClient {
   async initialize(): Promise<void> {
     await this.request("initialize", {
       clientInfo: {
-        name: "promptline",
-        title: "Promptline",
+        name: "promptreel",
+        title: "Promptreel",
         version: "0.1.0"
       },
       capabilities: {
@@ -1512,7 +1512,7 @@ class CodexAppServerClient {
 }
 
 export async function runLiveDoctor(
-  store: PromptlineStore,
+  store: PromptreelStore,
   repo: RepoRegistration
 ): Promise<LiveDoctorResult> {
   const port = 43123;
@@ -1541,7 +1541,7 @@ export async function runLiveDoctor(
       input: [
         {
           type: "text",
-          text: "Run `git status -sb`, then reply with exactly `promptline live ok`.",
+          text: "Run `git status -sb`, then reply with exactly `promptreel live ok`.",
           text_elements: []
         }
       ]
@@ -1621,7 +1621,7 @@ export async function runLiveDoctor(
       boundaryReason: "turn_completed",
       status: "completed",
       mode: promptMode,
-      promptText: "Run `git status -sb`, then reply with exactly `promptline live ok`.",
+      promptText: "Run `git status -sb`, then reply with exactly `promptreel live ok`.",
       promptSummary: "Live Codex app-server doctor turn",
       primaryArtifactId: null,
       baselineSnapshotId: baselineSnapshot.id,

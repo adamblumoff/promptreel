@@ -29,10 +29,10 @@ import type {
   WorkspaceCreateRequest,
   WorkspaceCreateResponse,
   WorkspaceListResponse
-} from "@promptline/api-contracts";
-import { CodexSessionTailer } from "@promptline/codex-adapter";
-import { PromptlineStore } from "@promptline/storage";
-import type { AuthUserProfile, WorkspaceListItem } from "@promptline/domain";
+} from "@promptreel/api-contracts";
+import { CodexSessionTailer } from "@promptreel/codex-adapter";
+import { PromptreelStore } from "@promptreel/storage";
+import type { AuthUserProfile, WorkspaceListItem } from "@promptreel/domain";
 import { createCloudStore } from "./cloud-store.js";
 
 loadDaemonEnvFiles();
@@ -129,7 +129,7 @@ function buildCliLoginUrl(loginCode: string, deviceId: string, deviceName: strin
   return url.toString();
 }
 
-function buildWorkspaceListItem(store: PromptlineStore, tailer: CodexSessionTailer, workspaceId: string): WorkspaceListItem | null {
+function buildWorkspaceListItem(store: PromptreelStore, tailer: CodexSessionTailer, workspaceId: string): WorkspaceListItem | null {
   const workspace = store.getWorkspace(workspaceId);
   if (!workspace) {
     return null;
@@ -149,7 +149,7 @@ function buildWorkspaceListItem(store: PromptlineStore, tailer: CodexSessionTail
 }
 
 function buildCloudBootstrapBundle(
-  store: PromptlineStore,
+  store: PromptreelStore,
   tailer: CodexSessionTailer,
   workspaceId: string
 ): CloudBootstrapSyncRequest | null {
@@ -228,7 +228,7 @@ export function buildServer() {
     logger: false,
     bodyLimit: 50 * 1024 * 1024,
   });
-  const store = new PromptlineStore();
+  const store = new PromptreelStore();
   const cloudStore = createCloudStore(store);
   const tailer = new CodexSessionTailer(store);
   const webDistDir = resolveWebDistDir();
@@ -239,7 +239,7 @@ export function buildServer() {
   };
   const notFound = (message: string) => httpError(404, message);
   const resolveCloudViewerUser = async (headers: Record<string, unknown>): Promise<AuthUserProfile | null> => {
-    const cloudViewerMode = headers["x-promptline-cloud-viewer"] === "1";
+    const cloudViewerMode = headers["x-promptreel-cloud-viewer"] === "1";
     if (!cloudViewerMode) {
       return null;
     }
@@ -437,14 +437,14 @@ export function buildServer() {
       throw httpError(401, "Unable to verify Clerk session");
     }
 
-    const email = typeof request.headers["x-promptline-email"] === "string"
-      ? request.headers["x-promptline-email"]
+    const email = typeof request.headers["x-promptreel-email"] === "string"
+      ? request.headers["x-promptreel-email"]
       : null;
-    const name = typeof request.headers["x-promptline-name"] === "string"
-      ? request.headers["x-promptline-name"]
+    const name = typeof request.headers["x-promptreel-name"] === "string"
+      ? request.headers["x-promptreel-name"]
       : null;
-    const avatarUrl = typeof request.headers["x-promptline-avatar"] === "string"
-      ? request.headers["x-promptline-avatar"]
+    const avatarUrl = typeof request.headers["x-promptreel-avatar"] === "string"
+      ? request.headers["x-promptreel-avatar"]
       : null;
 
     const approved = await cloudStore.approveCliLoginRequest({

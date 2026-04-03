@@ -12,19 +12,19 @@ import type {
   CliLoginExchangeResponse,
   CliLoginStartRequest,
   CliLoginStartResponse,
-} from "@promptline/api-contracts";
-import { importCodexSessionsForRepo, runLiveDoctor } from "@promptline/codex-adapter";
-import { PromptlineStore, type CloudAuthState } from "@promptline/storage";
-import { createId, type WorkspaceListItem } from "@promptline/domain";
+} from "@promptreel/api-contracts";
+import { importCodexSessionsForRepo, runLiveDoctor } from "@promptreel/codex-adapter";
+import { PromptreelStore, type CloudAuthState } from "@promptreel/storage";
+import { createId, type WorkspaceListItem } from "@promptreel/domain";
 
 loadCliEnvFiles();
 
 const program = new Command();
-const store = new PromptlineStore();
+const store = new PromptreelStore();
 const DEFAULT_CLOUD_BASE_URL = trimTrailingSlash(
   process.env.PROMPTLINE_CLOUD_URL
   ?? process.env.PROMPTLINE_CLOUD_WEB_URL
-  ?? "https://promptlinedaemon-production.up.railway.app"
+  ?? "https://promptreeldaemon-production.up.railway.app"
 );
 const DEFAULT_API_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_API_URL ?? `${DEFAULT_CLOUD_BASE_URL}/api`);
 const DEFAULT_WEB_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_WEB_URL ?? DEFAULT_CLOUD_BASE_URL);
@@ -121,7 +121,7 @@ function printPromptList(prompts: Array<{ id: string; startedAt: string; promptS
   ]);
 }
 
-function printPromptDetail(detail: ReturnType<PromptlineStore["getPromptDetail"]>): void {
+function printPromptDetail(detail: ReturnType<PromptreelStore["getPromptDetail"]>): void {
   if (!detail) {
     console.log("Prompt not found.");
     return;
@@ -146,7 +146,7 @@ function printCloudLoginSuccess(input: {
   userEmail: string | null | undefined;
 }): void {
   printBlock([
-    "Promptline Cloud login succeeded.",
+    "Promptreel Cloud login succeeded.",
     `User: ${formatValue(input.userName, input.userEmail ?? "unknown user")}`,
     input.userEmail ? `Email: ${input.userEmail}` : null,
     `Device: ${input.deviceId}`,
@@ -164,11 +164,11 @@ function printCloudLoginSuccess(input: {
 
 function printWhoAmI(result: AuthWhoamiResponse): void {
   if (!result.authenticated || !result.user || !result.device) {
-    console.log("Not connected to Promptline Cloud.");
+    console.log("Not connected to Promptreel Cloud.");
     return;
   }
   printBlock([
-    "Promptline Cloud connection is active.",
+    "Promptreel Cloud connection is active.",
     `User: ${formatValue(result.user.name, result.user.email ?? "unknown user")}`,
     result.user.email ? `Email: ${result.user.email}` : null,
     `Device: ${formatValue(result.device.deviceName, result.device.deviceId)}`,
@@ -188,7 +188,7 @@ function printBootstrapSyncResult(result: { workspaceCount: number; synced: Clou
 
 function printResetResult(result: { revokedTokens: number; clearedLoginRequests: number }): void {
   printBlock([
-    "Promptline Cloud credentials reset.",
+    "Promptreel Cloud credentials reset.",
     `Revoked daemon tokens: ${result.revokedTokens}`,
     `Cleared pending login requests: ${result.clearedLoginRequests}`,
     "",
@@ -254,7 +254,7 @@ function stopDaemonProcess(): void {
   ]);
 }
 
-function buildCloudWorkspaceItem(store: PromptlineStore, workspaceId: string): WorkspaceListItem {
+function buildCloudWorkspaceItem(store: PromptreelStore, workspaceId: string): WorkspaceListItem {
   const workspace = store.getWorkspace(workspaceId);
   if (!workspace) {
     throw new Error(`Unknown workspace ${workspaceId}`);
@@ -272,7 +272,7 @@ function buildCloudWorkspaceItem(store: PromptlineStore, workspaceId: string): W
   };
 }
 
-function buildBootstrapBundle(store: PromptlineStore, workspaceId: string): CloudBootstrapSyncRequest {
+function buildBootstrapBundle(store: PromptreelStore, workspaceId: string): CloudBootstrapSyncRequest {
   const workspace = buildCloudWorkspaceItem(store, workspaceId);
   const threads = store.listThreads(workspaceId);
   const prompts = store.listPrompts(workspaceId);
@@ -362,25 +362,25 @@ async function pollForCliLoginApproval(
   throw new Error("Timed out waiting for browser login approval.");
 }
 
-program.name("pl").description("Promptline CLI");
+program.name("pl").description("Promptreel CLI");
 
 program
   .command("start")
-  .description("Start the Promptline Cloud sync daemon")
+  .description("Start the Promptreel Cloud sync daemon")
   .action(() => {
     startDaemonProcess();
   });
 
 program
   .command("stop")
-  .description("Stop the Promptline daemon")
+  .description("Stop the Promptreel daemon")
   .action(() => {
     stopDaemonProcess();
   });
 
 program
   .command("reset")
-  .description("Reset local Promptline Cloud credentials so you can rerun login")
+  .description("Reset local Promptreel Cloud credentials so you can rerun login")
   .action(() => {
     const authState = store.getCloudAuthState();
     const result = store.resetCloudAuth(authState?.deviceId ?? null);
@@ -389,7 +389,7 @@ program
 
 program
   .command("repo")
-  .description("Manage Promptline repos")
+  .description("Manage Promptreel repos")
   .addCommand(
     new Command("add")
       .argument("<path>")
@@ -406,17 +406,17 @@ program
 
 program
   .command("daemon")
-  .description("Manage the Promptline daemon")
+  .description("Manage the Promptreel daemon")
   .addCommand(
     new Command("start")
-      .description("Start the Promptline Cloud sync daemon")
+      .description("Start the Promptreel Cloud sync daemon")
       .action(() => {
       startDaemonProcess();
       })
   )
   .addCommand(
     new Command("stop")
-      .description("Stop the Promptline daemon")
+      .description("Stop the Promptreel daemon")
       .action(() => {
       stopDaemonProcess();
       })
@@ -488,7 +488,7 @@ program
 
 program
   .command("login")
-  .description("Connect this machine to Promptline Cloud")
+  .description("Connect this machine to Promptreel Cloud")
   .action(async () => {
     const existing = store.getCloudAuthState();
     const deviceId = ensureDeviceId(existing);
@@ -510,7 +510,7 @@ program
     loginUrlObject.protocol = desiredWebBaseUrl.protocol;
     loginUrlObject.host = desiredWebBaseUrl.host;
     const loginUrl = loginUrlObject.toString();
-    console.log(`Opening browser for Promptline Cloud login...\n${loginUrl}`);
+    console.log(`Opening browser for Promptreel Cloud login...\n${loginUrl}`);
     openBrowser(loginUrl);
 
     const exchange = await pollForCliLoginApproval(apiBaseUrl, start.loginCode, deviceId);
@@ -542,7 +542,7 @@ program
 
 program
   .command("whoami")
-  .description("Show the connected Promptline Cloud account")
+  .description("Show the connected Promptreel Cloud account")
   .action(async () => {
     const authState = store.getCloudAuthState();
     if (!authState?.daemonToken) {
@@ -554,7 +554,7 @@ program
 
 program
   .command("sync")
-  .description("Sync Promptline data to Promptline Cloud")
+  .description("Sync Promptreel data to Promptreel Cloud")
   .addCommand(
     new Command("bootstrap")
       .option("--workspace <workspaceId>", "Sync a single workspace id")
