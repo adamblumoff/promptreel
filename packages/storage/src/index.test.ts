@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -45,6 +45,30 @@ describe("PromptreelStore", () => {
     expect(isEligibleWindowsGitWorkspace(nestedPath)).toBe(false);
     expect(toEligibleWorkspacePath(nestedPath)).toBeNull();
     expect(workspaces).toEqual([]);
+  });
+
+  test("repairs a renamed manual workspace path without losing its history", () => {
+    const root = mkdtempSync(join(tmpdir(), "promptreel-store-rename-"));
+    const oldRepoPath = join(root, "prompt-log");
+    const newRepoPath = join(root, "promptreel");
+    mkdirSync(oldRepoPath, { recursive: true });
+    execFileSync("git", ["init"], { cwd: oldRepoPath, stdio: "ignore" });
+
+    const store = new PromptreelStore(join(root, ".pl"));
+    const repo = store.addRepo(oldRepoPath);
+
+    renameSync(oldRepoPath, newRepoPath);
+    const repaired = store.ensureWorkspaceGroup(newRepoPath, {
+      gitRootPath: newRepoPath,
+      gitDir: join(newRepoPath, ".git"),
+      source: "manual",
+      status: "active"
+    });
+
+    expect(repaired.id).toBe(repo.id);
+    expect(repaired.folderPath).toBe(newRepoPath);
+    expect(store.listWorkspaces().map((workspace) => workspace.folderPath)).toContain(newRepoPath);
+    expect(store.listRepos()[0]?.rootPath).toBe(newRepoPath);
   });
 
   test("reimport replaces prompt-scoped artifacts, links, and git links", () => {

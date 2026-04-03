@@ -1018,9 +1018,13 @@ function importSessionFiles(
   };
 
   for (const file of files) {
-    const workspace = store.ensureWorkspaceGroup(file.normalizedCwd, {
-      gitRootPath: file.normalizedCwd,
-      gitDir: file.normalizedCwd ? join(file.normalizedCwd, ".git") : null,
+    const resolvedFolderPath = file.normalizedCwd ?? store.resolveWorkspacePathAlias(file.cwd);
+    if (!resolvedFolderPath) {
+      continue;
+    }
+    const workspace = store.ensureWorkspaceGroup(resolvedFolderPath, {
+      gitRootPath: resolvedFolderPath,
+      gitDir: join(resolvedFolderPath, ".git"),
       source: "auto_discovered"
     });
     const cursorKey = `codex-session:v6:${file.filePath}`;
@@ -1055,11 +1059,11 @@ function importSessionFiles(
       const promptSeed = `${file.filePath}:${promptIndex}`;
       const promptId = stableId("prompt", promptSeed);
       const promptMode = readHistoricalPromptMode(window);
-      const snapshots = createHistoricalSnapshots(store, workspace.id, file.normalizedCwd, promptSeed);
+      const snapshots = createHistoricalSnapshots(store, workspace.id, resolvedFolderPath, promptSeed);
       const prompt: PromptEventRecord = {
         id: promptId,
         workspaceId: workspace.id,
-        executionPath: file.normalizedCwd,
+        executionPath: resolvedFolderPath,
         sessionId: file.sessionId || null,
         threadId: (file.threadId ?? file.sessionId) || null,
         parentPromptEventId: null,
@@ -1143,7 +1147,7 @@ function importSessionFiles(
 
       const recoveredDiff = recoverHistoricalCodeDiff(toolEvents);
       if (recoveredDiff) {
-        const normalizedDiff = normalizeRecoveredDiffPaths(recoveredDiff.diff, file.normalizedCwd);
+        const normalizedDiff = normalizeRecoveredDiffPaths(recoveredDiff.diff, resolvedFolderPath);
         const diffArtifact = buildCodeDiffArtifact(promptId, normalizedDiff, {
           source: recoveredDiff.source,
           sourceFormat: recoveredDiff.sourceFormat
@@ -1223,7 +1227,8 @@ export function discoverCodexSessionFiles(
   for (const filePath of files) {
     const lines = readSessionLines(filePath);
     const meta = readSessionMeta(lines);
-    if (!meta.normalizedCwd) {
+    const workspacePath = meta.normalizedCwd ?? (meta.cwd && isAbsolute(meta.cwd) ? normalize(meta.cwd) : null);
+    if (!workspacePath) {
       continue;
     }
     results.push({
@@ -1233,7 +1238,7 @@ export function discoverCodexSessionFiles(
       cwd: meta.cwd,
       normalizedCwd: meta.normalizedCwd,
       source: meta.source,
-      workspaceId: workspaceGroupId(meta.normalizedCwd),
+      workspaceId: workspaceGroupId(workspacePath),
       mtimeMs: getFileMtimeMs(filePath)
     });
   }
@@ -1363,18 +1368,22 @@ export class CodexSessionTailer {
       const recentCutoff = Date.now() - this.pollingIntervalMs * 3;
       const groupedMatches = new Map<string, CodexSessionFileMatch[]>();
       for (const match of matches) {
-        const bucket = groupedMatches.get(match.workspaceId) ?? [];
-        bucket.push(match);
-        groupedMatches.set(match.workspaceId, bucket);
-        const folderPath = match.normalizedCwd;
+        const folderPath = match.normalizedCwd ?? this.store.resolveWorkspacePathAlias(match.cwd);
         if (!folderPath) {
           continue;
         }
-        this.store.ensureWorkspaceGroup(folderPath, {
+        const workspace = this.store.ensureWorkspaceGroup(folderPath, {
           gitRootPath: folderPath,
           gitDir: join(folderPath, ".git"),
           source: "auto_discovered"
         });
+        const bucket = groupedMatches.get(workspace.id) ?? [];
+        bucket.push({
+          ...match,
+          normalizedCwd: folderPath,
+          workspaceId: workspace.id
+        });
+        groupedMatches.set(workspace.id, bucket);
       }
 
       const workspaces = this.store.listWorkspaces();

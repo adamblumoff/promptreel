@@ -4,6 +4,7 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
+  renameSync,
   readFileSync,
   statSync,
   writeFileSync
@@ -140,8 +141,15 @@ export class PromptreelStore {
     }
 
     const now = nowIso();
+    const repairedWorkspace = this.repairMovedWorkspaceForPath(git.gitRootPath, {
+      gitRootPath: git.gitRootPath,
+      gitDir: git.gitDir,
+      source: "manual",
+      status: existsSync(git.gitRootPath) ? "active" : "missing",
+      lastSeenAt: now
+    });
     const repo: RepoRegistration = {
-      id: repoRegistrationId(git.gitRootPath),
+      id: repairedWorkspace?.id ?? repoRegistrationId(git.gitRootPath),
       slug: slugifyRepoPath(git.gitRootPath),
       rootPath: git.gitRootPath,
       gitDir: git.gitDir,
@@ -211,10 +219,48 @@ export class PromptreelStore {
 
   ensureWorkspaceGroup(folderPath: string | null, options: WorkspaceCreateOptions = {}): WorkspaceGroup {
     const normalizedFolderPath = normalizeFolderPath(folderPath);
+    const existingWorkspace = normalizedFolderPath ? this.findWorkspaceByFolderPath(normalizedFolderPath) : null;
+    if (existingWorkspace) {
+      const resolvedFolderPath = normalizedFolderPath!;
+      const inferredGit = this.resolveGitMetadata(resolvedFolderPath);
+      const now = options.lastSeenAt ?? nowIso();
+      const updatedWorkspace: WorkspaceGroup = {
+        ...existingWorkspace,
+        slug: slugifyPath(resolvedFolderPath),
+        folderPath: resolvedFolderPath,
+        gitRootPath: options.gitRootPath ?? inferredGit.gitRootPath,
+        gitDir: options.gitDir ?? inferredGit.gitDir,
+        lastSeenAt: now,
+        status:
+          options.status
+          ?? (!existsSync(resolvedFolderPath) ? "missing" : "active"),
+        source: existingWorkspace.source === "manual" ? "manual" : (options.source ?? existingWorkspace.source)
+      };
+      this.upsertWorkspaceGroup(updatedWorkspace);
+      this.ensureWorkspaceLayout(updatedWorkspace.id);
+      this.ensureWorkspaceSchema(updatedWorkspace.id);
+      return this.getWorkspace(updatedWorkspace.id) ?? updatedWorkspace;
+    }
+
     const inferredGit = normalizedFolderPath
       ? this.resolveGitMetadata(normalizedFolderPath)
       : { gitRootPath: null, gitDir: null };
     const now = options.lastSeenAt ?? nowIso();
+    const repairedWorkspace = normalizedFolderPath
+      ? this.repairMovedWorkspaceForPath(normalizedFolderPath, {
+          gitRootPath: options.gitRootPath ?? inferredGit.gitRootPath,
+          gitDir: options.gitDir ?? inferredGit.gitDir,
+          source: options.source ?? "auto_discovered",
+          status:
+            options.status
+            ?? (normalizedFolderPath && !existsSync(normalizedFolderPath) ? "missing" : "active"),
+          lastSeenAt: now
+        })
+      : null;
+    if (repairedWorkspace) {
+      return repairedWorkspace;
+    }
+
     const workspace: WorkspaceGroup = {
       id: workspaceGroupId(normalizedFolderPath),
       slug: slugifyPath(normalizedFolderPath),
@@ -229,24 +275,7 @@ export class PromptreelStore {
       source: options.source ?? "auto_discovered"
     };
 
-    const db = this.openRegistry();
-    db.prepare(
-      `INSERT INTO workspace_groups
-       (id, slug, folder_path, git_root_path, git_dir, created_at, last_seen_at, status, source)
-       VALUES (:id, :slug, :folderPath, :gitRootPath, :gitDir, :createdAt, :lastSeenAt, :status, :source)
-       ON CONFLICT(id) DO UPDATE SET
-         slug = excluded.slug,
-         folder_path = excluded.folder_path,
-         git_root_path = COALESCE(excluded.git_root_path, workspace_groups.git_root_path),
-         git_dir = COALESCE(excluded.git_dir, workspace_groups.git_dir),
-         last_seen_at = excluded.last_seen_at,
-         status = excluded.status,
-         source = CASE
-           WHEN workspace_groups.source = 'manual' THEN workspace_groups.source
-           ELSE excluded.source
-         END`
-    ).run(asSqlParams(workspace));
-    db.close();
+    this.upsertWorkspaceGroup(workspace);
 
     this.ensureWorkspaceLayout(workspace.id);
     this.ensureWorkspaceSchema(workspace.id);
@@ -1266,6 +1295,21 @@ export class PromptreelStore {
     return this.workspaceDbPath(repoId);
   }
 
+  resolveWorkspacePathAlias(folderPath: string | null): string | null {
+    const normalizedFolderPath = normalizeFolderPath(folderPath);
+    if (!normalizedFolderPath) {
+      return null;
+    }
+    const db = this.openRegistry();
+    const row = db.prepare(
+      `SELECT folder_path AS folderPath
+       FROM workspace_path_aliases
+       WHERE alias_path = ?`
+    ).get(normalizedFolderPath) as { folderPath: string | null } | undefined;
+    db.close();
+    return row?.folderPath ?? null;
+  }
+
   private ensureRegistrySchema(): void {
     const db = this.openRegistry();
     db.exec(`
@@ -1288,6 +1332,12 @@ export class PromptreelStore {
         last_seen_at TEXT NOT NULL,
         status TEXT NOT NULL,
         source TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS workspace_path_aliases (
+        alias_path TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        folder_path TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS auth_users (
         id TEXT PRIMARY KEY,
@@ -1653,6 +1703,154 @@ export class PromptreelStore {
       return;
     }
     db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
+  }
+
+  private upsertWorkspaceGroup(workspace: WorkspaceGroup): void {
+    const db = this.openRegistry();
+    db.prepare(
+      `INSERT INTO workspace_groups
+       (id, slug, folder_path, git_root_path, git_dir, created_at, last_seen_at, status, source)
+       VALUES (:id, :slug, :folderPath, :gitRootPath, :gitDir, :createdAt, :lastSeenAt, :status, :source)
+       ON CONFLICT(id) DO UPDATE SET
+         slug = excluded.slug,
+         folder_path = excluded.folder_path,
+         git_root_path = COALESCE(excluded.git_root_path, workspace_groups.git_root_path),
+         git_dir = COALESCE(excluded.git_dir, workspace_groups.git_dir),
+         last_seen_at = excluded.last_seen_at,
+         status = excluded.status,
+         source = CASE
+           WHEN workspace_groups.source = 'manual' THEN workspace_groups.source
+           ELSE excluded.source
+         END`
+    ).run(asSqlParams(workspace));
+    db.close();
+  }
+
+  private findWorkspaceByFolderPath(folderPath: string): WorkspaceGroup | null {
+    const db = this.openRegistry();
+    const row = db.prepare(
+      `SELECT
+         id,
+         slug,
+         folder_path AS folderPath,
+         git_root_path AS gitRootPath,
+         git_dir AS gitDir,
+         created_at AS createdAt,
+         last_seen_at AS lastSeenAt,
+         status,
+         source
+       FROM workspace_groups
+       WHERE folder_path = ?`
+    ).get(folderPath) as WorkspaceGroup | undefined;
+    db.close();
+    return row ?? null;
+  }
+
+  private repairMovedWorkspaceForPath(
+    normalizedFolderPath: string,
+    options: WorkspaceCreateOptions
+  ): WorkspaceGroup | null {
+    const parentDir = dirname(normalizedFolderPath);
+    const db = this.openRegistry();
+    const candidates = db.prepare(
+      `SELECT
+         id,
+         slug,
+         folder_path AS folderPath,
+         git_root_path AS gitRootPath,
+         git_dir AS gitDir,
+         created_at AS createdAt,
+         last_seen_at AS lastSeenAt,
+         status,
+         source
+       FROM workspace_groups
+       WHERE source = 'manual'
+         AND folder_path IS NOT NULL`
+    ).all() as unknown as WorkspaceGroup[];
+    db.close();
+
+    const matchingCandidates = candidates.filter((candidate) => {
+      if (!candidate.folderPath || candidate.folderPath === normalizedFolderPath) {
+        return false;
+      }
+      if (existsSync(candidate.folderPath)) {
+        return false;
+      }
+      if (dirname(candidate.folderPath) !== parentDir) {
+        return false;
+      }
+      return existsSync(this.workspaceDbPath(candidate.id));
+    });
+
+    if (matchingCandidates.length !== 1) {
+      return null;
+    }
+
+    const candidate = matchingCandidates[0]!;
+    const updatedWorkspace: WorkspaceGroup = {
+      ...candidate,
+      slug: slugifyPath(normalizedFolderPath),
+      folderPath: normalizedFolderPath,
+      gitRootPath: options.gitRootPath ?? normalizeFolderPath(candidate.gitRootPath),
+      gitDir: options.gitDir ?? normalizeFolderPath(candidate.gitDir),
+      lastSeenAt: options.lastSeenAt ?? nowIso(),
+      status: options.status ?? "active",
+      source: "manual"
+    };
+    this.upsertWorkspaceGroup(updatedWorkspace);
+    this.recordWorkspacePathAlias(candidate.id, candidate.folderPath, normalizedFolderPath);
+
+    const repo = this.getRepo(candidate.id);
+    if (repo) {
+      const updatedRepo: RepoRegistration = {
+        ...repo,
+        slug: slugifyRepoPath(normalizedFolderPath),
+        rootPath: normalizedFolderPath,
+        gitDir: options.gitDir ?? join(normalizedFolderPath, ".git"),
+        lastSeenAt: updatedWorkspace.lastSeenAt,
+        status: updatedWorkspace.status
+      };
+      const repoDbDir = this.repoDir(repo.id);
+      mkdirSync(dirname(repoDbDir), { recursive: true });
+      if (!existsSync(repoDbDir) && existsSync(this.repoDir(candidate.id))) {
+        renameSync(this.repoDir(candidate.id), repoDbDir);
+      }
+      const registry = this.openRegistry();
+      registry.prepare(
+        `INSERT INTO repo_registrations
+         (id, slug, root_path, git_dir, created_at, last_seen_at, status)
+         VALUES (:id, :slug, :rootPath, :gitDir, :createdAt, :lastSeenAt, :status)
+         ON CONFLICT(id) DO UPDATE SET
+           slug = excluded.slug,
+           root_path = excluded.root_path,
+           git_dir = excluded.git_dir,
+           last_seen_at = excluded.last_seen_at,
+           status = excluded.status`
+      ).run(asSqlParams(updatedRepo));
+      registry.close();
+    }
+
+    this.ensureWorkspaceLayout(candidate.id);
+    this.ensureWorkspaceSchema(candidate.id);
+    return this.getWorkspace(candidate.id);
+  }
+
+  private recordWorkspacePathAlias(workspaceId: string, aliasPath: string | null, folderPath: string): void {
+    const normalizedAliasPath = normalizeFolderPath(aliasPath);
+    if (!normalizedAliasPath || normalizedAliasPath === folderPath) {
+      return;
+    }
+    const db = this.openRegistry();
+    db.prepare(
+      `INSERT INTO workspace_path_aliases
+       (alias_path, workspace_id, folder_path, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(alias_path) DO UPDATE SET
+         workspace_id = excluded.workspace_id,
+         folder_path = excluded.folder_path,
+         updated_at = excluded.updated_at`
+    ).run(normalizedAliasPath, workspaceId, folderPath, nowIso());
+    db.close();
   }
 
   private resolveGitMetadata(folderPath: string): { gitRootPath: string | null; gitDir: string | null } {
