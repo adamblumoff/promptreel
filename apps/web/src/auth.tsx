@@ -199,6 +199,25 @@ function CliLoginApprovalCard(props: {
             You can return to the terminal now. The CLI will store a daemon token and use{" "}
             <code>{getApiBaseUrl()}</code> for future Promptline Cloud requests.
           </p>
+          <div className="rounded-2xl border border-brd bg-gz-1 px-4 py-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-t3">Next steps</p>
+            <div className="mt-3 space-y-3 text-sm text-t2">
+              <p>Run these in your terminal to verify the connection and upload your initial prompt history:</p>
+              <div className="space-y-2 font-mono text-[13px] text-t1">
+                <div className="rounded-xl border border-brd bg-white px-3 py-2">pnpm dev:cli -- whoami</div>
+                <div className="rounded-xl border border-brd bg-white px-3 py-2">pnpm dev:cli -- sync bootstrap</div>
+              </div>
+            </div>
+          </div>
+          <div className="pt-1">
+            <button
+              type="button"
+              onClick={() => window.location.assign("/")}
+              className="inline-flex items-center rounded-full border border-brd bg-white px-4 py-2 text-sm font-medium text-t1 transition hover:bg-gz-1"
+            >
+              Go to Promptline
+            </button>
+          </div>
         </div>
       ) : null}
 

@@ -1652,8 +1652,14 @@ export class PromptlineStore {
 
   private openDatabase(pathValue: string): DatabaseSync {
     const db = new DatabaseSync(pathValue);
-    db.exec("PRAGMA journal_mode = WAL;");
     db.exec("PRAGMA busy_timeout = 5000;");
+    try {
+      db.exec("PRAGMA journal_mode = WAL;");
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || (error as { code?: string }).code !== "ERR_SQLITE_ERROR") {
+        throw error;
+      }
+    }
     return db;
   }
 }

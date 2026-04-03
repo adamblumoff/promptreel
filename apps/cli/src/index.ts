@@ -81,6 +81,108 @@ function getDeviceName(): string {
   return `${hostname()} (${platform()})`;
 }
 
+function printBlock(lines: Array<string | null | undefined>): void {
+  console.log(lines.filter(Boolean).join("\n"));
+}
+
+function formatValue(value: string | null | undefined, fallback = "none"): string {
+  return value && value.trim() ? value : fallback;
+}
+
+function printRepoSummary(repo: { id: string; slug: string; rootPath?: string; gitDir?: string; status?: string }): void {
+  printBlock([
+    `Repo ready: ${repo.slug}`,
+    `ID: ${repo.id}`,
+    `Path: ${formatValue(repo.rootPath)}`,
+    repo.gitDir ? `Git dir: ${repo.gitDir}` : null,
+    repo.status ? `Status: ${repo.status}` : null,
+  ]);
+}
+
+function printRepoList(repos: Array<{ id: string; slug: string; rootPath: string; status: string }>): void {
+  if (repos.length === 0) {
+    console.log("No repos registered yet.");
+    return;
+  }
+  printBlock([
+    `Registered repos: ${repos.length}`,
+    ...repos.map((repo, index) => `${index + 1}. ${repo.slug}  [${repo.status}]  ${repo.rootPath}`),
+  ]);
+}
+
+function printPromptList(prompts: Array<{ id: string; startedAt: string; promptSummary: string; status: string }>): void {
+  if (prompts.length === 0) {
+    console.log("No prompt events found.");
+    return;
+  }
+  printBlock([
+    `Prompt events: ${prompts.length}`,
+    ...prompts.map((prompt, index) => `${index + 1}. ${prompt.startedAt}  [${prompt.status}]  ${prompt.promptSummary}  (${prompt.id})`),
+  ]);
+}
+
+function printPromptDetail(detail: ReturnType<PromptlineStore["getPromptDetail"]>): void {
+  if (!detail) {
+    console.log("Prompt not found.");
+    return;
+  }
+  printBlock([
+    `Prompt: ${detail.promptSummary}`,
+    `ID: ${detail.id}`,
+    `Started: ${detail.startedAt}`,
+    `Status: ${detail.status}`,
+    `Artifacts: ${detail.artifacts.length}`,
+    `Transcript entries: ${detail.transcript.length}`,
+    "",
+    detail.promptText,
+  ]);
+}
+
+function printCloudLoginSuccess(input: {
+  apiBaseUrl: string;
+  webBaseUrl: string;
+  deviceId: string;
+  userName: string | null | undefined;
+  userEmail: string | null | undefined;
+}): void {
+  printBlock([
+    "Promptline Cloud login succeeded.",
+    `User: ${formatValue(input.userName, input.userEmail ?? "unknown user")}`,
+    input.userEmail ? `Email: ${input.userEmail}` : null,
+    `Device: ${input.deviceId}`,
+    `Web: ${input.webBaseUrl}`,
+    `API: ${input.apiBaseUrl}`,
+    "",
+    "Next steps:",
+    "  pnpm dev:cli -- whoami",
+    "  pnpm dev:cli -- sync bootstrap",
+  ]);
+}
+
+function printWhoAmI(result: AuthWhoamiResponse): void {
+  if (!result.authenticated || !result.user || !result.device) {
+    console.log("Not connected to Promptline Cloud.");
+    return;
+  }
+  printBlock([
+    "Promptline Cloud connection is active.",
+    `User: ${formatValue(result.user.name, result.user.email ?? "unknown user")}`,
+    result.user.email ? `Email: ${result.user.email}` : null,
+    `Device: ${formatValue(result.device.deviceName, result.device.deviceId)}`,
+    `Device ID: ${result.device.deviceId}`,
+    `Last seen: ${result.device.lastSeenAt}`,
+  ]);
+}
+
+function printBootstrapSyncResult(result: { workspaceCount: number; synced: CloudBootstrapSyncResponse[] }): void {
+  printBlock([
+    `Bootstrap sync complete for ${result.workspaceCount} workspace${result.workspaceCount === 1 ? "" : "s"}.`,
+    ...result.synced.map((item) =>
+      `- ${item.workspaceId}: ${item.threadCount} threads, ${item.promptCount} prompts, ${item.blobCount} blobs`
+    ),
+  ]);
+}
+
 function ensureDeviceId(existing: CloudAuthState | null): string {
   return existing?.deviceId ?? createId("device");
 }
@@ -203,12 +305,12 @@ program
       .argument("<path>")
       .action((path: string) => {
         const repo = store.addRepo(resolve(path));
-        console.log(JSON.stringify(repo, null, 2));
+        printRepoSummary(repo);
       })
   )
   .addCommand(
     new Command("list").action(() => {
-      console.log(JSON.stringify({ repos: store.listRepos() }, null, 2));
+      printRepoList(store.listRepos());
     })
   );
 
@@ -219,7 +321,10 @@ program
     new Command("start").action(() => {
       const current = store.getDaemonState();
       if (current.pid) {
-        console.log(JSON.stringify({ ok: true, pid: current.pid, message: "Daemon already recorded as running." }, null, 2));
+        printBlock([
+          "Daemon is already recorded as running.",
+          `PID: ${current.pid}`,
+        ]);
         return;
       }
       const daemonEntry = resolve(
@@ -234,19 +339,25 @@ program
         stdio: "ignore"
       });
       child.unref();
-      console.log(JSON.stringify({ ok: true, pid: child.pid, message: "Daemon started." }, null, 2));
+      printBlock([
+        "Daemon started.",
+        `PID: ${child.pid}`,
+      ]);
     })
   )
   .addCommand(
     new Command("stop").action(() => {
       const state = store.getDaemonState();
       if (!state.pid) {
-        console.log(JSON.stringify({ ok: true, message: "No daemon pid recorded." }, null, 2));
+        console.log("No daemon pid recorded.");
         return;
       }
       process.kill(state.pid);
       store.clearDaemonState();
-      console.log(JSON.stringify({ ok: true, pid: state.pid, message: "Daemon stop requested." }, null, 2));
+      printBlock([
+        "Daemon stop requested.",
+        `PID: ${state.pid}`,
+      ]);
     })
   );
 
@@ -262,7 +373,11 @@ program
           throw new Error(`Unknown repo ${options.repo}`);
         }
         const result = importCodexSessionsForRepo(store, repo);
-        console.log(JSON.stringify(result, null, 2));
+        printBlock([
+          `Imported Codex sessions for ${repo.slug}.`,
+          `Files scanned: ${result.importedFiles}`,
+          `Prompts imported: ${result.importedPrompts}`,
+        ]);
       })
   );
 
@@ -273,7 +388,7 @@ program
     new Command("list")
       .requiredOption("--repo <repoId>")
       .action((options: { repo: string }) => {
-        console.log(JSON.stringify({ prompts: store.listPrompts(options.repo) }, null, 2));
+        printPromptList(store.listPrompts(options.repo));
       })
   )
   .addCommand(
@@ -281,7 +396,7 @@ program
       .argument("<promptId>")
       .requiredOption("--repo <repoId>")
       .action((promptId: string, options: { repo: string }) => {
-        console.log(JSON.stringify({ prompt: store.getPromptDetail(options.repo, promptId) }, null, 2));
+        printPromptDetail(store.getPromptDetail(options.repo, promptId));
       })
   );
 
@@ -297,7 +412,15 @@ program
           throw new Error(`Unknown repo ${options.repo}`);
         }
         const result = await runLiveDoctor(store, repo);
-        console.log(JSON.stringify({ result }, null, 2));
+        printBlock([
+          result.ok ? "Live doctor passed." : "Live doctor failed.",
+          `Endpoint: ${result.endpoint}`,
+          result.threadId ? `Thread: ${result.threadId}` : null,
+          result.turnId ? `Turn: ${result.turnId}` : null,
+          `Notifications: ${result.notificationCount}`,
+          result.promptEventId ? `Prompt event: ${result.promptEventId}` : null,
+          result.message,
+        ]);
         process.exitCode = result.ok ? 0 : 1;
       })
   );
@@ -347,15 +470,13 @@ program
       linkedAt: new Date().toISOString(),
     });
 
-    console.log(JSON.stringify({
-      ok: true,
+    printCloudLoginSuccess({
       apiBaseUrl,
       webBaseUrl,
       deviceId,
-      user: exchange.user,
-      device: exchange.device,
-      message: "Promptline Cloud login succeeded."
-    }, null, 2));
+      userName: exchange.user?.name,
+      userEmail: exchange.user?.email,
+    });
   });
 
 program
@@ -367,7 +488,7 @@ program
       throw new Error("Not logged in. Run `pl login` first.");
     }
     const result = await getJson<AuthWhoamiResponse>(authState.apiBaseUrl, "/auth/me", authState.daemonToken);
-    console.log(JSON.stringify(result, null, 2));
+    printWhoAmI(result);
   });
 
 program
@@ -402,11 +523,10 @@ program
           synced.push(result);
         }
 
-        console.log(JSON.stringify({
-          ok: true,
+        printBootstrapSyncResult({
           workspaceCount: synced.length,
           synced,
-        }, null, 2));
+        });
       })
   );
 

@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyToken } from "@clerk/backend";
@@ -34,8 +34,54 @@ import { CodexSessionTailer } from "@promptline/codex-adapter";
 import { PromptlineStore } from "@promptline/storage";
 import type { AuthUserProfile, WorkspaceListItem } from "@promptline/domain";
 
+loadDaemonEnvFiles();
+
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function loadDaemonEnvFiles(): void {
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = resolve(scriptDir, "../../..");
+  const candidates = [
+    resolve(process.cwd(), ".env"),
+    resolve(process.cwd(), ".env.local"),
+    resolve(repoRoot, ".env"),
+    resolve(repoRoot, ".env.local"),
+    resolve(repoRoot, "apps/daemon/.env"),
+    resolve(repoRoot, "apps/daemon/.env.local"),
+    resolve(repoRoot, "apps/web/.env"),
+    resolve(repoRoot, "apps/web/.env.local"),
+  ];
+
+  for (const filePath of candidates) {
+    if (!existsSync(filePath)) {
+      continue;
+    }
+    const contents = readFileSync(filePath, "utf8");
+    for (const line of contents.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue;
+      }
+      const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+      if (!match) {
+        continue;
+      }
+      const [, key, rawValue] = match;
+      if (process.env[key] !== undefined) {
+        continue;
+      }
+      let value = rawValue.trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"'))
+        || (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      process.env[key] = value;
+    }
+  }
 }
 
 function getBearerToken(headers: Record<string, unknown>): string | null {
@@ -101,7 +147,10 @@ function resolveWebDistDir(): string | null {
 }
 
 export function buildServer() {
-  const app = Fastify({ logger: false });
+  const app = Fastify({
+    logger: false,
+    bodyLimit: 50 * 1024 * 1024,
+  });
   const store = new PromptlineStore();
   const tailer = new CodexSessionTailer(store);
   const webDistDir = resolveWebDistDir();
