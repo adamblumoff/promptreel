@@ -119,6 +119,18 @@ export interface AuthWhoamiResponse {
   device: AuthDevice | null;
 }
 
+export interface ViewerStatusResponse {
+  mode: "local" | "cloud";
+  daemon: {
+    connected: boolean;
+    source: "local" | "cloud";
+    label: string;
+    detail: string | null;
+    lastSeenAt: string | null;
+    syncState: "active" | "idle" | "error" | "disconnected";
+  };
+}
+
 export interface CloudSyncBlobInput {
   blobId: string;
   content: string;

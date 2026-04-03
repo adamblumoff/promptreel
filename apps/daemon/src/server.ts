@@ -26,16 +26,23 @@ import type {
   RepoListResponse,
   RescanSessionsResponse,
   ThreadListResponse,
+  ViewerStatusResponse,
   WorkspaceCreateRequest,
   WorkspaceCreateResponse,
   WorkspaceListResponse
 } from "@promptreel/api-contracts";
-import { CodexSessionTailer } from "@promptreel/codex-adapter";
+import { CodexSessionTailer, LIVE_ACTIVITY_WINDOW_MS } from "@promptreel/codex-adapter";
 import { PromptreelStore } from "@promptreel/storage";
-import type { AuthUserProfile, WorkspaceListItem } from "@promptreel/domain";
+import { nowIso, type AuthUserProfile, type WorkspaceListItem } from "@promptreel/domain";
 import { createCloudStore } from "./cloud-store.js";
 
 loadDaemonEnvFiles();
+
+const CLOUD_DAEMON_ACTIVE_WINDOW_MS = 20_000;
+const CLOUD_DAEMON_CONNECTED_WINDOW_MS = 120_000;
+const CLOUD_SYNC_ACTIVE_INTERVAL_MS = 1_500;
+const CLOUD_SYNC_IDLE_INTERVAL_MS = 8_000;
+const CLOUD_SYNC_ERROR_INTERVAL_MS = 4_000;
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -140,12 +147,34 @@ function buildWorkspaceListItem(store: PromptreelStore, tailer: CodexSessionTail
     ...workspace,
     threadCount: threads.length,
     openThreadCount: threads.filter((thread) => thread.status === "open").length,
-    isGenerating: (status?.recentlyUpdatedSessionCount ?? 0) > 0,
+    isGenerating: Boolean(
+      (status?.recentlyUpdatedSessionCount ?? 0) > 0
+      || (status?.lastSessionUpdateAt
+        && Date.now() - Date.parse(status.lastSessionUpdateAt) <= LIVE_ACTIVITY_WINDOW_MS)
+    ),
     lastActivityAt: threads[0]?.lastActivityAt ?? null,
     sessionFileCount: status?.sessionFileCount ?? 0,
     recentlyUpdatedSessionCount: status?.recentlyUpdatedSessionCount ?? 0,
     mode: status?.mode ?? "idle",
   };
+}
+
+function hasRecentWorkspaceActivity(
+  status: {
+    recentlyUpdatedSessionCount?: number;
+    lastSessionUpdateAt?: string | null;
+  } | null | undefined
+): boolean {
+  if (!status) {
+    return false;
+  }
+  if ((status.recentlyUpdatedSessionCount ?? 0) > 0) {
+    return true;
+  }
+  if (!status.lastSessionUpdateAt) {
+    return false;
+  }
+  return Date.now() - Date.parse(status.lastSessionUpdateAt) <= LIVE_ACTIVITY_WINDOW_MS;
 }
 
 function buildCloudBootstrapBundle(
@@ -253,6 +282,11 @@ export function buildServer() {
     }
     return cloudStore.getAuthUserByClerkUserId(clerkSession.clerkUserId);
   };
+  const runtimeStatus = {
+    lastCloudSyncAt: null as string | null,
+    lastCloudSyncError: null as string | null,
+    syncInFlight: false,
+  };
 
   app.register(cors, {
     origin: true
@@ -270,7 +304,7 @@ export function buildServer() {
         ...workspace,
         threadCount: threads.length,
         openThreadCount: threads.filter((thread) => thread.status === "open").length,
-        isGenerating: (status?.recentlyUpdatedSessionCount ?? 0) > 0,
+        isGenerating: hasRecentWorkspaceActivity(status),
         lastActivityAt: threads[0]?.lastActivityAt ?? null,
         sessionFileCount: status?.sessionFileCount ?? 0,
         recentlyUpdatedSessionCount: status?.recentlyUpdatedSessionCount ?? 0,
@@ -285,6 +319,54 @@ export function buildServer() {
     homeDir: store.homeDir,
     ingestion: tailer.getStatus()
   }));
+
+  app.get("/api/viewer-status", async (request): Promise<ViewerStatusResponse> => {
+    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
+    if (cloudUser) {
+      const device = await cloudStore.getLatestAuthDeviceForUser(cloudUser.id);
+      const isActive = Boolean(
+        device?.lastSeenAt
+        && Date.now() - Date.parse(device.lastSeenAt) <= CLOUD_DAEMON_ACTIVE_WINDOW_MS
+      );
+      const isConnected = Boolean(
+        device?.lastSeenAt
+        && Date.now() - Date.parse(device.lastSeenAt) <= CLOUD_DAEMON_CONNECTED_WINDOW_MS
+      );
+
+      return {
+        mode: "cloud",
+        daemon: {
+          connected: isConnected,
+          source: "cloud",
+          label: device
+            ? (isActive ? "Syncing live" : isConnected ? "Daemon connected" : "Daemon offline")
+            : "No daemon linked",
+          detail: device?.deviceName ?? null,
+          lastSeenAt: device?.lastSeenAt ?? null,
+          syncState: device ? (isActive ? "active" : isConnected ? "idle" : "disconnected") : "disconnected",
+        },
+      };
+    }
+
+    const ingestion = tailer.getStatus();
+    const hasRecentLocalActivity = ingestion.workspaceStatuses.some((status) => hasRecentWorkspaceActivity(status));
+
+    return {
+      mode: "local",
+      daemon: {
+        connected: ingestion.watcher === "running",
+        source: "local",
+        label: ingestion.watcher === "running" ? "Local daemon running" : "Local daemon stopped",
+        detail: `${ingestion.workspaceStatuses.length} workspace${ingestion.workspaceStatuses.length === 1 ? "" : "s"} watching`,
+        lastSeenAt: ingestion.lastScanAt,
+        syncState: runtimeStatus.lastCloudSyncError
+          ? "error"
+          : hasRecentLocalActivity || runtimeStatus.syncInFlight
+          ? "active"
+          : "idle",
+      },
+    };
+  });
 
   app.get("/api/workspaces", async (request): Promise<WorkspaceListResponse> => {
     const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
@@ -513,15 +595,38 @@ export function buildServer() {
     });
   }
 
-  return { app, store, tailer, cloudStore };
+  return { app, store, tailer, cloudStore, runtimeStatus };
 }
 
 export async function startDaemon() {
-  const { app, store, tailer, cloudStore } = buildServer();
+  const { app, store, tailer, cloudStore, runtimeStatus } = buildServer();
   const port = Number(process.env.PORT ?? process.env.PROMPTLINE_PORT ?? "4312");
   const host = process.env.PROMPTLINE_HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
   const syncedWorkspaceFingerprints = new Map<string, string>();
   let syncInFlight = false;
+  let cloudSyncTimer: NodeJS.Timeout | null = null;
+
+  const getNextCloudSyncInterval = () => {
+    const status = tailer.getStatus();
+    const hasRecentActivity = status.workspaceStatuses.some((workspaceStatus) => hasRecentWorkspaceActivity(workspaceStatus));
+
+    if (hasRecentActivity) {
+      return CLOUD_SYNC_ACTIVE_INTERVAL_MS;
+    }
+    if (runtimeStatus.lastCloudSyncError) {
+      return CLOUD_SYNC_ERROR_INTERVAL_MS;
+    }
+    return CLOUD_SYNC_IDLE_INTERVAL_MS;
+  };
+
+  const scheduleCloudSync = (delayMs = getNextCloudSyncInterval()) => {
+    if (cloudSyncTimer) {
+      clearTimeout(cloudSyncTimer);
+    }
+    cloudSyncTimer = setTimeout(() => {
+      void syncCloudWorkspaces();
+    }, delayMs);
+  };
 
   const syncCloudWorkspaces = async () => {
     if (syncInFlight) {
@@ -533,6 +638,7 @@ export async function startDaemon() {
     }
 
     syncInFlight = true;
+    runtimeStatus.syncInFlight = true;
     try {
       const statusByWorkspace = new Map(
         tailer.getStatus().workspaceStatuses.map((status) => [status.workspaceId, status])
@@ -545,7 +651,7 @@ export async function startDaemon() {
         }
         const status = statusByWorkspace.get(workspace.id);
         const fingerprint = [
-          status?.lastImportAt ?? "",
+          status?.lastSessionUpdateAt ?? "",
           String(status?.recentlyUpdatedSessionCount ?? 0),
           String(promptCount),
         ].join("|");
@@ -563,11 +669,16 @@ export async function startDaemon() {
           bundle
         );
         syncedWorkspaceFingerprints.set(workspace.id, fingerprint);
+        runtimeStatus.lastCloudSyncAt = nowIso();
+        runtimeStatus.lastCloudSyncError = null;
       }
     } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
+      runtimeStatus.lastCloudSyncError = error instanceof Error ? error.message : String(error);
+      console.error(runtimeStatus.lastCloudSyncError);
     } finally {
       syncInFlight = false;
+      runtimeStatus.syncInFlight = false;
+      scheduleCloudSync();
     }
   };
 
@@ -578,12 +689,11 @@ export async function startDaemon() {
   });
   tailer.start();
   void syncCloudWorkspaces();
-  const cloudSyncTimer = setInterval(() => {
-    void syncCloudWorkspaces();
-  }, 5_000);
   store.setDaemonState(process.pid);
   const shutdown = async () => {
-    clearInterval(cloudSyncTimer);
+    if (cloudSyncTimer) {
+      clearTimeout(cloudSyncTimer);
+    }
     tailer.stop();
     store.clearDaemonState();
     await app.close();

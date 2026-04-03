@@ -519,6 +519,7 @@ describe("web view models", () => {
             openThreadCount: 1,
             sessionFileCount: 3,
             recentlyUpdatedSessionCount: 2,
+            lastSessionUpdateAt: "2026-03-30T14:24:30.000Z",
             lastImportAt: "2026-03-30T14:24:00.000Z",
             lastImportResult: {
               importedFiles: 2,

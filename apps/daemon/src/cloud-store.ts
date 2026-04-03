@@ -45,6 +45,8 @@ type CloudBundle = {
   blobs: Array<{ blobId: string; content: string }>;
 };
 
+const CLOUD_SYNC_INSERT_CHUNK_SIZE = 100;
+
 export interface CloudStore {
   ensureReady(): Promise<void>;
   createCliLoginRequest(deviceId: string, deviceName: string | null, ttlMs?: number): Promise<CliLoginRequestRow>;
@@ -60,6 +62,7 @@ export interface CloudStore {
   exchangeCliLoginRequest(loginCode: string, deviceId: string): Promise<CliLoginExchangeResponse>;
   authenticateDaemonToken(daemonToken: string): Promise<{ user: AuthUserProfile; device: AuthDevice } | null>;
   getAuthUserByClerkUserId(clerkUserId: string): Promise<AuthUserProfile | null>;
+  getLatestAuthDeviceForUser(userId: string): Promise<AuthDevice | null>;
   upsertCloudWorkspaceBundle(
     userId: string,
     bundle: CloudBootstrapSyncRequest
@@ -217,6 +220,9 @@ class SqliteCloudStoreAdapter implements CloudStore {
   }
   async getAuthUserByClerkUserId(clerkUserId: string) {
     return this.store.getAuthUserByClerkUserId(clerkUserId);
+  }
+  async getLatestAuthDeviceForUser(userId: string) {
+    return this.store.getLatestAuthDeviceForUser(userId);
   }
   async upsertCloudWorkspaceBundle(userId: string, bundle: CloudBootstrapSyncRequest) {
     return this.store.upsertCloudWorkspaceBundle(userId, bundle);
@@ -554,41 +560,55 @@ class DrizzleCloudStore implements CloudStore {
     return row ? toAuthUser(row) : null;
   }
 
+  async getLatestAuthDeviceForUser(userId: string): Promise<AuthDevice | null> {
+    await this.ensureReady();
+    const row = (
+      await this.db
+        .select()
+        .from(authDevices)
+        .where(eq(authDevices.userId, userId))
+        .orderBy(desc(authDevices.lastSeenAt), authDevices.id)
+        .limit(1)
+    )[0];
+    return row ? toAuthDevice(row) : null;
+  }
+
   async upsertCloudWorkspaceBundle(
     userId: string,
     bundle: CloudBootstrapSyncRequest
   ): Promise<{ workspaceId: string; threadCount: number; promptCount: number; blobCount: number }> {
     await this.ensureReady();
+    const sanitizedBundle = sanitizeCloudBootstrapBundle(bundle);
     await this.db.transaction(async (tx) => {
       const now = nowIso();
       await tx
         .insert(cloudWorkspaces)
         .values({
           userId,
-          workspaceId: bundle.workspace.id,
-          lastActivityAt: bundle.workspace.lastActivityAt,
-          payloadJson: bundle.workspace,
+          workspaceId: sanitizedBundle.workspace.id,
+          lastActivityAt: sanitizedBundle.workspace.lastActivityAt,
+          payloadJson: sanitizedBundle.workspace,
           updatedAt: now,
         })
         .onConflictDoUpdate({
           target: [cloudWorkspaces.userId, cloudWorkspaces.workspaceId],
           set: {
-            lastActivityAt: bundle.workspace.lastActivityAt,
-            payloadJson: bundle.workspace,
+            lastActivityAt: sanitizedBundle.workspace.lastActivityAt,
+            payloadJson: sanitizedBundle.workspace,
             updatedAt: now,
           },
         });
 
-      await tx.delete(cloudThreads).where(and(eq(cloudThreads.userId, userId), eq(cloudThreads.workspaceId, bundle.workspace.id)));
-      await tx.delete(cloudPrompts).where(and(eq(cloudPrompts.userId, userId), eq(cloudPrompts.workspaceId, bundle.workspace.id)));
-      await tx.delete(cloudPromptDetails).where(and(eq(cloudPromptDetails.userId, userId), eq(cloudPromptDetails.workspaceId, bundle.workspace.id)));
-      await tx.delete(cloudBlobs).where(and(eq(cloudBlobs.userId, userId), eq(cloudBlobs.workspaceId, bundle.workspace.id)));
+      await tx.delete(cloudThreads).where(and(eq(cloudThreads.userId, userId), eq(cloudThreads.workspaceId, sanitizedBundle.workspace.id)));
+      await tx.delete(cloudPrompts).where(and(eq(cloudPrompts.userId, userId), eq(cloudPrompts.workspaceId, sanitizedBundle.workspace.id)));
+      await tx.delete(cloudPromptDetails).where(and(eq(cloudPromptDetails.userId, userId), eq(cloudPromptDetails.workspaceId, sanitizedBundle.workspace.id)));
+      await tx.delete(cloudBlobs).where(and(eq(cloudBlobs.userId, userId), eq(cloudBlobs.workspaceId, sanitizedBundle.workspace.id)));
 
-      if (bundle.threads.length > 0) {
+      for (const chunk of chunkArray(sanitizedBundle.threads, CLOUD_SYNC_INSERT_CHUNK_SIZE)) {
         await tx.insert(cloudThreads).values(
-          bundle.threads.map((thread) => ({
+          chunk.map((thread) => ({
             userId,
-            workspaceId: bundle.workspace.id,
+            workspaceId: sanitizedBundle.workspace.id,
             threadId: thread.id,
             lastActivityAt: thread.lastActivityAt,
             payloadJson: thread,
@@ -596,11 +616,11 @@ class DrizzleCloudStore implements CloudStore {
           }))
         );
       }
-      if (bundle.prompts.length > 0) {
+      for (const chunk of chunkArray(sanitizedBundle.prompts, CLOUD_SYNC_INSERT_CHUNK_SIZE)) {
         await tx.insert(cloudPrompts).values(
-          bundle.prompts.map((prompt) => ({
+          chunk.map((prompt) => ({
             userId,
-            workspaceId: bundle.workspace.id,
+            workspaceId: sanitizedBundle.workspace.id,
             promptId: prompt.id,
             threadLookupKey: getThreadLookupKey(prompt),
             startedAt: prompt.startedAt,
@@ -609,22 +629,22 @@ class DrizzleCloudStore implements CloudStore {
           }))
         );
       }
-      if (bundle.promptDetails.length > 0) {
+      for (const chunk of chunkArray(sanitizedBundle.promptDetails, CLOUD_SYNC_INSERT_CHUNK_SIZE)) {
         await tx.insert(cloudPromptDetails).values(
-          bundle.promptDetails.map((detail) => ({
+          chunk.map((detail) => ({
             userId,
-            workspaceId: bundle.workspace.id,
+            workspaceId: sanitizedBundle.workspace.id,
             promptId: detail.id,
             payloadJson: detail,
             updatedAt: now,
           }))
         );
       }
-      if (bundle.blobs.length > 0) {
+      for (const chunk of chunkArray(sanitizedBundle.blobs, CLOUD_SYNC_INSERT_CHUNK_SIZE)) {
         await tx.insert(cloudBlobs).values(
-          bundle.blobs.map((blob) => ({
+          chunk.map((blob) => ({
             userId,
-            workspaceId: bundle.workspace.id,
+            workspaceId: sanitizedBundle.workspace.id,
             blobId: blob.blobId,
             content: blob.content,
             updatedAt: now,
@@ -634,10 +654,10 @@ class DrizzleCloudStore implements CloudStore {
     });
 
     return {
-      workspaceId: bundle.workspace.id,
-      threadCount: bundle.threads.length,
-      promptCount: bundle.prompts.length,
-      blobCount: bundle.blobs.length,
+      workspaceId: sanitizedBundle.workspace.id,
+      threadCount: sanitizedBundle.threads.length,
+      promptCount: sanitizedBundle.prompts.length,
+      blobCount: sanitizedBundle.blobs.length,
     };
   }
 
@@ -711,6 +731,36 @@ class DrizzleCloudStore implements CloudStore {
     }
     return row.content;
   }
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  if (items.length === 0) {
+    return [];
+  }
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function sanitizeCloudBootstrapBundle(bundle: CloudBootstrapSyncRequest): CloudBootstrapSyncRequest {
+  return sanitizeForPostgresJson(bundle);
+}
+
+function sanitizeForPostgresJson<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.replace(/\u0000/g, "") as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForPostgresJson(item)) as T;
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, sanitizeForPostgresJson(item)])
+    ) as T;
+  }
+  return value;
 }
 
 export function createCloudStore(store: PromptreelStore): CloudStore {

@@ -173,6 +173,7 @@ export type WorkspaceIngestionStatus = {
   openThreadCount: number;
   sessionFileCount: number;
   recentlyUpdatedSessionCount: number;
+  lastSessionUpdateAt: string | null;
   lastImportAt: string | null;
   lastImportResult: {
     importedFiles: number;
@@ -191,5 +192,17 @@ export type Health = {
     sessionsRoot: string;
     lastScanAt: string | null;
     workspaceStatuses: WorkspaceIngestionStatus[];
+  };
+};
+
+export type ViewerStatus = {
+  mode: "local" | "cloud";
+  daemon: {
+    connected: boolean;
+    source: "local" | "cloud";
+    label: string;
+    detail: string | null;
+    lastSeenAt: string | null;
+    syncState: "active" | "idle" | "error" | "disconnected";
   };
 };

@@ -3,6 +3,7 @@ import type {
   PromptDetail,
   PromptListItem,
   ThreadSummary,
+  ViewerStatus,
   Workspace
 } from "./types";
 
@@ -87,6 +88,10 @@ export async function fetchWorkspaces(options: RequestOptions = {}): Promise<Wor
 
 export async function fetchHealth(options: RequestOptions = {}): Promise<Health> {
   return getJson<Health>("/health", options);
+}
+
+export async function fetchViewerStatus(options: RequestOptions = {}): Promise<ViewerStatus> {
+  return getJson<ViewerStatus>("/viewer-status", options);
 }
 
 export async function fetchThreads(workspaceId: string, options: RequestOptions = {}): Promise<ThreadSummary[]> {

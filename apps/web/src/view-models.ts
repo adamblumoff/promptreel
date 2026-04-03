@@ -229,6 +229,7 @@ export function getSelectedWorkspaceStatus(
         openThreadCount: workspace.openThreadCount,
         sessionFileCount: workspace.sessionFileCount,
         recentlyUpdatedSessionCount: workspace.recentlyUpdatedSessionCount,
+        lastSessionUpdateAt: null,
         lastImportAt: null,
         lastImportResult: null,
         lastError: null

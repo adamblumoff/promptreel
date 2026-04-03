@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   GitCommitHorizontal,
+  LogOut,
   RefreshCw,
 } from "lucide-react";
 import type {
@@ -111,6 +112,9 @@ export function TopBar({
   isThreadsLoading,
   isRescanning,
   onRescan,
+  viewerMode,
+  daemonStatus,
+  account,
 }: {
   workspaces: WorkspaceSidebarItemViewModel[];
   isWorkspacesLoading: boolean;
@@ -122,6 +126,21 @@ export function TopBar({
   isThreadsLoading: boolean;
   isRescanning: boolean;
   onRescan: () => void;
+  viewerMode: "local" | "cloud";
+  daemonStatus: {
+    connected: boolean;
+    label: string;
+    detail: string | null;
+    syncState: "active" | "idle" | "error" | "disconnected";
+    lastSeenLabel: string | null;
+  } | null;
+  account: {
+    label: string;
+    sublabel: string | null;
+    avatarUrl: string | null;
+    canSignOut: boolean;
+    onSignOut?: () => void;
+  } | null;
 }) {
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
   const [threadDropdownOpen, setThreadDropdownOpen] = useState(false);
@@ -306,6 +325,39 @@ export function TopBar({
 
       {/* Right */}
       <div className="flex items-center gap-3">
+        <div className="hidden items-center gap-2 md:flex">
+          <span className="inline-flex items-center rounded-full border border-brd bg-white px-2.5 py-1 text-[11px] font-medium text-t2">
+            {viewerMode === "cloud" ? "Cloud mode" : "Local mode"}
+          </span>
+          {daemonStatus && (
+            <div
+              className={cn(
+                "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px]",
+                daemonStatus.syncState === "error"
+                  ? "border-red-200 bg-red-dim text-red"
+                  : daemonStatus.connected
+                  ? "border-green/20 bg-green-dim text-green"
+                  : "border-brd bg-white text-t3"
+              )}
+              title={daemonStatus.detail ?? daemonStatus.label}
+            >
+              <span
+                className={cn(
+                  "size-1.5 rounded-full",
+                  daemonStatus.syncState === "error"
+                    ? "bg-red"
+                    : daemonStatus.connected
+                    ? "bg-green"
+                    : "bg-t4"
+                )}
+              />
+              <span>{daemonStatus.label}</span>
+              {daemonStatus.lastSeenLabel && (
+                <span className="text-t4">· {daemonStatus.lastSeenLabel}</span>
+              )}
+            </div>
+          )}
+        </div>
         {selectedWorkspace?.isGenerating && (
           <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-green">
             <span className="size-1.5 rounded-full bg-green breathe" />
@@ -321,6 +373,39 @@ export function TopBar({
         >
           <RefreshCw className={cn("size-[13px]", isRescanning && "spinner")} />
         </button>
+        {account && (
+          <div className="flex items-center gap-2 rounded-full border border-brd bg-white pl-1.5 pr-1.5 py-1">
+            <div className="flex items-center gap-2 min-w-0">
+              {account.avatarUrl ? (
+                <img
+                  src={account.avatarUrl}
+                  alt=""
+                  className="size-6 rounded-full object-cover"
+                />
+              ) : (
+                <span className="inline-flex size-6 items-center justify-center rounded-full bg-gz-2 text-[11px] font-semibold text-t2">
+                  {account.label.slice(0, 1).toUpperCase()}
+                </span>
+              )}
+              <div className="hidden min-w-0 md:block">
+                <p className="max-w-[160px] truncate text-[12px] font-medium text-t1">{account.label}</p>
+                {account.sublabel && (
+                  <p className="max-w-[180px] truncate text-[10px] text-t4">{account.sublabel}</p>
+                )}
+              </div>
+            </div>
+            {account.canSignOut && account.onSignOut && (
+              <button
+                type="button"
+                onClick={account.onSignOut}
+                aria-label="sign out"
+                className="inline-flex size-7 items-center justify-center rounded-full border-0 bg-transparent text-t3 transition-colors hover:bg-gz-1 hover:text-t1 pressable"
+              >
+                <LogOut className="size-3.5" strokeWidth={1.6} />
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </header>
   );

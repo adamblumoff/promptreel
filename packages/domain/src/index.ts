@@ -289,6 +289,7 @@ export interface WorkspaceIngestionStatus {
   openThreadCount: number;
   sessionFileCount: number;
   recentlyUpdatedSessionCount: number;
+  lastSessionUpdateAt: string | null;
   lastImportAt: string | null;
   lastImportResult: {
     importedFiles: number;
@@ -309,6 +310,7 @@ export interface IngestionStatus {
     sessionFileCount: number;
     recentlyUpdatedSessionCount: number;
     openPromptCount: number;
+    lastSessionUpdateAt: string | null;
     lastImportAt: string | null;
     lastImportResult: {
       importedFiles: number;

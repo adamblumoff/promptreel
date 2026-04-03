@@ -1108,6 +1108,25 @@ export class PromptreelStore {
     return row ?? null;
   }
 
+  getLatestAuthDeviceForUser(userId: string): AuthDevice | null {
+    const db = this.openRegistry();
+    const row = db.prepare(
+      `SELECT
+         id,
+         user_id AS userId,
+         device_id AS deviceId,
+         device_name AS deviceName,
+         created_at AS createdAt,
+         last_seen_at AS lastSeenAt
+       FROM auth_devices
+       WHERE user_id = ?
+       ORDER BY last_seen_at DESC, id ASC
+       LIMIT 1`
+    ).get(userId) as AuthDevice | undefined;
+    db.close();
+    return row ?? null;
+  }
+
   upsertCloudWorkspaceBundle(
     userId: string,
     bundle: {

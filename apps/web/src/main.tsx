@@ -1,4 +1,4 @@
-import { ClerkProvider } from "@clerk/clerk-react";
+import { ClerkProvider, useClerk, useUser } from "@clerk/clerk-react";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
@@ -19,16 +19,42 @@ function AppRoot() {
   );
 }
 
+function AuthenticatedAppRoot() {
+  const { isSignedIn, user } = useUser();
+  const { signOut } = useClerk();
+
+  const account = isSignedIn
+    ? {
+        label: user?.fullName ?? user?.username ?? user?.primaryEmailAddress?.emailAddress ?? "Signed in",
+        sublabel: user?.primaryEmailAddress?.emailAddress ?? null,
+        avatarUrl: user?.imageUrl ?? null,
+        canSignOut: true,
+        onSignOut: () => void signOut({ redirectUrl: window.location.origin }),
+      }
+    : {
+        label: "Not signed in",
+        sublabel: "Local mode",
+        avatarUrl: null,
+        canSignOut: false,
+      };
+
+  return (
+    <React.StrictMode>
+      <App viewerMode={isHostedViewer ? "cloud" : "local"} account={account} />
+    </React.StrictMode>
+  );
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   clerkPublishableKey ? (
     <ClerkProvider publishableKey={clerkPublishableKey}>
       <ClerkApiBridge />
       {isHostedViewer ? (
         <CloudViewerGate>
-          <AppRoot />
+          <AuthenticatedAppRoot />
         </CloudViewerGate>
       ) : (
-        <AppRoot />
+        <AuthenticatedAppRoot />
       )}
     </ClerkProvider>
   ) : (

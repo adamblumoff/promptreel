@@ -44,6 +44,8 @@ import {
   toEligibleWorkspacePath
 } from "@promptreel/storage";
 
+export const LIVE_ACTIVITY_WINDOW_MS = 90_000;
+
 interface JsonRpcResponse {
   id: number;
   result?: unknown;
@@ -1329,6 +1331,7 @@ export class CodexSessionTailer {
         openThreadCount: threads.filter((thread) => thread.status === "open").length,
         sessionFileCount: 0,
         recentlyUpdatedSessionCount: 0,
+        lastSessionUpdateAt: null,
         lastImportAt: null,
         lastImportResult: null,
         lastError: null
@@ -1347,6 +1350,7 @@ export class CodexSessionTailer {
         sessionFileCount: status.sessionFileCount,
         recentlyUpdatedSessionCount: status.recentlyUpdatedSessionCount,
         openPromptCount: status.openThreadCount,
+        lastSessionUpdateAt: status.lastSessionUpdateAt,
         lastImportAt: status.lastImportAt,
         lastImportResult: status.lastImportResult,
         lastError: status.lastError
@@ -1365,7 +1369,7 @@ export class CodexSessionTailer {
     this.scanning = true;
     try {
       const matches = discoverCodexSessionFiles(this.sessionsRoot);
-      const recentCutoff = Date.now() - this.pollingIntervalMs * 3;
+      const recentCutoff = Date.now() - LIVE_ACTIVITY_WINDOW_MS;
       const groupedMatches = new Map<string, CodexSessionFileMatch[]>();
       for (const match of matches) {
         const folderPath = match.normalizedCwd ?? this.store.resolveWorkspacePathAlias(match.cwd);
@@ -1395,6 +1399,13 @@ export class CodexSessionTailer {
             .map((match) => match.sessionId)
             .filter((sessionId): sessionId is string => Boolean(sessionId))
         );
+        const lastSessionUpdateAtMs = workspaceMatches.reduce<number | null>((latest, match) => {
+          const timestamp = typeof match.mtimeMs === "number" ? match.mtimeMs : null;
+          if (timestamp == null) {
+            return latest;
+          }
+          return latest == null || timestamp > latest ? timestamp : latest;
+        }, null);
         this.recentlyUpdatedSessionIdsByWorkspace.set(workspace.id, recentlyUpdatedSessionIds);
         try {
           const result = importSessionFiles(this.store, workspaceMatches, {
@@ -1410,6 +1421,7 @@ export class CodexSessionTailer {
             openThreadCount: threads.filter((thread) => thread.status === "open").length,
             sessionFileCount: workspaceMatches.length,
             recentlyUpdatedSessionCount: workspaceMatches.filter((match) => (match.mtimeMs ?? 0) >= recentCutoff).length,
+            lastSessionUpdateAt: lastSessionUpdateAtMs ? new Date(lastSessionUpdateAtMs).toISOString() : previous?.lastSessionUpdateAt ?? null,
             lastImportAt: workspaceMatches.length > 0 ? nowIso() : previous?.lastImportAt ?? null,
             lastImportResult: result.byWorkspace[workspace.id]
               ?? (workspaceMatches.length > 0
@@ -1428,6 +1440,7 @@ export class CodexSessionTailer {
             openThreadCount: previous?.openThreadCount ?? threads.filter((thread) => thread.status === "open").length,
             sessionFileCount: workspaceMatches.length,
             recentlyUpdatedSessionCount: workspaceMatches.filter((match) => (match.mtimeMs ?? 0) >= recentCutoff).length,
+            lastSessionUpdateAt: lastSessionUpdateAtMs ? new Date(lastSessionUpdateAtMs).toISOString() : previous?.lastSessionUpdateAt ?? null,
             lastImportAt: previous?.lastImportAt ?? null,
             lastImportResult: previous?.lastImportResult ?? null,
             lastError: error instanceof Error ? error.message : String(error)

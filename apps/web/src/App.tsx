@@ -1,6 +1,7 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchBlob,
+  fetchViewerStatus,
   fetchPromptDetail,
   fetchPrompts,
   fetchThreads,
@@ -12,6 +13,7 @@ import type {
   PromptDetail,
   PromptListItem,
   ThreadSummary,
+  ViewerStatus,
   Workspace,
 } from "./types";
 import {
@@ -67,10 +69,37 @@ const IDLE_THREADS_POLL_MS = 12_000;
 const ACTIVE_PROMPTS_POLL_MS = 2_000;
 const IDLE_PROMPTS_POLL_MS = 10_000;
 const ACTIVE_DETAIL_POLL_MS = 3_000;
+const HOSTED_WORKSPACE_POLL_MS = 4_000;
+const HOSTED_ACTIVE_THREADS_POLL_MS = 2_000;
+const HOSTED_IDLE_THREADS_POLL_MS = 5_000;
+const HOSTED_ACTIVE_PROMPTS_POLL_MS = 1_000;
+const HOSTED_IDLE_PROMPTS_POLL_MS = 3_000;
+const HOSTED_ACTIVE_DETAIL_POLL_MS = 1_500;
+const VIEWER_STATUS_POLL_MS = 3_000;
+const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+function formatLastSeenLabel(timestamp: string | null): string | null {
+  if (!timestamp) {
+    return null;
+  }
+  const deltaMinutes = Math.round((Date.parse(timestamp) - Date.now()) / 60_000);
+  return `seen ${relativeTimeFormatter.format(deltaMinutes, "minute")}`;
+}
 
 /* ─── App ───────────────────────────────────────────────────────────────── */
 
-export function App() {
+type AppProps = {
+  viewerMode?: "local" | "cloud";
+  account?: {
+    label: string;
+    sublabel: string | null;
+    avatarUrl: string | null;
+    canSignOut: boolean;
+    onSignOut?: () => void;
+  } | null;
+};
+
+export function App({ viewerMode = "local", account = null }: AppProps) {
   const isCliLoginRoute = typeof window !== "undefined" && window.location.pathname.startsWith("/cli-login");
   if (isCliLoginRoute) {
     return <CliLoginPage />;
@@ -100,8 +129,10 @@ export function App() {
 
   const [blobCache, setBlobCache] = useState<Record<string, string>>({});
   const [blobLoadingById, setBlobLoadingById] = useState<Record<string, boolean>>({});
+  const [viewerStatus, setViewerStatus] = useState<ViewerStatus | null>(null);
   const detailControllers = useRef<Record<string, AbortController | undefined>>({});
   const previousPromptStatusesRef = useRef<Partial<Record<string, PromptListItem["status"]>>>({});
+  const isHostedViewer = viewerMode === "cloud";
 
   /* visibility */
   useEffect(() => {
@@ -115,6 +146,38 @@ export function App() {
   useEffect(() => persist(KEYS.workspace, selectedWorkspaceId), [selectedWorkspaceId]);
   useEffect(() => persist(KEYS.thread, selectedThreadId), [selectedThreadId]);
   useEffect(() => persist(KEYS.transcriptOrder, transcriptOrder), [transcriptOrder]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    let live = true;
+    let ctrl: AbortController | null = null;
+    const go = async () => {
+      ctrl?.abort();
+      ctrl = new AbortController();
+      try {
+        const nextStatus = await fetchViewerStatus({ signal: ctrl.signal });
+        if (!live) {
+          return;
+        }
+        setViewerStatus(nextStatus);
+      } catch (error) {
+        if (!live || isAbort(error)) {
+          return;
+        }
+      }
+    };
+
+    void go();
+    const id = setInterval(() => void go(), VIEWER_STATUS_POLL_MS);
+    return () => {
+      live = false;
+      ctrl?.abort();
+      clearInterval(id);
+    };
+  }, [visible]);
 
   /* ── fetch workspaces ─────────────────────────────────────────────────── */
 
@@ -141,9 +204,9 @@ export function App() {
     };
 
     void go();
-    const id = setInterval(() => void go(), WORKSPACE_POLL_MS);
+    const id = setInterval(() => void go(), isHostedViewer ? HOSTED_WORKSPACE_POLL_MS : WORKSPACE_POLL_MS);
     return () => { live = false; ctrl?.abort(); clearInterval(id); };
-  }, [visible]);
+  }, [isHostedViewer, visible]);
 
   /* ── fetch threads ────────────────────────────────────────────────────── */
 
@@ -155,7 +218,9 @@ export function App() {
     let live = true;
     let ctrl: AbortController | null = null;
     const hasCached = Boolean(cachedThreads);
-    const interval = selectedWorkspace?.isGenerating ? ACTIVE_THREADS_POLL_MS : IDLE_THREADS_POLL_MS;
+    const interval = selectedWorkspace?.isGenerating
+      ? (isHostedViewer ? HOSTED_ACTIVE_THREADS_POLL_MS : ACTIVE_THREADS_POLL_MS)
+      : (isHostedViewer ? HOSTED_IDLE_THREADS_POLL_MS : IDLE_THREADS_POLL_MS);
 
     const go = async () => {
       ctrl?.abort();
@@ -175,7 +240,7 @@ export function App() {
     void go();
     const id = setInterval(() => void go(), interval);
     return () => { live = false; ctrl?.abort(); clearInterval(id); };
-  }, [cachedThreads, selectedWorkspace?.isGenerating, visible, selectedWorkspaceId]);
+  }, [cachedThreads, isHostedViewer, selectedWorkspace?.isGenerating, visible, selectedWorkspaceId]);
 
   /* ── fetch prompts ────────────────────────────────────────────────────── */
 
@@ -193,7 +258,9 @@ export function App() {
     let ctrl: AbortController | null = null;
     const ck = cacheKey(selectedWorkspaceId, selectedThreadId);
     const hasCached = Boolean(cachedPrompts);
-    const interval = selThread?.openPromptCount ? ACTIVE_PROMPTS_POLL_MS : IDLE_PROMPTS_POLL_MS;
+    const interval = selThread?.openPromptCount
+      ? (isHostedViewer ? HOSTED_ACTIVE_PROMPTS_POLL_MS : ACTIVE_PROMPTS_POLL_MS)
+      : (isHostedViewer ? HOSTED_IDLE_PROMPTS_POLL_MS : IDLE_PROMPTS_POLL_MS);
 
     const go = async () => {
       ctrl?.abort();
@@ -216,7 +283,7 @@ export function App() {
     void go();
     const id = setInterval(() => void go(), interval);
     return () => { live = false; ctrl?.abort(); clearInterval(id); };
-  }, [cachedPrompts, visible, selThread?.openPromptCount, selectedThreadId, selThreadKey, selectedWorkspaceId]);
+  }, [cachedPrompts, isHostedViewer, visible, selThread?.openPromptCount, selectedThreadId, selThreadKey, selectedWorkspaceId]);
 
   const prompts = pKey ? (promptsByKey[pKey] ?? []) : [];
 
@@ -266,9 +333,12 @@ export function App() {
     if (!detailsById[expandedPromptId]) void loadDetail(selectedWorkspaceId, expandedPromptId);
     if (ep.status !== "in_progress") return;
 
-    const id = setInterval(() => void loadDetail(selectedWorkspaceId, expandedPromptId, true), ACTIVE_DETAIL_POLL_MS);
+    const id = setInterval(
+      () => void loadDetail(selectedWorkspaceId, expandedPromptId, true),
+      isHostedViewer ? HOSTED_ACTIVE_DETAIL_POLL_MS : ACTIVE_DETAIL_POLL_MS
+    );
     return () => clearInterval(id);
-  }, [expandedPromptId, visible, detailsById, prompts, selectedWorkspaceId]);
+  }, [expandedPromptId, isHostedViewer, visible, detailsById, prompts, selectedWorkspaceId]);
 
   useEffect(() => {
     if (!selectedWorkspaceId || !expandedPromptId) return;
@@ -435,6 +505,15 @@ export function App() {
         isThreadsLoading={threadsLoading}
         isRescanning={isRescanning}
         onRescan={() => void handleRescan()}
+        viewerMode={viewerMode}
+        daemonStatus={viewerStatus ? {
+          connected: viewerStatus.daemon.connected,
+          label: viewerStatus.daemon.label,
+          detail: viewerStatus.daemon.detail,
+          syncState: viewerStatus.daemon.syncState,
+          lastSeenLabel: formatLastSeenLabel(viewerStatus.daemon.lastSeenAt),
+        } : null}
+        account={account}
       />
 
       <main className="w-full px-5 py-6">
