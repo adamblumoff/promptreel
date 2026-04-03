@@ -146,6 +146,10 @@ export function TopBar({
   const [threadDropdownOpen, setThreadDropdownOpen] = useState(false);
   const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId);
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
+  const showGeneratingBadge = Boolean(
+    selectedWorkspace?.isGenerating
+    && (viewerMode === "local" || daemonStatus?.syncState === "active")
+  );
 
   return (
     <header className="sticky top-0 z-50 h-13 flex items-center justify-between px-5 bg-white/80 backdrop-blur-xl border-b border-brd">
@@ -358,7 +362,7 @@ export function TopBar({
             </div>
           )}
         </div>
-        {selectedWorkspace?.isGenerating && (
+        {showGeneratingBadge && (
           <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-green">
             <span className="size-1.5 rounded-full bg-green breathe" />
             Generating
