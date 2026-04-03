@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { hostname, platform } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -17,6 +17,8 @@ import { importCodexSessionsForRepo, runLiveDoctor } from "@promptline/codex-ada
 import { PromptlineStore, type CloudAuthState } from "@promptline/storage";
 import { createId, type WorkspaceListItem } from "@promptline/domain";
 
+loadCliEnvFiles();
+
 const program = new Command();
 const store = new PromptlineStore();
 const DEFAULT_CLOUD_BASE_URL = trimTrailingSlash(
@@ -29,6 +31,50 @@ const DEFAULT_WEB_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_WEB_
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function loadCliEnvFiles(): void {
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = resolve(scriptDir, "../../..");
+  const candidates = [
+    resolve(process.cwd(), ".env"),
+    resolve(process.cwd(), ".env.local"),
+    resolve(repoRoot, ".env"),
+    resolve(repoRoot, ".env.local"),
+    resolve(repoRoot, "apps/cli/.env"),
+    resolve(repoRoot, "apps/cli/.env.local"),
+    resolve(repoRoot, "apps/daemon/.env"),
+    resolve(repoRoot, "apps/daemon/.env.local"),
+  ];
+
+  for (const filePath of candidates) {
+    if (!existsSync(filePath)) {
+      continue;
+    }
+    const contents = readFileSync(filePath, "utf8");
+    for (const line of contents.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue;
+      }
+      const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+      if (!match) {
+        continue;
+      }
+      const [, key, rawValue] = match;
+      if (process.env[key] !== undefined) {
+        continue;
+      }
+      let value = rawValue.trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"'))
+        || (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      process.env[key] = value;
+    }
+  }
 }
 
 function getDeviceName(): string {
@@ -116,7 +162,8 @@ async function getJson<TResponse>(apiBaseUrl: string, path: string, token?: stri
 
 function openBrowser(url: string): void {
   if (process.platform === "win32") {
-    spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
+    const escapedUrl = url.replace(/'/g, "''");
+    spawn("powershell", ["-NoProfile", "-Command", `Start-Process '${escapedUrl}'`], { detached: true, stdio: "ignore" }).unref();
     return;
   }
   if (process.platform === "darwin") {
