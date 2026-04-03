@@ -11,6 +11,7 @@
     "start": "node dist/apps/daemon/src/server.js"
   },
   "dependencies": {
+    "@clerk/backend": "^2.14.0",
     "@fastify/cors": "^11.1.0",
     "@promptline/api-contracts": "workspace:*",
     "@promptline/codex-adapter": "workspace:*",

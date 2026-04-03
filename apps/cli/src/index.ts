@@ -1,14 +1,98 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { hostname, platform } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { Command } from "commander";
+import type {
+  AuthWhoamiResponse,
+  CliLoginExchangeResponse,
+  CliLoginStartRequest,
+  CliLoginStartResponse,
+} from "@promptline/api-contracts";
 import { importCodexSessionsForRepo, runLiveDoctor } from "@promptline/codex-adapter";
-import { PromptlineStore } from "@promptline/storage";
+import { PromptlineStore, type CloudAuthState } from "@promptline/storage";
+import { createId } from "@promptline/domain";
 
 const program = new Command();
 const store = new PromptlineStore();
+const DEFAULT_API_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_API_URL ?? "http://127.0.0.1:4312/api");
+const DEFAULT_WEB_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_WEB_URL ?? "http://127.0.0.1:4175");
+
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function getDeviceName(): string {
+  return `${hostname()} (${platform()})`;
+}
+
+function ensureDeviceId(existing: CloudAuthState | null): string {
+  return existing?.deviceId ?? createId("device");
+}
+
+async function postJson<TResponse, TRequest extends object>(
+  apiBaseUrl: string,
+  path: string,
+  body: TRequest,
+  token?: string
+): Promise<TResponse> {
+  const response = await fetch(`${trimTrailingSlash(apiBaseUrl)}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  return response.json() as Promise<TResponse>;
+}
+
+async function getJson<TResponse>(apiBaseUrl: string, path: string, token?: string): Promise<TResponse> {
+  const response = await fetch(`${trimTrailingSlash(apiBaseUrl)}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  return response.json() as Promise<TResponse>;
+}
+
+function openBrowser(url: string): void {
+  if (process.platform === "win32") {
+    spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
+    return;
+  }
+  if (process.platform === "darwin") {
+    spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
+    return;
+  }
+  spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+}
+
+async function pollForCliLoginApproval(
+  apiBaseUrl: string,
+  loginCode: string,
+  deviceId: string
+): Promise<CliLoginExchangeResponse> {
+  const deadline = Date.now() + 5 * 60 * 1000;
+  while (Date.now() < deadline) {
+    const result = await postJson<CliLoginExchangeResponse, { loginCode: string; deviceId: string }>(
+      apiBaseUrl,
+      "/auth/cli/exchange",
+      { loginCode, deviceId }
+    );
+    if (result.status === "approved" || result.status === "expired" || result.status === "not_found") {
+      return result;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  throw new Error("Timed out waiting for browser login approval.");
+}
 
 program.name("pl").description("Promptline CLI");
 
@@ -118,6 +202,76 @@ program
         process.exitCode = result.ok ? 0 : 1;
       })
   );
+
+program
+  .command("login")
+  .description("Connect this machine to Promptline Cloud")
+  .option("--api-url <apiUrl>", "Promptline Cloud API base URL", DEFAULT_API_BASE_URL)
+  .option("--web-url <webUrl>", "Promptline Cloud web base URL", DEFAULT_WEB_BASE_URL)
+  .action(async (options: { apiUrl: string; webUrl: string }) => {
+    const existing = store.getCloudAuthState();
+    const deviceId = ensureDeviceId(existing);
+    const deviceName = existing?.deviceName ?? getDeviceName();
+    const apiBaseUrl = trimTrailingSlash(options.apiUrl);
+    const webBaseUrl = trimTrailingSlash(options.webUrl);
+
+    const start = await postJson<CliLoginStartResponse, CliLoginStartRequest>(
+      apiBaseUrl,
+      "/auth/cli/start",
+      {
+        deviceId,
+        deviceName,
+      }
+    );
+
+    const loginUrlObject = new URL(start.loginUrl);
+    const desiredWebBaseUrl = new URL(webBaseUrl);
+    loginUrlObject.protocol = desiredWebBaseUrl.protocol;
+    loginUrlObject.host = desiredWebBaseUrl.host;
+    const loginUrl = loginUrlObject.toString();
+    console.log(`Opening browser for Promptline Cloud login...\n${loginUrl}`);
+    openBrowser(loginUrl);
+
+    const exchange = await pollForCliLoginApproval(apiBaseUrl, start.loginCode, deviceId);
+    if (exchange.status !== "approved" || !exchange.daemonToken) {
+      throw new Error(
+        exchange.status === "expired"
+          ? "Login link expired before approval completed."
+          : "Login request was not approved."
+      );
+    }
+
+    store.setCloudAuthState({
+      apiBaseUrl,
+      webBaseUrl,
+      deviceId,
+      deviceName,
+      daemonToken: exchange.daemonToken,
+      linkedAt: new Date().toISOString(),
+    });
+
+    console.log(JSON.stringify({
+      ok: true,
+      apiBaseUrl,
+      webBaseUrl,
+      deviceId,
+      user: exchange.user,
+      device: exchange.device,
+      message: "Promptline Cloud login succeeded."
+    }, null, 2));
+  });
+
+program
+  .command("whoami")
+  .description("Show the connected Promptline Cloud account")
+  .action(async () => {
+    const authState = store.getCloudAuthState();
+    if (!authState?.daemonToken) {
+      throw new Error("Not logged in. Run `pl login` first.");
+    }
+    const result = await getJson<AuthWhoamiResponse>(authState.apiBaseUrl, "/auth/me", authState.daemonToken);
+    console.log(JSON.stringify(result, null, 2));
+  });
 
 program.parseAsync(process.argv).catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));

@@ -1,0 +1,174 @@
+import type { ReactNode } from "react";
+import { SignInButton, SignedIn, SignedOut, useAuth, useUser } from "@clerk/clerk-react";
+import { useEffect, useMemo, useState } from "react";
+import { completeCliLogin, getApiBaseUrl } from "./api";
+
+const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY?.trim() ?? "";
+
+export function CliLoginPage() {
+  const params = useMemo(() => new URLSearchParams(window.location.search), []);
+  const loginCode = params.get("code");
+  const deviceId = params.get("deviceId");
+  const deviceName = params.get("deviceName");
+
+  return (
+    <div className="min-h-dvh bg-gz-0 px-5 py-10 text-t1">
+      <div className="mx-auto flex min-h-[70vh] max-w-xl flex-col justify-center gap-6">
+        <div className="space-y-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-t3">Promptline Cloud</p>
+          <h1 className="text-3xl font-semibold tracking-[-0.03em] text-balance">Connect this machine</h1>
+          <p className="text-sm leading-7 text-t2">
+            Sign in with GitHub to connect your local Promptline daemon to your hosted account.
+          </p>
+        </div>
+
+        {!clerkPublishableKey ? (
+          <AuthCard>
+            <p className="text-sm leading-7 text-t2">
+              Clerk is not configured yet. Set <code>VITE_CLERK_PUBLISHABLE_KEY</code> for this hosted app first.
+            </p>
+          </AuthCard>
+        ) : !loginCode || !deviceId ? (
+          <AuthCard>
+            <p className="text-sm leading-7 text-t2">
+              This login link is missing the device handshake details. Re-run <code>pl login</code> to generate a fresh
+              link.
+            </p>
+          </AuthCard>
+        ) : (
+          <>
+            <AuthCard>
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-t3">Machine</p>
+                <p className="text-sm font-medium text-t1">{deviceName || deviceId}</p>
+                <p className="text-xs text-t3">{deviceId}</p>
+              </div>
+            </AuthCard>
+
+            <SignedOut>
+              <AuthCard>
+                <div className="space-y-4">
+                  <p className="text-sm leading-7 text-t2">
+                    Continue with GitHub to authorize this machine. Once you finish, the CLI will pick up the connection
+                    automatically.
+                  </p>
+                  <SignInButton mode="modal">
+                    <button
+                      type="button"
+                      className="inline-flex items-center rounded-full bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:bg-black/90"
+                    >
+                      Continue to sign in
+                    </button>
+                  </SignInButton>
+                </div>
+              </AuthCard>
+            </SignedOut>
+
+            <SignedIn>
+              <CliLoginApprovalCard
+                loginCode={loginCode}
+                deviceId={deviceId}
+                deviceName={deviceName}
+              />
+            </SignedIn>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CliLoginApprovalCard(props: {
+  loginCode: string;
+  deviceId: string;
+  deviceName: string | null;
+}) {
+  const { getToken } = useAuth();
+  const { user } = useUser();
+  const [status, setStatus] = useState<"linking" | "linked" | "error">("linking");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      setStatus("linking");
+      setError(null);
+      try {
+        const sessionToken = await getToken();
+        if (!sessionToken) {
+          throw new Error("Clerk session token is unavailable.");
+        }
+
+        await completeCliLogin(
+          {
+            loginCode: props.loginCode,
+            deviceId: props.deviceId,
+            deviceName: props.deviceName,
+          },
+          sessionToken,
+          {
+            email: user?.primaryEmailAddress?.emailAddress ?? null,
+            name: user?.fullName ?? user?.username ?? null,
+            avatarUrl: user?.imageUrl ?? null,
+          }
+        );
+
+        if (cancelled) {
+          return;
+        }
+        setStatus("linked");
+      } catch (nextError) {
+        if (cancelled) {
+          return;
+        }
+        setStatus("error");
+        setError(nextError instanceof Error ? nextError.message : "Unable to connect this machine right now.");
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [getToken, props.deviceId, props.deviceName, props.loginCode, user?.fullName, user?.imageUrl, user?.primaryEmailAddress?.emailAddress, user?.username]);
+
+  return (
+    <AuthCard>
+      {status === "linking" ? (
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-t1">Linking your machine…</p>
+          <p className="text-sm leading-7 text-t2">
+            Promptline is connecting this browser session to the local CLI handshake.
+          </p>
+        </div>
+      ) : null}
+
+      {status === "linked" ? (
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-t1">This machine is connected.</p>
+          <p className="text-sm leading-7 text-t2">
+            You can return to the terminal now. The CLI will store a daemon token and use{" "}
+            <code>{getApiBaseUrl()}</code> for future Promptline Cloud requests.
+          </p>
+        </div>
+      ) : null}
+
+      {status === "error" ? (
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-red">Connection failed.</p>
+          <p className="text-sm leading-7 text-t2">{error ?? "Unable to complete this CLI login."}</p>
+        </div>
+      ) : null}
+    </AuthCard>
+  );
+}
+
+function AuthCard(props: { children: ReactNode }) {
+  return (
+    <div className="rounded-3xl border border-brd bg-white px-6 py-6 shadow-[0_18px_60px_-30px_rgba(17,24,39,0.2)]">
+      {props.children}
+    </div>
+  );
+}

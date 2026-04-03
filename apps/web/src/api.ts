@@ -6,7 +6,12 @@ import type {
   Workspace
 } from "./types";
 
-const API_BASE = "http://127.0.0.1:4312/api";
+const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.trim();
+const API_BASE = configuredApiBase
+  ? configuredApiBase.replace(/\/+$/, "")
+  : typeof window !== "undefined" && !["127.0.0.1", "localhost"].includes(window.location.hostname)
+    ? `${window.location.origin}/api`
+    : "http://127.0.0.1:4312/api";
 
 type RequestOptions = {
   signal?: AbortSignal;
@@ -29,6 +34,26 @@ async function postJson<T>(path: string, options: RequestOptions = {}): Promise<
       "Content-Type": "application/json"
     },
     body: "{}",
+    signal: options.signal
+  });
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+async function postJsonWithBody<T>(
+  path: string,
+  body: unknown,
+  options: RequestOptions & { headers?: Record<string, string> } = {}
+): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers ?? {})
+    },
+    body: JSON.stringify(body),
     signal: options.signal
   });
   if (!response.ok) {
@@ -93,4 +118,25 @@ export async function fetchBlob(
     options
   );
   return data.content;
+}
+
+export function getApiBaseUrl(): string {
+  return API_BASE;
+}
+
+export async function completeCliLogin(
+  input: { loginCode: string; deviceId: string; deviceName: string | null },
+  sessionToken: string,
+  userProfile: { email: string | null; name: string | null; avatarUrl: string | null },
+  options: RequestOptions = {}
+): Promise<{ ok: true }> {
+  return postJsonWithBody<{ ok: true }>("/auth/cli/complete", input, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${sessionToken}`,
+      ...(userProfile.email ? { "x-promptline-email": userProfile.email } : {}),
+      ...(userProfile.name ? { "x-promptline-name": userProfile.name } : {}),
+      ...(userProfile.avatarUrl ? { "x-promptline-avatar": userProfile.avatarUrl } : {}),
+    },
+  });
 }

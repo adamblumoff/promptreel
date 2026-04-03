@@ -318,6 +318,25 @@ export interface IngestionStatus {
   }>;
 }
 
+export interface AuthUserProfile {
+  id: string;
+  clerkUserId: string;
+  email: string | null;
+  name: string | null;
+  avatarUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuthDevice {
+  id: string;
+  userId: string;
+  deviceId: string;
+  deviceName: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+}
+
 export function createId(prefix: string): string {
   return `${prefix}_${randomUUID()}`;
 }

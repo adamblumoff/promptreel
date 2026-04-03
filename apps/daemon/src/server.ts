@@ -1,8 +1,16 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { fileURLToPath } from "node:url";
+import { verifyToken } from "@clerk/backend";
 import type {
+  AuthWhoamiResponse,
   BlobResponse,
+  CliLoginCompleteRequest,
+  CliLoginCompleteResponse,
+  CliLoginExchangeRequest,
+  CliLoginExchangeResponse,
+  CliLoginStartRequest,
+  CliLoginStartResponse,
   FileHistoryResponse,
   HealthResponse,
   PlanTraceResponse,
@@ -19,17 +27,66 @@ import type {
 } from "@promptline/api-contracts";
 import { CodexSessionTailer } from "@promptline/codex-adapter";
 import { PromptlineStore } from "@promptline/storage";
-import type { WorkspaceListItem } from "@promptline/domain";
+import type { AuthUserProfile, WorkspaceListItem } from "@promptline/domain";
+
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function getBearerToken(headers: Record<string, unknown>): string | null {
+  const raw = typeof headers.authorization === "string" ? headers.authorization : null;
+  if (!raw) {
+    return null;
+  }
+  const match = raw.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() ?? null;
+}
+
+async function verifyClerkSessionToken(token: string): Promise<{ clerkUserId: string } | null> {
+  const secretKey = process.env.CLERK_SECRET_KEY?.trim();
+  if (!secretKey) {
+    return null;
+  }
+
+  try {
+    const verified = await verifyToken(token, {
+      secretKey,
+      authorizedParties: process.env.CLERK_AUTHORIZED_PARTIES
+        ? process.env.CLERK_AUTHORIZED_PARTIES.split(",").map((value) => value.trim()).filter(Boolean)
+        : undefined,
+    });
+    const clerkUserId = typeof verified.sub === "string" ? verified.sub : null;
+    return clerkUserId ? { clerkUserId } : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildCliLoginUrl(loginCode: string, deviceId: string, deviceName: string | null): string {
+  const baseUrl = trimTrailingSlash(
+    process.env.PROMPTLINE_WEB_URL?.trim()
+    || process.env.APP_URL?.trim()
+    || "http://127.0.0.1:4175"
+  );
+  const url = new URL(`${baseUrl}/cli-login`);
+  url.searchParams.set("code", loginCode);
+  url.searchParams.set("deviceId", deviceId);
+  if (deviceName) {
+    url.searchParams.set("deviceName", deviceName);
+  }
+  return url.toString();
+}
 
 export function buildServer() {
   const app = Fastify({ logger: false });
   const store = new PromptlineStore();
   const tailer = new CodexSessionTailer(store);
-  const notFound = (message: string) => {
+  const httpError = (statusCode: number, message: string) => {
     const error = new Error(message) as Error & { statusCode?: number };
-    error.statusCode = 404;
+    error.statusCode = statusCode;
     return error;
   };
+  const notFound = (message: string) => httpError(404, message);
 
   app.register(cors, {
     origin: true
@@ -150,14 +207,94 @@ export function buildServer() {
     }
   );
 
+  app.post<{ Body: CliLoginStartRequest }>("/api/auth/cli/start", async (request): Promise<CliLoginStartResponse> => {
+    const loginRequest = store.createCliLoginRequest(request.body.deviceId, request.body.deviceName);
+    return {
+      loginCode: loginRequest.loginCode,
+      expiresAt: loginRequest.expiresAt,
+      loginUrl: buildCliLoginUrl(loginRequest.loginCode, request.body.deviceId, request.body.deviceName)
+    };
+  });
+
+  app.post<{ Body: CliLoginExchangeRequest }>("/api/auth/cli/exchange", async (request): Promise<CliLoginExchangeResponse> => {
+    return store.exchangeCliLoginRequest(request.body.loginCode, request.body.deviceId);
+  });
+
+  app.post<{ Body: CliLoginCompleteRequest }>("/api/auth/cli/complete", async (request, reply): Promise<CliLoginCompleteResponse> => {
+    const bearerToken = getBearerToken(request.headers as Record<string, unknown>);
+    if (!bearerToken) {
+      throw httpError(401, "Missing authorization token");
+    }
+
+    const clerkSession = await verifyClerkSessionToken(bearerToken);
+    if (!clerkSession) {
+      throw httpError(401, "Unable to verify Clerk session");
+    }
+
+    const email = typeof request.headers["x-promptline-email"] === "string"
+      ? request.headers["x-promptline-email"]
+      : null;
+    const name = typeof request.headers["x-promptline-name"] === "string"
+      ? request.headers["x-promptline-name"]
+      : null;
+    const avatarUrl = typeof request.headers["x-promptline-avatar"] === "string"
+      ? request.headers["x-promptline-avatar"]
+      : null;
+
+    const approved = store.approveCliLoginRequest({
+      loginCode: request.body.loginCode,
+      clerkUserId: clerkSession.clerkUserId,
+      email,
+      name,
+      avatarUrl,
+      deviceId: request.body.deviceId,
+      deviceName: request.body.deviceName,
+    });
+
+    if (!approved) {
+      throw notFound("Login request was not found or has expired");
+    }
+
+    return { ok: true };
+  });
+
+  app.get("/api/auth/me", async (request, reply): Promise<AuthWhoamiResponse> => {
+    const bearerToken = getBearerToken(request.headers as Record<string, unknown>);
+    if (!bearerToken) {
+      reply.code(401);
+      return {
+        authenticated: false,
+        user: null,
+        device: null,
+      };
+    }
+
+    const auth = store.authenticateDaemonToken(bearerToken);
+    if (!auth) {
+      reply.code(401);
+      return {
+        authenticated: false,
+        user: null,
+        device: null,
+      };
+    }
+
+    return {
+      authenticated: true,
+      user: auth.user,
+      device: auth.device,
+    };
+  });
+
   return { app, store, tailer };
 }
 
 export async function startDaemon() {
   const { app, store, tailer } = buildServer();
-  const port = Number(process.env.PROMPTLINE_PORT ?? "4312");
+  const port = Number(process.env.PORT ?? process.env.PROMPTLINE_PORT ?? "4312");
+  const host = process.env.PROMPTLINE_HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
   await app.listen({
-    host: "127.0.0.1",
+    host,
     port
   });
   tailer.start();

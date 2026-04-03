@@ -1,4 +1,6 @@
 import type {
+  AuthDevice,
+  AuthUserProfile,
   IngestionStatus,
   LiveDoctorResult,
   PromptEventDetail,
@@ -76,4 +78,43 @@ export interface RescanSessionsResponse {
 export interface BlobResponse {
   blobId: string;
   content: string;
+}
+
+export interface CliLoginStartRequest {
+  deviceId: string;
+  deviceName: string | null;
+}
+
+export interface CliLoginStartResponse {
+  loginCode: string;
+  expiresAt: string;
+  loginUrl: string;
+}
+
+export interface CliLoginExchangeRequest {
+  loginCode: string;
+  deviceId: string;
+}
+
+export interface CliLoginExchangeResponse {
+  status: "pending" | "approved" | "expired" | "not_found";
+  daemonToken?: string;
+  user?: AuthUserProfile;
+  device?: AuthDevice;
+}
+
+export interface CliLoginCompleteRequest {
+  loginCode: string;
+  deviceId: string;
+  deviceName: string | null;
+}
+
+export interface CliLoginCompleteResponse {
+  ok: true;
+}
+
+export interface AuthWhoamiResponse {
+  authenticated: boolean;
+  user: AuthUserProfile | null;
+  device: AuthDevice | null;
 }

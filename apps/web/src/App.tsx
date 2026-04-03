@@ -7,6 +7,7 @@ import {
   fetchWorkspaces,
   rescanSessions,
 } from "./api";
+import { CliLoginPage } from "./auth";
 import type {
   PromptDetail,
   PromptListItem,
@@ -70,6 +71,11 @@ const ACTIVE_DETAIL_POLL_MS = 3_000;
 /* ─── App ───────────────────────────────────────────────────────────────── */
 
 export function App() {
+  const isCliLoginRoute = typeof window !== "undefined" && window.location.pathname.startsWith("/cli-login");
+  if (isCliLoginRoute) {
+    return <CliLoginPage />;
+  }
+
   /* state */
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(true);
