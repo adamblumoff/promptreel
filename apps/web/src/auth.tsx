@@ -4,6 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { completeCliLogin, getApiBaseUrl, setApiAuthTokenProvider } from "./api";
 
 const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY?.trim() ?? "";
+const isLocalHost =
+  typeof window !== "undefined"
+  && ["127.0.0.1", "localhost"].includes(window.location.hostname);
+const cliCommandPrefix = isLocalHost ? "pnpm dev:cli --" : "pl";
 
 export function CliLoginPage() {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
@@ -196,17 +200,22 @@ function CliLoginApprovalCard(props: {
         <div className="space-y-3">
           <p className="text-sm font-medium text-t1">This machine is connected.</p>
           <p className="text-sm leading-7 text-t2">
-            You can return to the terminal now. The CLI will store a daemon token and use{" "}
-            <code>{getApiBaseUrl()}</code> for future Promptline Cloud requests.
+            Promptline stored the cloud link for this machine and will use <code>{getApiBaseUrl()}</code> for future
+            Promptline Cloud requests.
           </p>
           <div className="rounded-2xl border border-brd bg-gz-1 px-4 py-4">
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-t3">Next steps</p>
             <div className="mt-3 space-y-3 text-sm text-t2">
-              <p>Run these in your terminal to verify the connection and upload your initial prompt history:</p>
+              <p>Back in your terminal, start the cloud sync daemon. It will do the initial upload and keep watching for changes.</p>
               <div className="space-y-2 font-mono text-[13px] text-t1">
-                <div className="rounded-xl border border-brd bg-white px-3 py-2">pnpm dev:cli -- whoami</div>
-                <div className="rounded-xl border border-brd bg-white px-3 py-2">pnpm dev:cli -- sync bootstrap</div>
+                <div className="rounded-xl border border-brd bg-white px-3 py-2">{cliCommandPrefix} start</div>
+                <div className="rounded-xl border border-brd bg-white px-3 py-2">{cliCommandPrefix} whoami</div>
+                <div className="rounded-xl border border-brd bg-white px-3 py-2">{cliCommandPrefix} sync bootstrap</div>
               </div>
+              <p className="text-xs leading-6 text-t3">
+                Local-only development still uses <code>pnpm dev</code>, <code>pnpm dev:web</code>, or{" "}
+                <code>pnpm dev:daemon</code>.
+              </p>
             </div>
           </div>
           <div className="pt-1">

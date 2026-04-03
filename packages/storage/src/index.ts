@@ -728,6 +728,32 @@ export class PromptlineStore {
     }
   }
 
+  resetCloudAuth(deviceId: string | null): { revokedTokens: number; clearedLoginRequests: number } {
+    const db = this.openRegistry();
+    const now = nowIso();
+    let revokedTokens = 0;
+    let clearedLoginRequests = 0;
+
+    if (deviceId) {
+      const revoked = db.prepare(
+        `UPDATE auth_daemon_tokens
+         SET revoked_at = ?
+         WHERE revoked_at IS NULL
+           AND device_id IN (
+             SELECT id FROM auth_devices WHERE device_id = ?
+           )`
+      ).run(now, deviceId);
+      revokedTokens = Number(revoked.changes ?? 0);
+
+      const cleared = db.prepare(`DELETE FROM cli_login_requests WHERE device_id = ?`).run(deviceId);
+      clearedLoginRequests = Number(cleared.changes ?? 0);
+    }
+
+    db.close();
+    this.clearCloudAuthState();
+    return { revokedTokens, clearedLoginRequests };
+  }
+
   createCliLoginRequest(deviceId: string, deviceName: string | null, ttlMs = 10 * 60 * 1000): CliLoginRequestRow {
     const requestedAt = nowIso();
     const expiresAt = new Date(Date.now() + ttlMs).toISOString();

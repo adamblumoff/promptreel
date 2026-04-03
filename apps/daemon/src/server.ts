@@ -33,6 +33,7 @@ import type {
 import { CodexSessionTailer } from "@promptline/codex-adapter";
 import { PromptlineStore } from "@promptline/storage";
 import type { AuthUserProfile, WorkspaceListItem } from "@promptline/domain";
+import { createCloudStore } from "./cloud-store.js";
 
 loadDaemonEnvFiles();
 
@@ -128,6 +129,82 @@ function buildCliLoginUrl(loginCode: string, deviceId: string, deviceName: strin
   return url.toString();
 }
 
+function buildWorkspaceListItem(store: PromptlineStore, tailer: CodexSessionTailer, workspaceId: string): WorkspaceListItem | null {
+  const workspace = store.getWorkspace(workspaceId);
+  if (!workspace) {
+    return null;
+  }
+  const status = tailer.getStatus().workspaceStatuses.find((item) => item.workspaceId === workspaceId);
+  const threads = store.listThreads(workspace.id);
+  return {
+    ...workspace,
+    threadCount: threads.length,
+    openThreadCount: threads.filter((thread) => thread.status === "open").length,
+    isGenerating: (status?.recentlyUpdatedSessionCount ?? 0) > 0,
+    lastActivityAt: threads[0]?.lastActivityAt ?? null,
+    sessionFileCount: status?.sessionFileCount ?? 0,
+    recentlyUpdatedSessionCount: status?.recentlyUpdatedSessionCount ?? 0,
+    mode: status?.mode ?? "idle",
+  };
+}
+
+function buildCloudBootstrapBundle(
+  store: PromptlineStore,
+  tailer: CodexSessionTailer,
+  workspaceId: string
+): CloudBootstrapSyncRequest | null {
+  const workspace = buildWorkspaceListItem(store, tailer, workspaceId);
+  if (!workspace) {
+    return null;
+  }
+  const threads = store.listThreads(workspaceId);
+  const prompts = store.listPrompts(workspaceId);
+  if (prompts.length === 0) {
+    return null;
+  }
+  const promptDetails = prompts
+    .map((prompt) => store.getPromptDetail(workspaceId, prompt.id))
+    .filter((detail): detail is NonNullable<typeof detail> => detail !== null);
+  const blobMap = new Map<string, string>();
+
+  for (const detail of promptDetails) {
+    for (const artifact of detail.artifacts) {
+      if (!artifact.blobId || blobMap.has(artifact.blobId)) {
+        continue;
+      }
+      blobMap.set(artifact.blobId, store.readBlob(workspaceId, artifact.blobId));
+    }
+  }
+
+  return {
+    workspace,
+    threads,
+    prompts,
+    promptDetails,
+    blobs: [...blobMap.entries()].map(([blobId, content]) => ({ blobId, content })),
+  };
+}
+
+async function postJsonWithToken<TResponse, TBody extends object>(
+  apiBaseUrl: string,
+  path: string,
+  token: string,
+  body: TBody
+): Promise<TResponse> {
+  const response = await fetch(`${trimTrailingSlash(apiBaseUrl)}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`Cloud sync request failed: ${response.status}`);
+  }
+  return response.json() as Promise<TResponse>;
+}
+
 function resolveWebDistDir(): string | null {
   const currentDir = dirname(fileURLToPath(import.meta.url));
   const candidates = [
@@ -152,6 +229,7 @@ export function buildServer() {
     bodyLimit: 50 * 1024 * 1024,
   });
   const store = new PromptlineStore();
+  const cloudStore = createCloudStore(store);
   const tailer = new CodexSessionTailer(store);
   const webDistDir = resolveWebDistDir();
   const httpError = (statusCode: number, message: string) => {
@@ -173,7 +251,7 @@ export function buildServer() {
     if (!clerkSession) {
       return null;
     }
-    return store.getAuthUserByClerkUserId(clerkSession.clerkUserId);
+    return cloudStore.getAuthUserByClerkUserId(clerkSession.clerkUserId);
   };
 
   app.register(cors, {
@@ -211,7 +289,7 @@ export function buildServer() {
   app.get("/api/workspaces", async (request): Promise<WorkspaceListResponse> => {
     const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
     return {
-      workspaces: cloudUser ? store.listCloudWorkspaces(cloudUser.id) : listWorkspaceItems()
+      workspaces: cloudUser ? await cloudStore.listCloudWorkspaces(cloudUser.id) : listWorkspaceItems()
     };
   });
 
@@ -236,7 +314,7 @@ export function buildServer() {
     const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
     if (cloudUser) {
       return {
-        threads: store.listCloudThreads(cloudUser.id, request.query.workspaceId)
+        threads: await cloudStore.listCloudThreads(cloudUser.id, request.query.workspaceId)
       };
     }
     const recentlyUpdatedSessionIds = tailer.getRecentlyUpdatedSessionIds(request.query.workspaceId);
@@ -255,7 +333,7 @@ export function buildServer() {
       const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
       return {
         prompts: cloudUser
-          ? store.listCloudPrompts(cloudUser.id, workspaceId, request.query.threadId ?? null)
+          ? await cloudStore.listCloudPrompts(cloudUser.id, workspaceId, request.query.threadId ?? null)
           : store.listPrompts(workspaceId, request.query.threadId ?? null)
       };
     }
@@ -267,7 +345,7 @@ export function buildServer() {
       const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
       const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
       const prompt = cloudUser
-        ? store.getCloudPromptDetail(cloudUser.id, workspaceId, request.params.id)
+        ? await cloudStore.getCloudPromptDetail(cloudUser.id, workspaceId, request.params.id)
         : store.getPromptDetail(workspaceId, request.params.id);
       if (!prompt) {
         throw notFound("Prompt not found");
@@ -307,7 +385,7 @@ export function buildServer() {
       try {
         const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
         const content = cloudUser
-          ? store.readCloudBlob(cloudUser.id, workspaceId, request.params.blobId)
+          ? await cloudStore.readCloudBlob(cloudUser.id, workspaceId, request.params.blobId)
           : store.readBlob(workspaceId, request.params.blobId);
         return { blobId: request.params.blobId, content };
       } catch {
@@ -321,11 +399,11 @@ export function buildServer() {
     if (!bearerToken) {
       throw httpError(401, "Missing authorization token");
     }
-    const auth = store.authenticateDaemonToken(bearerToken);
+    const auth = await cloudStore.authenticateDaemonToken(bearerToken);
     if (!auth) {
       throw httpError(401, "Invalid daemon token");
     }
-    const result = store.upsertCloudWorkspaceBundle(auth.user.id, request.body);
+    const result = await cloudStore.upsertCloudWorkspaceBundle(auth.user.id, request.body);
     return {
       ok: true,
       workspaceId: result.workspaceId,
@@ -336,7 +414,7 @@ export function buildServer() {
   });
 
   app.post<{ Body: CliLoginStartRequest }>("/api/auth/cli/start", async (request): Promise<CliLoginStartResponse> => {
-    const loginRequest = store.createCliLoginRequest(request.body.deviceId, request.body.deviceName);
+    const loginRequest = await cloudStore.createCliLoginRequest(request.body.deviceId, request.body.deviceName);
     return {
       loginCode: loginRequest.loginCode,
       expiresAt: loginRequest.expiresAt,
@@ -345,7 +423,7 @@ export function buildServer() {
   });
 
   app.post<{ Body: CliLoginExchangeRequest }>("/api/auth/cli/exchange", async (request): Promise<CliLoginExchangeResponse> => {
-    return store.exchangeCliLoginRequest(request.body.loginCode, request.body.deviceId);
+    return cloudStore.exchangeCliLoginRequest(request.body.loginCode, request.body.deviceId);
   });
 
   app.post<{ Body: CliLoginCompleteRequest }>("/api/auth/cli/complete", async (request, reply): Promise<CliLoginCompleteResponse> => {
@@ -369,7 +447,7 @@ export function buildServer() {
       ? request.headers["x-promptline-avatar"]
       : null;
 
-    const approved = store.approveCliLoginRequest({
+    const approved = await cloudStore.approveCliLoginRequest({
       loginCode: request.body.loginCode,
       clerkUserId: clerkSession.clerkUserId,
       email,
@@ -397,7 +475,7 @@ export function buildServer() {
       };
     }
 
-    const auth = store.authenticateDaemonToken(bearerToken);
+    const auth = await cloudStore.authenticateDaemonToken(bearerToken);
     if (!auth) {
       reply.code(401);
       return {
@@ -435,20 +513,77 @@ export function buildServer() {
     });
   }
 
-  return { app, store, tailer };
+  return { app, store, tailer, cloudStore };
 }
 
 export async function startDaemon() {
-  const { app, store, tailer } = buildServer();
+  const { app, store, tailer, cloudStore } = buildServer();
   const port = Number(process.env.PORT ?? process.env.PROMPTLINE_PORT ?? "4312");
   const host = process.env.PROMPTLINE_HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
+  const syncedWorkspaceFingerprints = new Map<string, string>();
+  let syncInFlight = false;
+
+  const syncCloudWorkspaces = async () => {
+    if (syncInFlight) {
+      return;
+    }
+    const authState = store.getCloudAuthState();
+    if (!authState?.daemonToken) {
+      return;
+    }
+
+    syncInFlight = true;
+    try {
+      const statusByWorkspace = new Map(
+        tailer.getStatus().workspaceStatuses.map((status) => [status.workspaceId, status])
+      );
+      const workspaces = store.listWorkspaces();
+      for (const workspace of workspaces) {
+        const promptCount = store.listPrompts(workspace.id).length;
+        if (promptCount === 0) {
+          continue;
+        }
+        const status = statusByWorkspace.get(workspace.id);
+        const fingerprint = [
+          status?.lastImportAt ?? "",
+          String(status?.recentlyUpdatedSessionCount ?? 0),
+          String(promptCount),
+        ].join("|");
+        if (syncedWorkspaceFingerprints.get(workspace.id) === fingerprint) {
+          continue;
+        }
+        const bundle = buildCloudBootstrapBundle(store, tailer, workspace.id);
+        if (!bundle) {
+          continue;
+        }
+        await postJsonWithToken<CloudBootstrapSyncResponse, CloudBootstrapSyncRequest>(
+          authState.apiBaseUrl,
+          "/cloud/sync/bootstrap",
+          authState.daemonToken,
+          bundle
+        );
+        syncedWorkspaceFingerprints.set(workspace.id, fingerprint);
+      }
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      syncInFlight = false;
+    }
+  };
+
+  await cloudStore.ensureReady();
   await app.listen({
     host,
     port
   });
   tailer.start();
+  void syncCloudWorkspaces();
+  const cloudSyncTimer = setInterval(() => {
+    void syncCloudWorkspaces();
+  }, 5_000);
   store.setDaemonState(process.pid);
   const shutdown = async () => {
+    clearInterval(cloudSyncTimer);
     tailer.stop();
     store.clearDaemonState();
     await app.close();

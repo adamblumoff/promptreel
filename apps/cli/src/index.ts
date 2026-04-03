@@ -154,8 +154,11 @@ function printCloudLoginSuccess(input: {
     `API: ${input.apiBaseUrl}`,
     "",
     "Next steps:",
-    "  pnpm dev:cli -- whoami",
-    "  pnpm dev:cli -- sync bootstrap",
+    "  pl start",
+    "  pl whoami",
+    "  Optional: pl sync bootstrap",
+    "",
+    "For local-only development, keep using `pnpm dev`, `pnpm dev:web`, or `pnpm dev:daemon`.",
   ]);
 }
 
@@ -183,8 +186,72 @@ function printBootstrapSyncResult(result: { workspaceCount: number; synced: Clou
   ]);
 }
 
+function printResetResult(result: { revokedTokens: number; clearedLoginRequests: number }): void {
+  printBlock([
+    "Promptline Cloud credentials reset.",
+    `Revoked daemon tokens: ${result.revokedTokens}`,
+    `Cleared pending login requests: ${result.clearedLoginRequests}`,
+    "",
+    "You can now run:",
+    "  pl login",
+    "",
+    "Local development still works with `pnpm dev`, `pnpm dev:web`, or `pnpm dev:daemon`.",
+  ]);
+}
+
 function ensureDeviceId(existing: CloudAuthState | null): string {
   return existing?.deviceId ?? createId("device");
+}
+
+function resolveDaemonEntry(): string {
+  return resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../../../../../apps/daemon/dist/apps/daemon/src/server.js"
+  );
+}
+
+function startDaemonProcess(): void {
+  const authState = store.getCloudAuthState();
+  if (!authState?.daemonToken) {
+    throw new Error(
+      "Not logged in. Run `pl login` first. For local-only development, use `pnpm dev`, `pnpm dev:web`, or `pnpm dev:daemon`."
+    );
+  }
+  const current = store.getDaemonState();
+  if (current.pid) {
+    printBlock([
+      "Daemon is already recorded as running.",
+      `PID: ${current.pid}`,
+    ]);
+    return;
+  }
+  const daemonEntry = resolveDaemonEntry();
+  if (!existsSync(daemonEntry)) {
+    throw new Error(`Build the daemon first: missing ${daemonEntry}`);
+  }
+  const child = spawn(process.execPath, [daemonEntry], {
+    detached: true,
+    stdio: "ignore"
+  });
+  child.unref();
+  printBlock([
+    "Daemon started.",
+    `PID: ${child.pid}`,
+  ]);
+}
+
+function stopDaemonProcess(): void {
+  const state = store.getDaemonState();
+  if (!state.pid) {
+    console.log("No daemon pid recorded.");
+    return;
+  }
+  process.kill(state.pid);
+  store.clearDaemonState();
+  printBlock([
+    "Daemon stop requested.",
+    `PID: ${state.pid}`,
+  ]);
 }
 
 function buildCloudWorkspaceItem(store: PromptlineStore, workspaceId: string): WorkspaceListItem {
@@ -298,6 +365,29 @@ async function pollForCliLoginApproval(
 program.name("pl").description("Promptline CLI");
 
 program
+  .command("start")
+  .description("Start the Promptline Cloud sync daemon")
+  .action(() => {
+    startDaemonProcess();
+  });
+
+program
+  .command("stop")
+  .description("Stop the Promptline daemon")
+  .action(() => {
+    stopDaemonProcess();
+  });
+
+program
+  .command("reset")
+  .description("Reset local Promptline Cloud credentials so you can rerun login")
+  .action(() => {
+    const authState = store.getCloudAuthState();
+    const result = store.resetCloudAuth(authState?.deviceId ?? null);
+    printResetResult(result);
+  });
+
+program
   .command("repo")
   .description("Manage Promptline repos")
   .addCommand(
@@ -318,47 +408,18 @@ program
   .command("daemon")
   .description("Manage the Promptline daemon")
   .addCommand(
-    new Command("start").action(() => {
-      const current = store.getDaemonState();
-      if (current.pid) {
-        printBlock([
-          "Daemon is already recorded as running.",
-          `PID: ${current.pid}`,
-        ]);
-        return;
-      }
-      const daemonEntry = resolve(
-        dirname(fileURLToPath(import.meta.url)),
-        "../../../../../../apps/daemon/dist/apps/daemon/src/server.js"
-      );
-      if (!existsSync(daemonEntry)) {
-        throw new Error(`Build the daemon first: missing ${daemonEntry}`);
-      }
-      const child = spawn(process.execPath, [daemonEntry], {
-        detached: true,
-        stdio: "ignore"
-      });
-      child.unref();
-      printBlock([
-        "Daemon started.",
-        `PID: ${child.pid}`,
-      ]);
-    })
+    new Command("start")
+      .description("Start the Promptline Cloud sync daemon")
+      .action(() => {
+      startDaemonProcess();
+      })
   )
   .addCommand(
-    new Command("stop").action(() => {
-      const state = store.getDaemonState();
-      if (!state.pid) {
-        console.log("No daemon pid recorded.");
-        return;
-      }
-      process.kill(state.pid);
-      store.clearDaemonState();
-      printBlock([
-        "Daemon stop requested.",
-        `PID: ${state.pid}`,
-      ]);
-    })
+    new Command("stop")
+      .description("Stop the Promptline daemon")
+      .action(() => {
+      stopDaemonProcess();
+      })
   );
 
 program
