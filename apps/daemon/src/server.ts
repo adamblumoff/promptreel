@@ -1,5 +1,8 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import fastifyStatic from "@fastify/static";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyToken } from "@clerk/backend";
 import type {
@@ -77,10 +80,29 @@ function buildCliLoginUrl(loginCode: string, deviceId: string, deviceName: strin
   return url.toString();
 }
 
+function resolveWebDistDir(): string | null {
+  const currentDir = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(process.cwd(), "apps/web/dist"),
+    resolve(process.cwd(), "../web/dist"),
+    resolve(currentDir, "../../web/dist"),
+    resolve(currentDir, "../../../../../web/dist"),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(resolve(candidate, "index.html"))) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 export function buildServer() {
   const app = Fastify({ logger: false });
   const store = new PromptlineStore();
   const tailer = new CodexSessionTailer(store);
+  const webDistDir = resolveWebDistDir();
   const httpError = (statusCode: number, message: string) => {
     const error = new Error(message) as Error & { statusCode?: number };
     error.statusCode = statusCode;
@@ -285,6 +307,27 @@ export function buildServer() {
       device: auth.device,
     };
   });
+
+  if (webDistDir) {
+    app.register(fastifyStatic, {
+      root: webDistDir,
+      prefix: "/",
+      decorateReply: true,
+      index: false,
+    });
+
+    app.get("/", async (_request, reply) => {
+      return reply.sendFile("index.html");
+    });
+
+    app.setNotFoundHandler(async (request, reply) => {
+      if (request.url.startsWith("/api/")) {
+        reply.code(404);
+        return { message: "Not found" };
+      }
+      return reply.sendFile("index.html");
+    });
+  }
 
   return { app, store, tailer };
 }
