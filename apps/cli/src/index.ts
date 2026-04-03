@@ -7,18 +7,25 @@ import { dirname, join, resolve } from "node:path";
 import { Command } from "commander";
 import type {
   AuthWhoamiResponse,
+  CloudBootstrapSyncRequest,
+  CloudBootstrapSyncResponse,
   CliLoginExchangeResponse,
   CliLoginStartRequest,
   CliLoginStartResponse,
 } from "@promptline/api-contracts";
 import { importCodexSessionsForRepo, runLiveDoctor } from "@promptline/codex-adapter";
 import { PromptlineStore, type CloudAuthState } from "@promptline/storage";
-import { createId } from "@promptline/domain";
+import { createId, type WorkspaceListItem } from "@promptline/domain";
 
 const program = new Command();
 const store = new PromptlineStore();
-const DEFAULT_API_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_API_URL ?? "http://127.0.0.1:4312/api");
-const DEFAULT_WEB_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_WEB_URL ?? "http://127.0.0.1:4175");
+const DEFAULT_CLOUD_BASE_URL = trimTrailingSlash(
+  process.env.PROMPTLINE_CLOUD_URL
+  ?? process.env.PROMPTLINE_CLOUD_WEB_URL
+  ?? "https://promptlinedaemon-production.up.railway.app"
+);
+const DEFAULT_API_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_API_URL ?? `${DEFAULT_CLOUD_BASE_URL}/api`);
+const DEFAULT_WEB_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_WEB_URL ?? DEFAULT_CLOUD_BASE_URL);
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -30,6 +37,51 @@ function getDeviceName(): string {
 
 function ensureDeviceId(existing: CloudAuthState | null): string {
   return existing?.deviceId ?? createId("device");
+}
+
+function buildCloudWorkspaceItem(store: PromptlineStore, workspaceId: string): WorkspaceListItem {
+  const workspace = store.getWorkspace(workspaceId);
+  if (!workspace) {
+    throw new Error(`Unknown workspace ${workspaceId}`);
+  }
+  const threads = store.listThreads(workspaceId);
+  return {
+    ...workspace,
+    threadCount: threads.length,
+    openThreadCount: threads.filter((thread) => thread.status === "open").length,
+    isGenerating: false,
+    lastActivityAt: threads[0]?.lastActivityAt ?? workspace.lastSeenAt,
+    sessionFileCount: 0,
+    recentlyUpdatedSessionCount: 0,
+    mode: "idle",
+  };
+}
+
+function buildBootstrapBundle(store: PromptlineStore, workspaceId: string): CloudBootstrapSyncRequest {
+  const workspace = buildCloudWorkspaceItem(store, workspaceId);
+  const threads = store.listThreads(workspaceId);
+  const prompts = store.listPrompts(workspaceId);
+  const promptDetails = prompts
+    .map((prompt) => store.getPromptDetail(workspaceId, prompt.id))
+    .filter((detail): detail is NonNullable<typeof detail> => detail !== null);
+  const blobMap = new Map<string, string>();
+
+  for (const detail of promptDetails) {
+    for (const artifact of detail.artifacts) {
+      if (!artifact.blobId || blobMap.has(artifact.blobId)) {
+        continue;
+      }
+      blobMap.set(artifact.blobId, store.readBlob(workspaceId, artifact.blobId));
+    }
+  }
+
+  return {
+    workspace,
+    threads,
+    prompts,
+    promptDetails,
+    blobs: [...blobMap.entries()].map(([blobId, content]) => ({ blobId, content })),
+  };
 }
 
 async function postJson<TResponse, TRequest extends object>(
@@ -206,14 +258,12 @@ program
 program
   .command("login")
   .description("Connect this machine to Promptline Cloud")
-  .option("--api-url <apiUrl>", "Promptline Cloud API base URL", DEFAULT_API_BASE_URL)
-  .option("--web-url <webUrl>", "Promptline Cloud web base URL", DEFAULT_WEB_BASE_URL)
-  .action(async (options: { apiUrl: string; webUrl: string }) => {
+  .action(async () => {
     const existing = store.getCloudAuthState();
     const deviceId = ensureDeviceId(existing);
     const deviceName = existing?.deviceName ?? getDeviceName();
-    const apiBaseUrl = trimTrailingSlash(options.apiUrl);
-    const webBaseUrl = trimTrailingSlash(options.webUrl);
+    const apiBaseUrl = DEFAULT_API_BASE_URL;
+    const webBaseUrl = DEFAULT_WEB_BASE_URL;
 
     const start = await postJson<CliLoginStartResponse, CliLoginStartRequest>(
       apiBaseUrl,
@@ -272,6 +322,46 @@ program
     const result = await getJson<AuthWhoamiResponse>(authState.apiBaseUrl, "/auth/me", authState.daemonToken);
     console.log(JSON.stringify(result, null, 2));
   });
+
+program
+  .command("sync")
+  .description("Sync Promptline data to Promptline Cloud")
+  .addCommand(
+    new Command("bootstrap")
+      .option("--workspace <workspaceId>", "Sync a single workspace id")
+      .action(async (options: { workspace?: string }) => {
+        const authState = store.getCloudAuthState();
+        if (!authState?.daemonToken) {
+          throw new Error("Not logged in. Run `pl login` first.");
+        }
+
+        const workspaceIds = options.workspace
+          ? [options.workspace]
+          : store.listWorkspaces().map((workspace) => workspace.id);
+
+        if (workspaceIds.length === 0) {
+          throw new Error("No workspaces available to sync.");
+        }
+
+        const synced: CloudBootstrapSyncResponse[] = [];
+        for (const workspaceId of workspaceIds) {
+          const bundle = buildBootstrapBundle(store, workspaceId);
+          const result = await postJson<CloudBootstrapSyncResponse, CloudBootstrapSyncRequest>(
+            authState.apiBaseUrl,
+            "/cloud/sync/bootstrap",
+            bundle,
+            authState.daemonToken
+          );
+          synced.push(result);
+        }
+
+        console.log(JSON.stringify({
+          ok: true,
+          workspaceCount: synced.length,
+          synced,
+        }, null, 2));
+      })
+  );
 
 program.parseAsync(process.argv).catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));

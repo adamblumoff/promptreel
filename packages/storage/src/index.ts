@@ -26,6 +26,7 @@ import type {
   RepoRegistration,
   ThreadSummary,
   WorkspaceGroup,
+  WorkspaceListItem,
   WorkspaceSnapshot,
   WorkspaceSnapshotData
 } from "@promptline/domain";
@@ -1034,6 +1035,195 @@ export class PromptlineStore {
     };
   }
 
+  getAuthUserByClerkUserId(clerkUserId: string): AuthUserProfile | null {
+    const db = this.openRegistry();
+    const row = db.prepare(
+      `SELECT
+         id,
+         clerk_user_id AS clerkUserId,
+         email,
+         name,
+         avatar_url AS avatarUrl,
+         created_at AS createdAt,
+         updated_at AS updatedAt
+       FROM auth_users
+       WHERE clerk_user_id = ?`
+    ).get(clerkUserId) as AuthUserProfile | undefined;
+    db.close();
+    return row ?? null;
+  }
+
+  upsertCloudWorkspaceBundle(
+    userId: string,
+    bundle: {
+      workspace: WorkspaceListItem;
+      threads: ThreadSummary[];
+      prompts: PromptEventListItem[];
+      promptDetails: PromptEventDetail[];
+      blobs: Array<{ blobId: string; content: string }>;
+    }
+  ): { workspaceId: string; threadCount: number; promptCount: number; blobCount: number } {
+    const db = this.openRegistry();
+    const now = nowIso();
+    db.exec("BEGIN");
+    try {
+      db.prepare(
+        `INSERT INTO cloud_workspaces
+         (user_id, workspace_id, last_activity_at, payload_json, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, workspace_id) DO UPDATE SET
+           last_activity_at = excluded.last_activity_at,
+           payload_json = excluded.payload_json,
+           updated_at = excluded.updated_at`
+      ).run(
+        userId,
+        bundle.workspace.id,
+        bundle.workspace.lastActivityAt,
+        JSON.stringify(bundle.workspace),
+        now
+      );
+
+      db.prepare(`DELETE FROM cloud_threads WHERE user_id = ? AND workspace_id = ?`).run(userId, bundle.workspace.id);
+      db.prepare(`DELETE FROM cloud_prompts WHERE user_id = ? AND workspace_id = ?`).run(userId, bundle.workspace.id);
+      db.prepare(`DELETE FROM cloud_prompt_details WHERE user_id = ? AND workspace_id = ?`).run(userId, bundle.workspace.id);
+      db.prepare(`DELETE FROM cloud_blobs WHERE user_id = ? AND workspace_id = ?`).run(userId, bundle.workspace.id);
+
+      for (const thread of bundle.threads) {
+        db.prepare(
+          `INSERT INTO cloud_threads
+           (user_id, workspace_id, thread_id, last_activity_at, payload_json, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(
+          userId,
+          bundle.workspace.id,
+          thread.id,
+          thread.lastActivityAt,
+          JSON.stringify(thread),
+          now
+        );
+      }
+
+      for (const prompt of bundle.prompts) {
+        db.prepare(
+          `INSERT INTO cloud_prompts
+           (user_id, workspace_id, prompt_id, thread_lookup_key, started_at, payload_json, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          userId,
+          bundle.workspace.id,
+          prompt.id,
+          getThreadLookupKey(prompt),
+          prompt.startedAt,
+          JSON.stringify(prompt),
+          now
+        );
+      }
+
+      for (const detail of bundle.promptDetails) {
+        db.prepare(
+          `INSERT INTO cloud_prompt_details
+           (user_id, workspace_id, prompt_id, payload_json, updated_at)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(
+          userId,
+          bundle.workspace.id,
+          detail.id,
+          JSON.stringify(detail),
+          now
+        );
+      }
+
+      for (const blob of bundle.blobs) {
+        db.prepare(
+          `INSERT INTO cloud_blobs
+           (user_id, workspace_id, blob_id, content, updated_at)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(userId, bundle.workspace.id, blob.blobId, blob.content, now);
+      }
+
+      db.exec("COMMIT");
+      db.close();
+      return {
+        workspaceId: bundle.workspace.id,
+        threadCount: bundle.threads.length,
+        promptCount: bundle.prompts.length,
+        blobCount: bundle.blobs.length,
+      };
+    } catch (error) {
+      db.exec("ROLLBACK");
+      db.close();
+      throw error;
+    }
+  }
+
+  listCloudWorkspaces(userId: string): WorkspaceListItem[] {
+    const db = this.openRegistry();
+    const rows = db.prepare(
+      `SELECT payload_json AS payloadJson
+       FROM cloud_workspaces
+       WHERE user_id = ?
+       ORDER BY COALESCE(last_activity_at, '') DESC, workspace_id ASC`
+    ).all(userId) as Array<{ payloadJson: string }>;
+    db.close();
+    return rows.map((row) => safeJsonParse<WorkspaceListItem | null>(row.payloadJson, null)).filter(Boolean) as WorkspaceListItem[];
+  }
+
+  listCloudThreads(userId: string, workspaceId: string): ThreadSummary[] {
+    const db = this.openRegistry();
+    const rows = db.prepare(
+      `SELECT payload_json AS payloadJson
+       FROM cloud_threads
+       WHERE user_id = ? AND workspace_id = ?
+       ORDER BY last_activity_at DESC, thread_id ASC`
+    ).all(userId, workspaceId) as Array<{ payloadJson: string }>;
+    db.close();
+    return rows.map((row) => safeJsonParse<ThreadSummary | null>(row.payloadJson, null)).filter(Boolean) as ThreadSummary[];
+  }
+
+  listCloudPrompts(userId: string, workspaceId: string, threadLookupKey?: string | null): PromptEventListItem[] {
+    const db = this.openRegistry();
+    const rows = threadLookupKey
+      ? db.prepare(
+          `SELECT payload_json AS payloadJson
+           FROM cloud_prompts
+           WHERE user_id = ? AND workspace_id = ? AND thread_lookup_key = ?
+           ORDER BY started_at DESC, prompt_id ASC`
+        ).all(userId, workspaceId, threadLookupKey) as Array<{ payloadJson: string }>
+      : db.prepare(
+          `SELECT payload_json AS payloadJson
+           FROM cloud_prompts
+           WHERE user_id = ? AND workspace_id = ?
+           ORDER BY started_at DESC, prompt_id ASC`
+        ).all(userId, workspaceId) as Array<{ payloadJson: string }>;
+    db.close();
+    return rows.map((row) => safeJsonParse<PromptEventListItem | null>(row.payloadJson, null)).filter(Boolean) as PromptEventListItem[];
+  }
+
+  getCloudPromptDetail(userId: string, workspaceId: string, promptId: string): PromptEventDetail | null {
+    const db = this.openRegistry();
+    const row = db.prepare(
+      `SELECT payload_json AS payloadJson
+       FROM cloud_prompt_details
+       WHERE user_id = ? AND workspace_id = ? AND prompt_id = ?`
+    ).get(userId, workspaceId, promptId) as { payloadJson: string } | undefined;
+    db.close();
+    return safeJsonParse<PromptEventDetail | null>(row?.payloadJson, null);
+  }
+
+  readCloudBlob(userId: string, workspaceId: string, blobId: string): string {
+    const db = this.openRegistry();
+    const row = db.prepare(
+      `SELECT content
+       FROM cloud_blobs
+       WHERE user_id = ? AND workspace_id = ? AND blob_id = ?`
+    ).get(userId, workspaceId, blobId) as { content: string } | undefined;
+    db.close();
+    if (!row) {
+      throw new Error(`Cloud blob not found: ${blobId}`);
+    }
+    return row.content;
+  }
+
   workspaceDir(workspaceId: string): string {
     return join(this.homeDir, "repos", workspaceId);
   }
@@ -1110,6 +1300,49 @@ export class PromptlineStore {
         completed_at TEXT,
         user_id TEXT,
         daemon_token TEXT
+      );
+      CREATE TABLE IF NOT EXISTS cloud_workspaces (
+        user_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        last_activity_at TEXT,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, workspace_id)
+      );
+      CREATE TABLE IF NOT EXISTS cloud_threads (
+        user_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        last_activity_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, workspace_id, thread_id)
+      );
+      CREATE TABLE IF NOT EXISTS cloud_prompts (
+        user_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        prompt_id TEXT NOT NULL,
+        thread_lookup_key TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, workspace_id, prompt_id)
+      );
+      CREATE TABLE IF NOT EXISTS cloud_prompt_details (
+        user_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        prompt_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, workspace_id, prompt_id)
+      );
+      CREATE TABLE IF NOT EXISTS cloud_blobs (
+        user_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        blob_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, workspace_id, blob_id)
       );
     `);
     db.close();
@@ -1480,6 +1713,14 @@ function countDiffPatchLines(patch: string): { additions: number; deletions: num
   }
 
   return { additions, deletions };
+}
+
+function getThreadLookupKey(prompt: {
+  id: string;
+  threadId: string | null;
+  sessionId: string | null;
+}): string {
+  return prompt.threadId ?? prompt.sessionId ?? `prompt:${prompt.id}`;
 }
 
 function hashToken(token: string): string {

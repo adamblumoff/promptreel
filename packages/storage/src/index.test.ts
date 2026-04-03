@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
-import type { ArtifactRecord, PromptEventRecord } from "@promptline/domain";
+import type { ArtifactRecord, PromptEventDetail, PromptEventRecord, PromptEventListItem, ThreadSummary, WorkspaceListItem } from "@promptline/domain";
 import {
   PromptlineStore,
   isEligibleWindowsGitWorkspace,
@@ -294,5 +294,116 @@ describe("PromptlineStore", () => {
       "user:First prompt.",
       "assistant:First answer."
     ]);
+  });
+
+  test("stores and reads back cloud bootstrap bundles by user", () => {
+    const root = mkdtempSync(join(tmpdir(), "promptline-store-cloud-sync-"));
+    const store = new PromptlineStore(join(root, ".pl"));
+
+    const workspace: WorkspaceListItem = {
+      id: "workspace_cloud",
+      slug: "repo",
+      folderPath: "C:\\repo",
+      gitRootPath: "C:\\repo",
+      gitDir: "C:\\repo\\.git",
+      createdAt: "2026-04-03T00:00:00.000Z",
+      lastSeenAt: "2026-04-03T00:00:00.000Z",
+      status: "active",
+      source: "manual",
+      threadCount: 1,
+      openThreadCount: 0,
+      isGenerating: false,
+      lastActivityAt: "2026-04-03T00:00:02.000Z",
+      sessionFileCount: 0,
+      recentlyUpdatedSessionCount: 0,
+      mode: "idle",
+    };
+
+    const thread: ThreadSummary = {
+      id: "thread_cloud",
+      workspaceId: workspace.id,
+      sessionId: "session-1",
+      threadId: "thread-1",
+      folderPath: workspace.folderPath,
+      startedAt: "2026-04-03T00:00:00.000Z",
+      lastActivityAt: "2026-04-03T00:00:02.000Z",
+      promptCount: 1,
+      openPromptCount: 0,
+      isGenerating: false,
+      lastPromptSummary: "Ship the cloud sync.",
+      status: "closed",
+    };
+
+    const prompt: PromptEventListItem = {
+      id: "prompt_cloud",
+      workspaceId: workspace.id,
+      executionPath: workspace.folderPath,
+      sessionId: "session-1",
+      threadId: "thread-1",
+      parentPromptEventId: null,
+      startedAt: "2026-04-03T00:00:00.000Z",
+      endedAt: "2026-04-03T00:00:02.000Z",
+      boundaryReason: "import_end",
+      status: "imported",
+      mode: "default",
+      artifactCount: 1,
+      childCount: 0,
+      filesTouched: ["src/index.ts"],
+      filesTouchedCount: 1,
+      additions: 3,
+      deletions: 1,
+      promptSummary: "Ship the cloud sync.",
+      primaryArtifactId: "artifact_cloud",
+      baselineSnapshotId: null,
+      endSnapshotId: null,
+      primaryArtifactType: "code_diff",
+      primaryArtifactSummary: "Patch",
+      hasCodeDiff: true,
+      hasPlanArtifact: false,
+      hasFinalResponse: true,
+      isLiveDerived: false,
+    };
+
+    const detail: PromptEventDetail = {
+      ...prompt,
+      promptText: "Ship the cloud sync.",
+      transcript: [
+        {
+          kind: "message",
+          role: "user",
+          occurredAt: "2026-04-03T00:00:00.000Z",
+          phase: null,
+          text: "Ship the cloud sync.",
+        },
+      ],
+      artifacts: [
+        {
+          id: "artifact_cloud",
+          promptEventId: prompt.id,
+          type: "code_diff",
+          role: "primary",
+          summary: "Patch",
+          blobId: "blob_cloud",
+          fileStatsJson: JSON.stringify([{ path: "src/index.ts", changeType: "modified" }]),
+          metadataJson: null,
+        },
+      ],
+      artifactLinks: [],
+      gitLinks: [],
+    };
+
+    store.upsertCloudWorkspaceBundle("user_cloud", {
+      workspace,
+      threads: [thread],
+      prompts: [prompt],
+      promptDetails: [detail],
+      blobs: [{ blobId: "blob_cloud", content: "--- a/src/index.ts\n+++ b/src/index.ts\n+new line" }],
+    });
+
+    expect(store.listCloudWorkspaces("user_cloud")).toEqual([workspace]);
+    expect(store.listCloudThreads("user_cloud", workspace.id)).toEqual([thread]);
+    expect(store.listCloudPrompts("user_cloud", workspace.id, "thread-1")).toEqual([prompt]);
+    expect(store.getCloudPromptDetail("user_cloud", workspace.id, prompt.id)).toEqual(detail);
+    expect(store.readCloudBlob("user_cloud", workspace.id, "blob_cloud")).toContain("+++ b/src/index.ts");
   });
 });

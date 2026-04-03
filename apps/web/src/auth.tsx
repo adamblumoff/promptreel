@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { SignInButton, SignedIn, SignedOut, useAuth, useUser } from "@clerk/clerk-react";
 import { useEffect, useMemo, useState } from "react";
-import { completeCliLogin, getApiBaseUrl } from "./api";
+import { completeCliLogin, getApiBaseUrl, setApiAuthTokenProvider } from "./api";
 
 const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY?.trim() ?? "";
 
@@ -75,6 +75,53 @@ export function CliLoginPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export function ClerkApiBridge() {
+  const { getToken } = useAuth();
+
+  useEffect(() => {
+    setApiAuthTokenProvider(() => getToken());
+    return () => setApiAuthTokenProvider(null);
+  }, [getToken]);
+
+  return null;
+}
+
+export function CloudViewerGate(props: { children: ReactNode }) {
+  return (
+    <>
+      <SignedIn>{props.children}</SignedIn>
+      <SignedOut>
+        <div className="min-h-dvh bg-gz-0 px-5 py-10 text-t1">
+          <div className="mx-auto flex min-h-[70vh] max-w-xl flex-col justify-center gap-6">
+            <div className="space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-t3">Promptline Cloud</p>
+              <h1 className="text-3xl font-semibold tracking-[-0.03em] text-balance">Sign in to view your prompts</h1>
+              <p className="text-sm leading-7 text-t2">
+                Connect with GitHub to load your synced Promptline history from the hosted service.
+              </p>
+            </div>
+            <AuthCard>
+              <div className="space-y-4">
+                <p className="text-sm leading-7 text-t2">
+                  Once you sign in, Promptline will load the prompt history uploaded from your linked local machine.
+                </p>
+                <SignInButton mode="modal">
+                  <button
+                    type="button"
+                    className="inline-flex items-center rounded-full bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:bg-black/90"
+                  >
+                    Continue with GitHub
+                  </button>
+                </SignInButton>
+              </div>
+            </AuthCard>
+          </div>
+        </div>
+      </SignedOut>
+    </>
   );
 }
 

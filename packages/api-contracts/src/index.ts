@@ -118,3 +118,24 @@ export interface AuthWhoamiResponse {
   user: AuthUserProfile | null;
   device: AuthDevice | null;
 }
+
+export interface CloudSyncBlobInput {
+  blobId: string;
+  content: string;
+}
+
+export interface CloudBootstrapSyncRequest {
+  workspace: WorkspaceListItem;
+  threads: ThreadSummary[];
+  prompts: PromptEventListItem[];
+  promptDetails: PromptEventDetail[];
+  blobs: CloudSyncBlobInput[];
+}
+
+export interface CloudBootstrapSyncResponse {
+  ok: true;
+  workspaceId: string;
+  threadCount: number;
+  promptCount: number;
+  blobCount: number;
+}

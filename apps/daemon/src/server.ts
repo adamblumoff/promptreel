@@ -8,6 +8,8 @@ import { verifyToken } from "@clerk/backend";
 import type {
   AuthWhoamiResponse,
   BlobResponse,
+  CloudBootstrapSyncRequest,
+  CloudBootstrapSyncResponse,
   CliLoginCompleteRequest,
   CliLoginCompleteResponse,
   CliLoginExchangeRequest,
@@ -109,6 +111,21 @@ export function buildServer() {
     return error;
   };
   const notFound = (message: string) => httpError(404, message);
+  const resolveCloudViewerUser = async (headers: Record<string, unknown>): Promise<AuthUserProfile | null> => {
+    const cloudViewerMode = headers["x-promptline-cloud-viewer"] === "1";
+    if (!cloudViewerMode) {
+      return null;
+    }
+    const bearerToken = getBearerToken(headers);
+    if (!bearerToken) {
+      return null;
+    }
+    const clerkSession = await verifyClerkSessionToken(bearerToken);
+    if (!clerkSession) {
+      return null;
+    }
+    return store.getAuthUserByClerkUserId(clerkSession.clerkUserId);
+  };
 
   app.register(cors, {
     origin: true
@@ -142,9 +159,12 @@ export function buildServer() {
     ingestion: tailer.getStatus()
   }));
 
-  app.get("/api/workspaces", async (): Promise<WorkspaceListResponse> => ({
-    workspaces: listWorkspaceItems()
-  }));
+  app.get("/api/workspaces", async (request): Promise<WorkspaceListResponse> => {
+    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
+    return {
+      workspaces: cloudUser ? store.listCloudWorkspaces(cloudUser.id) : listWorkspaceItems()
+    };
+  });
 
   app.get("/api/repos", async (): Promise<RepoListResponse> => ({
     repos: listWorkspaceItems()
@@ -164,6 +184,12 @@ export function buildServer() {
   }));
 
   app.get<{ Querystring: { workspaceId: string } }>("/api/threads", async (request): Promise<ThreadListResponse> => {
+    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
+    if (cloudUser) {
+      return {
+        threads: store.listCloudThreads(cloudUser.id, request.query.workspaceId)
+      };
+    }
     const recentlyUpdatedSessionIds = tailer.getRecentlyUpdatedSessionIds(request.query.workspaceId);
     return {
       threads: store.listThreads(request.query.workspaceId).map((thread) => ({
@@ -175,16 +201,25 @@ export function buildServer() {
 
   app.get<{ Querystring: { workspaceId?: string; repoId?: string; threadId?: string } }>(
     "/api/prompt-events",
-    async (request): Promise<PromptEventListResponse> => ({
-      prompts: store.listPrompts(request.query.workspaceId ?? request.query.repoId ?? "", request.query.threadId ?? null)
-    })
+    async (request): Promise<PromptEventListResponse> => {
+      const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
+      const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
+      return {
+        prompts: cloudUser
+          ? store.listCloudPrompts(cloudUser.id, workspaceId, request.query.threadId ?? null)
+          : store.listPrompts(workspaceId, request.query.threadId ?? null)
+      };
+    }
   );
 
   app.get<{ Querystring: { workspaceId?: string; repoId?: string }; Params: { id: string } }>(
     "/api/prompt-events/:id",
     async (request): Promise<PromptEventResponse> => {
       const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
-      const prompt = store.getPromptDetail(workspaceId, request.params.id);
+      const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
+      const prompt = cloudUser
+        ? store.getCloudPromptDetail(cloudUser.id, workspaceId, request.params.id)
+        : store.getPromptDetail(workspaceId, request.params.id);
       if (!prompt) {
         throw notFound("Prompt not found");
       }
@@ -221,13 +256,35 @@ export function buildServer() {
     async (request, reply): Promise<BlobResponse> => {
       const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
       try {
-        const content = store.readBlob(workspaceId, request.params.blobId);
+        const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
+        const content = cloudUser
+          ? store.readCloudBlob(cloudUser.id, workspaceId, request.params.blobId)
+          : store.readBlob(workspaceId, request.params.blobId);
         return { blobId: request.params.blobId, content };
       } catch {
         throw notFound("Blob not found");
       }
     }
   );
+
+  app.post<{ Body: CloudBootstrapSyncRequest }>("/api/cloud/sync/bootstrap", async (request): Promise<CloudBootstrapSyncResponse> => {
+    const bearerToken = getBearerToken(request.headers as Record<string, unknown>);
+    if (!bearerToken) {
+      throw httpError(401, "Missing authorization token");
+    }
+    const auth = store.authenticateDaemonToken(bearerToken);
+    if (!auth) {
+      throw httpError(401, "Invalid daemon token");
+    }
+    const result = store.upsertCloudWorkspaceBundle(auth.user.id, request.body);
+    return {
+      ok: true,
+      workspaceId: result.workspaceId,
+      threadCount: result.threadCount,
+      promptCount: result.promptCount,
+      blobCount: result.blobCount,
+    };
+  });
 
   app.post<{ Body: CliLoginStartRequest }>("/api/auth/cli/start", async (request): Promise<CliLoginStartResponse> => {
     const loginRequest = store.createCliLoginRequest(request.body.deviceId, request.body.deviceName);

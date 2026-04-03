@@ -12,14 +12,26 @@ const API_BASE = configuredApiBase
   : typeof window !== "undefined" && !["127.0.0.1", "localhost"].includes(window.location.hostname)
     ? `${window.location.origin}/api`
     : "http://127.0.0.1:4312/api";
+const CLOUD_VIEWER_MODE = typeof window !== "undefined" && !["127.0.0.1", "localhost"].includes(window.location.hostname);
+
+let authTokenProvider: (() => Promise<string | null>) | null = null;
 
 type RequestOptions = {
   signal?: AbortSignal;
 };
 
+export function setApiAuthTokenProvider(provider: (() => Promise<string | null>) | null): void {
+  authTokenProvider = provider;
+}
+
 async function getJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const token = await authTokenProvider?.();
   const response = await fetch(`${API_BASE}${path}`, {
-    signal: options.signal
+    signal: options.signal,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(token && CLOUD_VIEWER_MODE ? { "x-promptline-cloud-viewer": "1" } : {}),
+    }
   });
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
@@ -28,10 +40,13 @@ async function getJson<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 async function postJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const token = await authTokenProvider?.();
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(token && CLOUD_VIEWER_MODE ? { "x-promptline-cloud-viewer": "1" } : {}),
     },
     body: "{}",
     signal: options.signal
@@ -47,10 +62,13 @@ async function postJsonWithBody<T>(
   body: unknown,
   options: RequestOptions & { headers?: Record<string, string> } = {}
 ): Promise<T> {
+  const token = await authTokenProvider?.();
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(token && CLOUD_VIEWER_MODE ? { "x-promptline-cloud-viewer": "1" } : {}),
       ...(options.headers ?? {})
     },
     body: JSON.stringify(body),
