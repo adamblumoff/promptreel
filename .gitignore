@@ -7,3 +7,8 @@ test-results/
 *.log
 *.pid
 pnpm-lock.yaml
+.env
+.env.local
+.env.*
+!.env.example
+!.env.*.example
