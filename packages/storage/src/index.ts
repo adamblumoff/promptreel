@@ -1,5 +1,5 @@
 import { brotliCompressSync, brotliDecompressSync } from "node:zlib";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -7,7 +7,7 @@ import {
   renameSync,
   readFileSync,
   statSync,
-  writeFileSync
+  writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, normalize, resolve } from "node:path";
@@ -45,6 +45,32 @@ import {
   buildCompletedActivityEntry,
   upsertResponseItemActivity,
 } from "./transcript-activity.js";
+import {
+  authenticateDaemonToken as authenticateStoredDaemonToken,
+  approveCliLoginRequest as approveStoredCliLoginRequest,
+  clearCloudAuthState as clearStoredCloudAuthState,
+  createCliLoginRequest as createStoredCliLoginRequest,
+  exchangeCliLoginRequest as exchangeStoredCliLoginRequest,
+  getAuthUserByClerkUserId as getStoredAuthUserByClerkUserId,
+  getCloudAuthState as getStoredCloudAuthState,
+  getCliLoginRequest as getStoredCliLoginRequest,
+  getLatestAuthDeviceForUser as getStoredLatestAuthDeviceForUser,
+  resetCloudAuth as resetStoredCloudAuth,
+  setCloudAuthState as setStoredCloudAuthState,
+  type CliLoginRequestRow,
+  type CloudAuthState,
+} from "./storage-auth.js";
+import {
+  clearDaemonState as clearStoredDaemonState,
+  getDaemonState as getStoredDaemonState,
+  getIngestCursor as getStoredIngestCursor,
+  getLegacyCloudSyncCursorForDevice as getStoredLegacyCloudSyncCursorForDevice,
+  getLegacySyncRecordHashesForDevice as getStoredLegacySyncRecordHashesForDevice,
+  getSyncRecordHashes as getStoredSyncRecordHashes,
+  setDaemonState as setStoredDaemonState,
+  setIngestCursor as setStoredIngestCursor,
+  upsertSyncRecords as upsertStoredSyncRecords,
+} from "./storage-sync-state.js";
 
 export interface PersistPromptBundle {
   prompt: PromptEventRecord;
@@ -82,46 +108,7 @@ type LegacyPromptRow = {
   endSnapshotId: string | null;
 };
 
-type AuthUserRow = {
-  id: string;
-  clerkUserId: string;
-  email: string | null;
-  name: string | null;
-  avatarUrl: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-type AuthDeviceRow = {
-  id: string;
-  userId: string;
-  deviceId: string;
-  deviceName: string | null;
-  createdAt: string;
-  lastSeenAt: string;
-};
-
-type CliLoginRequestRow = {
-  loginCode: string;
-  deviceId: string;
-  deviceName: string | null;
-  requestedAt: string;
-  expiresAt: string;
-  approvedAt: string | null;
-  completedAt: string | null;
-  userId: string | null;
-  daemonToken: string | null;
-};
-
-export interface CloudAuthState {
-  apiBaseUrl: string;
-  webBaseUrl: string;
-  userId: string | null;
-  deviceId: string;
-  deviceName: string | null;
-  daemonToken: string;
-  linkedAt: string;
-}
+export type { CloudAuthState } from "./storage-auth.js";
 
 export class PromptreelStore {
   readonly homeDir: string;
@@ -138,6 +125,21 @@ export class PromptreelStore {
     mkdirSync(this.homeDir, { recursive: true });
     mkdirSync(join(this.homeDir, "daemon", "logs"), { recursive: true });
     mkdirSync(join(this.homeDir, "repos"), { recursive: true });
+  }
+
+  private storageRegistryContext() {
+    return {
+      homeDir: this.homeDir,
+      openRegistry: () => this.openRegistry(),
+    };
+  }
+
+  private storageWorkspaceContext() {
+    return {
+      homeDir: this.homeDir,
+      ensureWorkspaceSchema: (workspaceId: string) => this.ensureWorkspaceSchema(workspaceId),
+      openWorkspace: (workspaceId: string) => this.openWorkspace(workspaceId),
+    };
   }
 
   addRepo(rootPath: string): RepoRegistration {
@@ -704,45 +706,18 @@ export class PromptreelStore {
   }
 
   getIngestCursor(workspaceId: string, cursorKey: string): { cursorValue: string; updatedAt: string } | null {
-    this.ensureWorkspaceSchema(workspaceId);
-    const db = this.openWorkspace(workspaceId);
-    const row = db.prepare(
-      `SELECT cursor_value AS cursorValue, updated_at AS updatedAt
-       FROM ingestion_cursors
-       WHERE cursor_key = ?`
-    ).get(cursorKey) as { cursorValue: string; updatedAt: string } | undefined;
-    db.close();
-    return row ?? null;
+    return getStoredIngestCursor(this.storageWorkspaceContext(), workspaceId, cursorKey);
   }
 
   setIngestCursor(workspaceId: string, cursorKey: string, cursorValue: string): void {
-    this.ensureWorkspaceSchema(workspaceId);
-    const db = this.openWorkspace(workspaceId);
-    db.prepare(
-      `INSERT INTO ingestion_cursors (cursor_key, cursor_value, updated_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(cursor_key) DO UPDATE SET
-         cursor_value = excluded.cursor_value,
-         updated_at = excluded.updated_at`
-    ).run(cursorKey, cursorValue, nowIso());
-    db.close();
+    setStoredIngestCursor(this.storageWorkspaceContext(), workspaceId, cursorKey, cursorValue);
   }
 
   getLegacyCloudSyncCursorForDevice(
     workspaceId: string,
     deviceId: string
   ): { cursorValue: string; updatedAt: string } | null {
-    this.ensureWorkspaceSchema(workspaceId);
-    const db = this.openWorkspace(workspaceId);
-    const row = db.prepare(
-      `SELECT cursor_value AS cursorValue, updated_at AS updatedAt
-       FROM ingestion_cursors
-       WHERE cursor_key LIKE ?
-       ORDER BY updated_at DESC
-       LIMIT 1`
-    ).get(`cloud-sync:%|${deviceId}:state`) as { cursorValue: string; updatedAt: string } | undefined;
-    db.close();
-    return row ?? null;
+    return getStoredLegacyCloudSyncCursorForDevice(this.storageWorkspaceContext(), workspaceId, deviceId);
   }
 
   getSyncRecordHashes(
@@ -750,15 +725,7 @@ export class PromptreelStore {
     syncScope: string,
     recordType: string
   ): Map<string, string | null> {
-    this.ensureWorkspaceSchema(workspaceId);
-    const db = this.openWorkspace(workspaceId);
-    const rows = db.prepare(
-      `SELECT record_id AS recordId, record_hash AS recordHash
-       FROM sync_records
-       WHERE sync_scope = ? AND record_type = ?`
-    ).all(syncScope, recordType) as Array<{ recordId: string; recordHash: string | null }>;
-    db.close();
-    return new Map(rows.map((row) => [row.recordId, row.recordHash ?? null]));
+    return getStoredSyncRecordHashes(this.storageWorkspaceContext(), workspaceId, syncScope, recordType);
   }
 
   getLegacySyncRecordHashesForDevice(
@@ -766,28 +733,7 @@ export class PromptreelStore {
     deviceId: string,
     recordType: string
   ): Map<string, string | null> {
-    this.ensureWorkspaceSchema(workspaceId);
-    const db = this.openWorkspace(workspaceId);
-    const rows = db.prepare(
-      `SELECT record_id AS recordId, record_hash AS recordHash, updated_at AS updatedAt
-       FROM sync_records
-       WHERE record_type = ?
-         AND sync_scope LIKE ?
-       ORDER BY updated_at DESC`
-    ).all(recordType, `%|${deviceId}`) as Array<{
-      recordId: string;
-      recordHash: string | null;
-      updatedAt: string;
-    }>;
-    db.close();
-    const latest = new Map<string, string | null>();
-    for (const row of rows) {
-      if (latest.has(row.recordId)) {
-        continue;
-      }
-      latest.set(row.recordId, row.recordHash ?? null);
-    }
-    return latest;
+    return getStoredLegacySyncRecordHashesForDevice(this.storageWorkspaceContext(), workspaceId, deviceId, recordType);
   }
 
   upsertSyncRecords(
@@ -796,148 +742,43 @@ export class PromptreelStore {
     recordType: string,
     records: Array<{ recordId: string; recordHash?: string | null }>
   ): void {
-    if (records.length === 0) {
-      return;
-    }
-    this.ensureWorkspaceSchema(workspaceId);
-    const db = this.openWorkspace(workspaceId);
-    const now = nowIso();
-    const statement = db.prepare(
-      `INSERT INTO sync_records (sync_scope, record_type, record_id, record_hash, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(sync_scope, record_type, record_id) DO UPDATE SET
-         record_hash = excluded.record_hash,
-         updated_at = excluded.updated_at`
-    );
-    db.exec("BEGIN");
-    try {
-      for (const record of records) {
-        statement.run(syncScope, recordType, record.recordId, record.recordHash ?? null, now);
-      }
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    } finally {
-      db.close();
-    }
+    upsertStoredSyncRecords(this.storageWorkspaceContext(), workspaceId, syncScope, recordType, records);
   }
 
   getDaemonState(): { pid: number | null } {
-    const file = join(this.homeDir, "daemon", "daemon.json");
-    if (!existsSync(file)) {
-      return { pid: null };
-    }
-    return safeJsonParse(readFileSync(file, "utf8"), { pid: null });
+    return getStoredDaemonState(this.homeDir);
   }
 
   setDaemonState(pid: number): void {
-    writeFileSync(join(this.homeDir, "daemon", "daemon.json"), JSON.stringify({ pid, updatedAt: nowIso() }, null, 2));
+    setStoredDaemonState(this.homeDir, pid);
   }
 
   clearDaemonState(): void {
-    writeFileSync(join(this.homeDir, "daemon", "daemon.json"), JSON.stringify({ pid: null, updatedAt: nowIso() }, null, 2));
+    clearStoredDaemonState(this.homeDir);
   }
 
   getCloudAuthState(): CloudAuthState | null {
-    const file = join(this.homeDir, "cloud-auth.json");
-    if (!existsSync(file)) {
-      return null;
-    }
-    const parsed = safeJsonParse<Partial<CloudAuthState> | null>(readFileSync(file, "utf8"), null);
-    if (!parsed?.apiBaseUrl || !parsed?.webBaseUrl || !parsed?.deviceId || !parsed?.daemonToken || !parsed?.linkedAt) {
-      return null;
-    }
-    return {
-      apiBaseUrl: parsed.apiBaseUrl,
-      webBaseUrl: parsed.webBaseUrl,
-      userId: parsed.userId ?? null,
-      deviceId: parsed.deviceId,
-      deviceName: parsed.deviceName ?? null,
-      daemonToken: parsed.daemonToken,
-      linkedAt: parsed.linkedAt,
-    };
+    return getStoredCloudAuthState(this.homeDir);
   }
 
   setCloudAuthState(state: CloudAuthState): void {
-    writeFileSync(join(this.homeDir, "cloud-auth.json"), JSON.stringify(state, null, 2));
+    setStoredCloudAuthState(this.homeDir, state);
   }
 
   clearCloudAuthState(): void {
-    const file = join(this.homeDir, "cloud-auth.json");
-    if (existsSync(file)) {
-      writeFileSync(file, "");
-    }
+    clearStoredCloudAuthState(this.homeDir);
   }
 
   resetCloudAuth(deviceId: string | null): { revokedTokens: number; clearedLoginRequests: number } {
-    const db = this.openRegistry();
-    const now = nowIso();
-    let revokedTokens = 0;
-    let clearedLoginRequests = 0;
-
-    if (deviceId) {
-      const revoked = db.prepare(
-        `UPDATE auth_daemon_tokens
-         SET revoked_at = ?
-         WHERE revoked_at IS NULL
-           AND device_id IN (
-             SELECT id FROM auth_devices WHERE device_id = ?
-           )`
-      ).run(now, deviceId);
-      revokedTokens = Number(revoked.changes ?? 0);
-
-      const cleared = db.prepare(`DELETE FROM cli_login_requests WHERE device_id = ?`).run(deviceId);
-      clearedLoginRequests = Number(cleared.changes ?? 0);
-    }
-
-    db.close();
-    this.clearCloudAuthState();
-    return { revokedTokens, clearedLoginRequests };
+    return resetStoredCloudAuth(this.storageRegistryContext(), deviceId);
   }
 
   createCliLoginRequest(deviceId: string, deviceName: string | null, ttlMs = 10 * 60 * 1000): CliLoginRequestRow {
-    const requestedAt = nowIso();
-    const expiresAt = new Date(Date.now() + ttlMs).toISOString();
-    const loginCode = randomBytes(12).toString("hex");
-    const db = this.openRegistry();
-    db.prepare(
-      `INSERT INTO cli_login_requests
-       (login_code, device_id, device_name, requested_at, expires_at, approved_at, completed_at, user_id, daemon_token)
-       VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)`
-    ).run(loginCode, deviceId, deviceName, requestedAt, expiresAt);
-    db.close();
-    return {
-      loginCode,
-      deviceId,
-      deviceName,
-      requestedAt,
-      expiresAt,
-      approvedAt: null,
-      completedAt: null,
-      userId: null,
-      daemonToken: null,
-    };
+    return createStoredCliLoginRequest(this.storageRegistryContext(), deviceId, deviceName, ttlMs);
   }
 
   getCliLoginRequest(loginCode: string): CliLoginRequestRow | null {
-    const db = this.openRegistry();
-    const row = db.prepare(
-      `SELECT
-         login_code AS loginCode,
-         device_id AS deviceId,
-         device_name AS deviceName,
-         requested_at AS requestedAt,
-         expires_at AS expiresAt,
-         approved_at AS approvedAt,
-         completed_at AS completedAt,
-         user_id AS userId,
-         daemon_token AS daemonToken
-       FROM cli_login_requests
-       WHERE login_code = ?`
-    ).get(loginCode) as CliLoginRequestRow | undefined;
-    db.close();
-    return row ?? null;
+    return getStoredCliLoginRequest(this.storageRegistryContext(), loginCode);
   }
 
   approveCliLoginRequest(input: {
@@ -949,132 +790,7 @@ export class PromptreelStore {
     deviceId: string;
     deviceName: string | null;
   }): { user: AuthUserProfile; device: AuthDevice; daemonToken: string } | null {
-    const db = this.openRegistry();
-    const row = db.prepare(
-      `SELECT
-         login_code AS loginCode,
-         device_id AS deviceId,
-         device_name AS deviceName,
-         requested_at AS requestedAt,
-         expires_at AS expiresAt,
-         approved_at AS approvedAt,
-         completed_at AS completedAt,
-         user_id AS userId,
-         daemon_token AS daemonToken
-       FROM cli_login_requests
-       WHERE login_code = ?`
-    ).get(input.loginCode) as CliLoginRequestRow | undefined;
-
-    if (!row || row.deviceId !== input.deviceId || isExpiredIso(row.expiresAt)) {
-      db.close();
-      return null;
-    }
-
-    db.exec("BEGIN");
-    try {
-      const now = nowIso();
-      const existingUser = db.prepare(
-        `SELECT
-           id,
-           clerk_user_id AS clerkUserId,
-           email,
-           name,
-           avatar_url AS avatarUrl,
-           created_at AS createdAt,
-           updated_at AS updatedAt
-         FROM auth_users
-         WHERE clerk_user_id = ?`
-      ).get(input.clerkUserId) as AuthUserRow | undefined;
-
-      const userId = existingUser?.id ?? createId("user");
-      db.prepare(
-        `INSERT INTO auth_users
-         (id, clerk_user_id, email, name, avatar_url, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           email = excluded.email,
-           name = excluded.name,
-           avatar_url = excluded.avatar_url,
-           updated_at = excluded.updated_at`
-      ).run(
-        userId,
-        input.clerkUserId,
-        input.email,
-        input.name,
-        input.avatarUrl,
-        existingUser?.createdAt ?? now,
-        now
-      );
-
-      const existingDevice = db.prepare(
-        `SELECT
-           id,
-           user_id AS userId,
-           device_id AS deviceId,
-           device_name AS deviceName,
-           created_at AS createdAt,
-           last_seen_at AS lastSeenAt
-         FROM auth_devices
-         WHERE user_id = ? AND device_id = ?`
-      ).get(userId, input.deviceId) as AuthDeviceRow | undefined;
-
-      const deviceId = existingDevice?.id ?? createId("device");
-      db.prepare(
-        `INSERT INTO auth_devices
-         (id, user_id, device_id, device_name, created_at, last_seen_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           device_name = excluded.device_name,
-           last_seen_at = excluded.last_seen_at`
-      ).run(
-        deviceId,
-        userId,
-        input.deviceId,
-        input.deviceName,
-        existingDevice?.createdAt ?? now,
-        now
-      );
-
-      const daemonToken = `pltok_${randomBytes(24).toString("hex")}`;
-      const daemonTokenHash = hashToken(daemonToken);
-      db.prepare(
-        `INSERT INTO auth_daemon_tokens
-         (id, user_id, device_id, token_hash, created_at, last_used_at, revoked_at)
-         VALUES (?, ?, ?, ?, ?, NULL, NULL)`
-      ).run(createId("token"), userId, deviceId, daemonTokenHash, now);
-
-      db.prepare(
-        `UPDATE cli_login_requests
-         SET device_name = ?, approved_at = ?, user_id = ?, daemon_token = ?
-         WHERE login_code = ?`
-      ).run(input.deviceName, now, userId, daemonToken, input.loginCode);
-
-      db.exec("COMMIT");
-
-      const user: AuthUserProfile = {
-        id: userId,
-        clerkUserId: input.clerkUserId,
-        email: input.email,
-        name: input.name,
-        avatarUrl: input.avatarUrl,
-        createdAt: existingUser?.createdAt ?? now,
-        updatedAt: now,
-      };
-      const device: AuthDevice = {
-        id: deviceId,
-        userId,
-        deviceId: input.deviceId,
-        deviceName: input.deviceName,
-        createdAt: existingDevice?.createdAt ?? now,
-        lastSeenAt: now,
-      };
-      db.close();
-      return { user, device, daemonToken };
-    } catch (error) {
-      db.exec("ROLLBACK");
-      db.close();
-      throw error;
-    }
+    return approveStoredCliLoginRequest(this.storageRegistryContext(), input);
   }
 
   exchangeCliLoginRequest(loginCode: string, deviceId: string): {
@@ -1083,161 +799,19 @@ export class PromptreelStore {
     user?: AuthUserProfile;
     device?: AuthDevice;
   } {
-    const row = this.getCliLoginRequest(loginCode);
-    if (!row || row.deviceId !== deviceId) {
-      return { status: "not_found" };
-    }
-    if (isExpiredIso(row.expiresAt)) {
-      return { status: "expired" };
-    }
-    if (!row.approvedAt || !row.userId || !row.daemonToken) {
-      return { status: "pending" };
-    }
-
-    const db = this.openRegistry();
-    const user = db.prepare(
-      `SELECT
-         id,
-         clerk_user_id AS clerkUserId,
-         email,
-         name,
-         avatar_url AS avatarUrl,
-         created_at AS createdAt,
-         updated_at AS updatedAt
-       FROM auth_users
-       WHERE id = ?`
-    ).get(row.userId) as AuthUserProfile | undefined;
-    const device = db.prepare(
-      `SELECT
-         id,
-         user_id AS userId,
-         device_id AS deviceId,
-         device_name AS deviceName,
-         created_at AS createdAt,
-         last_seen_at AS lastSeenAt
-       FROM auth_devices
-       WHERE user_id = ? AND device_id = ?`
-    ).get(row.userId, deviceId) as AuthDevice | undefined;
-    db.prepare(`UPDATE cli_login_requests SET completed_at = ? WHERE login_code = ?`).run(nowIso(), loginCode);
-    db.close();
-
-    return {
-      status: "approved",
-      daemonToken: row.daemonToken,
-      user,
-      device,
-    };
+    return exchangeStoredCliLoginRequest(this.storageRegistryContext(), loginCode, deviceId);
   }
 
   authenticateDaemonToken(daemonToken: string): { user: AuthUserProfile; device: AuthDevice } | null {
-    const tokenHash = hashToken(daemonToken);
-    const db = this.openRegistry();
-    const rows = db.prepare(
-      `SELECT
-         t.id AS tokenId,
-         u.id AS userId,
-         u.clerk_user_id AS clerkUserId,
-         u.email AS email,
-         u.name AS name,
-         u.avatar_url AS avatarUrl,
-         u.created_at AS userCreatedAt,
-         u.updated_at AS userUpdatedAt,
-         d.id AS deviceRowId,
-         d.device_id AS deviceId,
-         d.device_name AS deviceName,
-         d.created_at AS deviceCreatedAt,
-         d.last_seen_at AS deviceLastSeenAt,
-         t.token_hash AS tokenHash,
-         t.revoked_at AS revokedAt
-       FROM auth_daemon_tokens t
-       JOIN auth_users u ON u.id = t.user_id
-       JOIN auth_devices d ON d.id = t.device_id
-       WHERE t.revoked_at IS NULL`
-    ).all() as Array<{
-      tokenId: string;
-      userId: string;
-      clerkUserId: string;
-      email: string | null;
-      name: string | null;
-      avatarUrl: string | null;
-      userCreatedAt: string;
-      userUpdatedAt: string;
-      deviceRowId: string;
-      deviceId: string;
-      deviceName: string | null;
-      deviceCreatedAt: string;
-      deviceLastSeenAt: string;
-      tokenHash: string;
-      revokedAt: string | null;
-    }>;
-
-    const match = rows.find((row) => compareTokenHashes(row.tokenHash, tokenHash));
-    if (!match) {
-      db.close();
-      return null;
-    }
-
-    const now = nowIso();
-    db.prepare(`UPDATE auth_daemon_tokens SET last_used_at = ? WHERE id = ?`).run(now, match.tokenId);
-    db.prepare(`UPDATE auth_devices SET last_seen_at = ? WHERE id = ?`).run(now, match.deviceRowId);
-    db.close();
-
-    return {
-      user: {
-        id: match.userId,
-        clerkUserId: match.clerkUserId,
-        email: match.email,
-        name: match.name,
-        avatarUrl: match.avatarUrl,
-        createdAt: match.userCreatedAt,
-        updatedAt: match.userUpdatedAt,
-      },
-      device: {
-        id: match.deviceRowId,
-        userId: match.userId,
-        deviceId: match.deviceId,
-        deviceName: match.deviceName,
-        createdAt: match.deviceCreatedAt,
-        lastSeenAt: now,
-      },
-    };
+    return authenticateStoredDaemonToken(this.storageRegistryContext(), daemonToken);
   }
 
   getAuthUserByClerkUserId(clerkUserId: string): AuthUserProfile | null {
-    const db = this.openRegistry();
-    const row = db.prepare(
-      `SELECT
-         id,
-         clerk_user_id AS clerkUserId,
-         email,
-         name,
-         avatar_url AS avatarUrl,
-         created_at AS createdAt,
-         updated_at AS updatedAt
-       FROM auth_users
-       WHERE clerk_user_id = ?`
-    ).get(clerkUserId) as AuthUserProfile | undefined;
-    db.close();
-    return row ?? null;
+    return getStoredAuthUserByClerkUserId(this.storageRegistryContext(), clerkUserId);
   }
 
   getLatestAuthDeviceForUser(userId: string): AuthDevice | null {
-    const db = this.openRegistry();
-    const row = db.prepare(
-      `SELECT
-         id,
-         user_id AS userId,
-         device_id AS deviceId,
-         device_name AS deviceName,
-         created_at AS createdAt,
-         last_seen_at AS lastSeenAt
-       FROM auth_devices
-       WHERE user_id = ?
-       ORDER BY last_seen_at DESC, id ASC
-       LIMIT 1`
-    ).get(userId) as AuthDevice | undefined;
-    db.close();
-    return row ?? null;
+    return getStoredLatestAuthDeviceForUser(this.storageRegistryContext(), userId);
   }
 
   upsertCloudWorkspaceBundle(
@@ -2101,23 +1675,6 @@ function getThreadLookupKey(prompt: {
   sessionId: string | null;
 }): string {
   return prompt.threadId ?? prompt.sessionId ?? `prompt:${prompt.id}`;
-}
-
-function hashToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
-
-function compareTokenHashes(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left, "utf8");
-  const rightBuffer = Buffer.from(right, "utf8");
-  if (leftBuffer.length !== rightBuffer.length) {
-    return false;
-  }
-  return timingSafeEqual(leftBuffer, rightBuffer);
-}
-
-function isExpiredIso(value: string): boolean {
-  return Date.parse(value) <= Date.now();
 }
 
 export function getFileMtimeMs(path: string): number | null {
