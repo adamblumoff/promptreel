@@ -147,6 +147,18 @@ export function getApiBaseUrl(): string {
   return API_BASE;
 }
 
+export function subscribeToLocalViewerEvents(onUpdate: () => void): () => void {
+  const eventSource = new EventSource(`${API_BASE}/events`);
+  const handleUpdate = () => {
+    onUpdate();
+  };
+  eventSource.addEventListener("update", handleUpdate);
+  return () => {
+    eventSource.removeEventListener("update", handleUpdate);
+    eventSource.close();
+  };
+}
+
 export async function completeCliLogin(
   input: { loginCode: string; deviceId: string; deviceName: string | null },
   sessionToken: string,

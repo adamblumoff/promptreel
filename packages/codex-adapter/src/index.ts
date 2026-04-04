@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
 import WebSocket from "ws";
@@ -45,6 +45,8 @@ import {
 } from "@promptreel/storage";
 
 export const LIVE_ACTIVITY_WINDOW_MS = 90_000;
+const SESSION_WATCH_DEBOUNCE_MS = 150;
+const SESSION_RECOVERY_SWEEP_INTERVAL_MS = 300_000;
 
 interface JsonRpcResponse {
   id: number;
@@ -132,6 +134,28 @@ export interface CodexSessionFileMatch {
   mtimeMs: number | null;
 }
 
+function discoverCodexSessionFile(filePath: string): CodexSessionFileMatch | null {
+  if (!filePath.endsWith(".jsonl") || !existsSync(filePath)) {
+    return null;
+  }
+  const lines = readSessionLines(filePath);
+  const meta = readSessionMeta(lines);
+  const workspacePath = meta.normalizedCwd ?? (meta.cwd && isAbsolute(meta.cwd) ? normalize(meta.cwd) : null);
+  if (!workspacePath) {
+    return null;
+  }
+  return {
+    filePath,
+    sessionId: meta.sessionId,
+    threadId: meta.threadId,
+    cwd: meta.cwd,
+    normalizedCwd: meta.normalizedCwd,
+    source: meta.source,
+    workspaceId: workspaceGroupId(workspacePath),
+    mtimeMs: getFileMtimeMs(filePath)
+  };
+}
+
 function stableId(prefix: string, seed: string): string {
   return `${prefix}_${hashValue(seed).slice(0, 24)}`;
 }
@@ -153,10 +177,23 @@ function walkFiles(root: string): string[] {
 }
 
 function readSessionLines(filePath: string): SessionLine[] {
-  return readFileSync(filePath, "utf8")
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as SessionLine);
+  const lines = readFileSync(filePath, "utf8").split(/\r?\n/);
+  const parsed: SessionLine[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.trim() ?? "";
+    if (!line) {
+      continue;
+    }
+    try {
+      parsed.push(JSON.parse(line) as SessionLine);
+    } catch (error) {
+      if (index === lines.length - 1) {
+        break;
+      }
+      throw error;
+    }
+  }
+  return parsed;
 }
 
 function readSessionMeta(lines: SessionLine[]): SessionMeta {
@@ -1225,26 +1262,9 @@ export function discoverCodexSessionFiles(
   sessionsRoot = join(homedir(), ".codex", "sessions")
 ): CodexSessionFileMatch[] {
   const files = walkFiles(sessionsRoot).filter((filePath) => filePath.endsWith(".jsonl")).sort();
-  const results: CodexSessionFileMatch[] = [];
-  for (const filePath of files) {
-    const lines = readSessionLines(filePath);
-    const meta = readSessionMeta(lines);
-    const workspacePath = meta.normalizedCwd ?? (meta.cwd && isAbsolute(meta.cwd) ? normalize(meta.cwd) : null);
-    if (!workspacePath) {
-      continue;
-    }
-    results.push({
-      filePath,
-      sessionId: meta.sessionId,
-      threadId: meta.threadId,
-      cwd: meta.cwd,
-      normalizedCwd: meta.normalizedCwd,
-      source: meta.source,
-      workspaceId: workspaceGroupId(workspacePath),
-      mtimeMs: getFileMtimeMs(filePath)
-    });
-  }
-  return results;
+  return files
+    .map((filePath) => discoverCodexSessionFile(filePath))
+    .filter((match): match is CodexSessionFileMatch => Boolean(match));
 }
 
 export function importCodexSessions(
@@ -1284,34 +1304,50 @@ export function discoverCodexSessionFilesForRepo(
 export class CodexSessionTailer {
   private readonly statusByWorkspace = new Map<string, WorkspaceIngestionStatus>();
   private readonly recentlyUpdatedSessionIdsByWorkspace = new Map<string, Set<string>>();
-  private timer: NodeJS.Timeout | null = null;
+  private readonly trackedSessionFiles = new Map<string, CodexSessionFileMatch>();
+  private readonly pendingFileTimers = new Map<string, NodeJS.Timeout>();
+  private readonly listeners = new Set<() => void>();
+  private watcher: FSWatcher | null = null;
+  private recoveryTimer: NodeJS.Timeout | null = null;
   private lastScanAt: string | null = null;
   private scanning = false;
 
   constructor(
     private readonly store: PromptreelStore,
-    private readonly pollingIntervalMs = 3_000,
-    private readonly sessionsRoot = join(homedir(), ".codex", "sessions")
+    private readonly sessionsRoot = join(homedir(), ".codex", "sessions"),
+    private readonly recoverySweepIntervalMs = SESSION_RECOVERY_SWEEP_INTERVAL_MS
   ) {}
 
   start(): void {
-    if (this.timer) {
+    if (this.watcher || this.recoveryTimer) {
       return;
     }
-    this.timer = setInterval(() => {
-      this.scanOnce();
-    }, this.pollingIntervalMs);
+    this.rescanAll();
+    this.startWatcher();
+    if (this.recoverySweepIntervalMs > 0) {
+      this.recoveryTimer = setInterval(() => {
+        this.rescanAll();
+      }, this.recoverySweepIntervalMs);
+    }
   }
 
   stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
+    if (this.watcher) {
+      this.watcher.close();
+      this.watcher = null;
     }
+    if (this.recoveryTimer) {
+      clearInterval(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
+    for (const timer of this.pendingFileTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingFileTimers.clear();
   }
 
   scanNow(): IngestionStatus {
-    this.scanOnce();
+    this.rescanAll();
     return this.getStatus();
   }
 
@@ -1339,8 +1375,8 @@ export class CodexSessionTailer {
     });
 
     return {
-      watcher: this.timer ? "running" : "stopped",
-      pollingIntervalMs: this.pollingIntervalMs,
+      watcher: this.watcher || this.recoveryTimer ? "running" : "stopped",
+      pollingIntervalMs: 0,
       sessionsRoot: this.sessionsRoot,
       lastScanAt: this.lastScanAt,
       workspaceStatuses,
@@ -1362,96 +1398,231 @@ export class CodexSessionTailer {
     return new Set(this.recentlyUpdatedSessionIdsByWorkspace.get(workspaceId) ?? []);
   }
 
-  private scanOnce(): void {
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private startWatcher(): void {
+    if (!existsSync(this.sessionsRoot)) {
+      return;
+    }
+    try {
+      this.watcher = watch(this.sessionsRoot, { recursive: true }, (_eventType, filename) => {
+        if (!filename) {
+          this.queueFullRescan();
+          return;
+        }
+        const resolvedPath = normalize(join(this.sessionsRoot, String(filename)));
+        if (!resolvedPath.endsWith(".jsonl")) {
+          return;
+        }
+        this.queueFileReconcile(resolvedPath);
+      });
+      this.watcher.on("error", () => {
+        this.queueFullRescan();
+      });
+    } catch {
+      this.watcher = null;
+    }
+  }
+
+  private queueFullRescan(): void {
+    this.queueFileReconcile("__full_rescan__");
+  }
+
+  private queueFileReconcile(filePath: string): void {
+    const existing = this.pendingFileTimers.get(filePath);
+    if (existing) {
+      clearTimeout(existing);
+    }
+    const timer = setTimeout(() => {
+      this.pendingFileTimers.delete(filePath);
+      if (filePath === "__full_rescan__") {
+        this.rescanAll();
+        return;
+      }
+      this.reconcileFile(filePath);
+    }, SESSION_WATCH_DEBOUNCE_MS);
+    this.pendingFileTimers.set(filePath, timer);
+  }
+
+  private rescanAll(): void {
     if (this.scanning) {
       return;
     }
     this.scanning = true;
     try {
       const matches = discoverCodexSessionFiles(this.sessionsRoot);
-      const recentCutoff = Date.now() - LIVE_ACTIVITY_WINDOW_MS;
-      const groupedMatches = new Map<string, CodexSessionFileMatch[]>();
+      const nextTrackedFiles = new Map(matches.map((match) => [normalize(match.filePath), match]));
       for (const match of matches) {
-        const folderPath = match.normalizedCwd ?? this.store.resolveWorkspacePathAlias(match.cwd);
-        if (!folderPath) {
+        const normalizedPath = normalize(match.filePath);
+        const previous = this.trackedSessionFiles.get(normalizedPath);
+        this.trackedSessionFiles.set(normalizedPath, match);
+        if (previous && previous.mtimeMs === match.mtimeMs) {
           continue;
         }
-        const workspace = this.store.ensureWorkspaceGroup(folderPath, {
-          gitRootPath: folderPath,
-          gitDir: join(folderPath, ".git"),
-          source: "auto_discovered"
-        });
-        const bucket = groupedMatches.get(workspace.id) ?? [];
-        bucket.push({
-          ...match,
-          normalizedCwd: folderPath,
-          workspaceId: workspace.id
-        });
-        groupedMatches.set(workspace.id, bucket);
-      }
-
-      const workspaces = this.store.listWorkspaces();
-      for (const workspace of workspaces) {
-        const workspaceMatches = groupedMatches.get(workspace.id) ?? [];
-        const recentlyUpdatedSessionIds = new Set(
-          workspaceMatches
-            .filter((match) => (match.mtimeMs ?? 0) >= recentCutoff)
-            .map((match) => match.sessionId)
-            .filter((sessionId): sessionId is string => Boolean(sessionId))
-        );
-        const lastSessionUpdateAtMs = workspaceMatches.reduce<number | null>((latest, match) => {
-          const timestamp = typeof match.mtimeMs === "number" ? match.mtimeMs : null;
-          if (timestamp == null) {
-            return latest;
-          }
-          return latest == null || timestamp > latest ? timestamp : latest;
-        }, null);
-        this.recentlyUpdatedSessionIdsByWorkspace.set(workspace.id, recentlyUpdatedSessionIds);
         try {
-          const result = importSessionFiles(this.store, workspaceMatches, {
+          const result = importSessionFiles(this.store, [match], {
             tailOpenPrompt: true
           });
-          const threads = this.store.listThreads(workspace.id);
-          const previous = this.statusByWorkspace.get(workspace.id);
-          this.statusByWorkspace.set(workspace.id, {
-            workspaceId: workspace.id,
-            folderPath: workspace.folderPath,
-            mode: workspaceMatches.length > 0 ? "watching" : "idle",
-            threadCount: threads.length,
-            openThreadCount: threads.filter((thread) => thread.status === "open").length,
-            sessionFileCount: workspaceMatches.length,
-            recentlyUpdatedSessionCount: workspaceMatches.filter((match) => (match.mtimeMs ?? 0) >= recentCutoff).length,
-            lastSessionUpdateAt: lastSessionUpdateAtMs ? new Date(lastSessionUpdateAtMs).toISOString() : previous?.lastSessionUpdateAt ?? null,
-            lastImportAt: workspaceMatches.length > 0 ? nowIso() : previous?.lastImportAt ?? null,
-            lastImportResult: result.byWorkspace[workspace.id]
-              ?? (workspaceMatches.length > 0
-                ? { importedFiles: 0, importedPrompts: 0 }
-                : previous?.lastImportResult ?? null),
-            lastError: null
-          });
+          this.statusByWorkspace.set(
+            match.workspaceId,
+            this.buildWorkspaceStatus(match.workspaceId, {
+              lastImportAt: nowIso(),
+              lastImportResult: result.byWorkspace[match.workspaceId] ?? { importedFiles: 0, importedPrompts: 0 },
+              lastError: null
+            })
+          );
         } catch (error) {
-          const previous = this.statusByWorkspace.get(workspace.id);
-          const threads = this.store.listThreads(workspace.id);
-          this.statusByWorkspace.set(workspace.id, {
-            workspaceId: workspace.id,
-            folderPath: workspace.folderPath,
-            mode: "error",
-            threadCount: previous?.threadCount ?? threads.length,
-            openThreadCount: previous?.openThreadCount ?? threads.filter((thread) => thread.status === "open").length,
-            sessionFileCount: workspaceMatches.length,
-            recentlyUpdatedSessionCount: workspaceMatches.filter((match) => (match.mtimeMs ?? 0) >= recentCutoff).length,
-            lastSessionUpdateAt: lastSessionUpdateAtMs ? new Date(lastSessionUpdateAtMs).toISOString() : previous?.lastSessionUpdateAt ?? null,
-            lastImportAt: previous?.lastImportAt ?? null,
-            lastImportResult: previous?.lastImportResult ?? null,
-            lastError: error instanceof Error ? error.message : String(error)
-          });
+          this.statusByWorkspace.set(
+            match.workspaceId,
+            this.buildWorkspaceStatus(match.workspaceId, {
+              lastError: error instanceof Error ? error.message : String(error)
+            })
+          );
         }
       }
-
+      for (const [filePath, previousMatch] of [...this.trackedSessionFiles.entries()]) {
+        if (nextTrackedFiles.has(filePath)) {
+          continue;
+        }
+        this.trackedSessionFiles.delete(filePath);
+        this.statusByWorkspace.set(previousMatch.workspaceId, this.buildWorkspaceStatus(previousMatch.workspaceId));
+      }
+      this.refreshAllWorkspaceStatuses();
       this.lastScanAt = nowIso();
+      this.emitUpdate();
     } finally {
       this.scanning = false;
     }
+  }
+
+  private reconcileFile(filePath: string): void {
+    if (this.scanning) {
+      this.queueFileReconcile(filePath);
+      return;
+    }
+    this.scanning = true;
+    try {
+      const previous = this.trackedSessionFiles.get(filePath) ?? null;
+      if (!existsSync(filePath)) {
+        if (previous) {
+          this.trackedSessionFiles.delete(filePath);
+          this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, {
+            lastError: null
+          }));
+        }
+        this.refreshAllWorkspaceStatuses();
+        this.lastScanAt = nowIso();
+        this.emitUpdate();
+        return;
+      }
+      const match = discoverCodexSessionFile(filePath);
+      if (!match) {
+        if (previous) {
+          this.trackedSessionFiles.delete(filePath);
+          this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, {
+            lastError: null
+          }));
+          this.refreshAllWorkspaceStatuses();
+          this.emitUpdate();
+        }
+        this.lastScanAt = nowIso();
+        return;
+      }
+      if (previous && previous.mtimeMs === match.mtimeMs) {
+        this.lastScanAt = nowIso();
+        return;
+      }
+      this.trackedSessionFiles.set(filePath, match);
+      try {
+        const result = importSessionFiles(this.store, [match], {
+          tailOpenPrompt: true
+        });
+        this.statusByWorkspace.set(
+          match.workspaceId,
+          this.buildWorkspaceStatus(match.workspaceId, {
+            lastImportAt: nowIso(),
+            lastImportResult: result.byWorkspace[match.workspaceId] ?? { importedFiles: 0, importedPrompts: 0 },
+            lastError: null
+          })
+        );
+      } catch (error) {
+        this.statusByWorkspace.set(
+          match.workspaceId,
+          this.buildWorkspaceStatus(match.workspaceId, {
+            lastError: error instanceof Error ? error.message : String(error)
+          })
+        );
+      }
+      if (previous && previous.workspaceId !== match.workspaceId) {
+        this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId));
+      }
+      this.refreshAllWorkspaceStatuses();
+      this.lastScanAt = nowIso();
+      this.emitUpdate();
+    } finally {
+      this.scanning = false;
+    }
+  }
+
+  private refreshAllWorkspaceStatuses(): void {
+    const workspaceIds = new Set([
+      ...this.store.listWorkspaces().map((workspace) => workspace.id),
+      ...this.statusByWorkspace.keys(),
+      ...[...this.trackedSessionFiles.values()].map((match) => match.workspaceId)
+    ]);
+    for (const workspaceId of workspaceIds) {
+      this.statusByWorkspace.set(workspaceId, this.buildWorkspaceStatus(workspaceId));
+    }
+  }
+
+  private emitUpdate(): void {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
+
+  private buildWorkspaceStatus(
+    workspaceId: string,
+    overrides: Partial<Pick<WorkspaceIngestionStatus, "lastImportAt" | "lastImportResult" | "lastError">> = {}
+  ): WorkspaceIngestionStatus {
+    const previous = this.statusByWorkspace.get(workspaceId);
+    const workspace = this.store.listWorkspaces().find((item) => item.id === workspaceId) ?? null;
+    const workspaceMatches = [...this.trackedSessionFiles.values()].filter((match) => match.workspaceId === workspaceId);
+    const recentCutoff = Date.now() - LIVE_ACTIVITY_WINDOW_MS;
+    const recentlyUpdatedSessionIds = new Set(
+      workspaceMatches
+        .filter((match) => (match.mtimeMs ?? 0) >= recentCutoff)
+        .map((match) => match.sessionId)
+        .filter((sessionId): sessionId is string => Boolean(sessionId))
+    );
+    this.recentlyUpdatedSessionIdsByWorkspace.set(workspaceId, recentlyUpdatedSessionIds);
+    const lastSessionUpdateAtMs = workspaceMatches.reduce<number | null>((latest, match) => {
+      const timestamp = typeof match.mtimeMs === "number" ? match.mtimeMs : null;
+      if (timestamp == null) {
+        return latest;
+      }
+      return latest == null || timestamp > latest ? timestamp : latest;
+    }, null);
+    const threads = workspace ? this.store.listThreads(workspaceId) : [];
+    const lastError = overrides.lastError !== undefined ? overrides.lastError : previous?.lastError ?? null;
+    return {
+      workspaceId,
+      folderPath: workspace?.folderPath ?? previous?.folderPath ?? null,
+      mode: lastError ? "error" : workspaceMatches.length > 0 ? "watching" : "idle",
+      threadCount: threads.length,
+      openThreadCount: threads.filter((thread) => thread.status === "open").length,
+      sessionFileCount: workspaceMatches.length,
+      recentlyUpdatedSessionCount: workspaceMatches.filter((match) => (match.mtimeMs ?? 0) >= recentCutoff).length,
+      lastSessionUpdateAt: lastSessionUpdateAtMs ? new Date(lastSessionUpdateAtMs).toISOString() : previous?.lastSessionUpdateAt ?? null,
+      lastImportAt: overrides.lastImportAt ?? previous?.lastImportAt ?? null,
+      lastImportResult: overrides.lastImportResult ?? previous?.lastImportResult ?? null,
+      lastError
+    };
   }
 }
 

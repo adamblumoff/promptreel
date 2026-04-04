@@ -97,6 +97,13 @@ export function buildServer() {
       blobCount: number;
     },
   };
+  const streamSubscribers = new Set<() => void>();
+  const broadcastDaemonEvent = () => {
+    for (const subscriber of streamSubscribers) {
+      subscriber();
+    }
+  };
+  tailer.subscribe(broadcastDaemonEvent);
 
   app.register(cors, {
     origin: true
@@ -112,6 +119,40 @@ export function buildServer() {
   app.get("/api/viewer-status", async (request): Promise<ViewerStatusResponse> => {
     const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
     return buildViewerStatus(cloudUser, cloudStore, tailer, runtimeStatus);
+  });
+
+  app.get("/api/events", async (request, reply) => {
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    const writeEvent = (event: string, data: Record<string, unknown>) => {
+      reply.raw.write(`event: ${event}\n`);
+      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+    writeEvent("ready", { at: new Date().toISOString() });
+    const subscriber = () => {
+      writeEvent("update", { at: new Date().toISOString() });
+    };
+    streamSubscribers.add(subscriber);
+    const keepAlive = setInterval(() => {
+      writeEvent("ping", { at: new Date().toISOString() });
+    }, 25_000);
+    let closed = false;
+    const cleanup = () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      clearInterval(keepAlive);
+      streamSubscribers.delete(subscriber);
+      reply.raw.end();
+    };
+    request.raw.on("close", cleanup);
+    request.raw.on("end", cleanup);
   });
 
   app.get("/api/workspaces", async (request): Promise<WorkspaceListResponse> => {
@@ -341,14 +382,19 @@ export function buildServer() {
     });
   }
 
-  return { app, store, tailer, cloudStore, runtimeStatus };
+  return { app, store, tailer, cloudStore, runtimeStatus, broadcastDaemonEvent };
 }
 
 export async function startDaemon() {
-  const { app, store, tailer, cloudStore, runtimeStatus } = buildServer();
+  const { app, store, tailer, cloudStore, runtimeStatus, broadcastDaemonEvent } = buildServer();
   const port = Number(process.env.PORT ?? process.env.PROMPTREEL_PORT ?? "4312");
   const host = process.env.PROMPTREEL_HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
-  const cloudSyncController = createCloudSyncController({ store, tailer, runtimeStatus });
+  const cloudSyncController = createCloudSyncController({
+    store,
+    tailer,
+    runtimeStatus,
+    notifyChange: broadcastDaemonEvent,
+  });
 
   await cloudStore.ensureReady();
   await app.listen({

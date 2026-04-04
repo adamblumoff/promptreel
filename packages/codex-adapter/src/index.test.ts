@@ -1,11 +1,11 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
 import { SAMPLE_CODEX_SESSION } from "@promptreel/test-fixtures";
 import { PromptreelStore } from "@promptreel/storage";
-import { importCodexSessions } from "./index";
+import { CodexSessionTailer, importCodexSessions } from "./index";
 
 describe("importCodexSessions", () => {
   test("segments prompt-to-idle windows from Codex session jsonl", () => {
@@ -826,6 +826,77 @@ index 1111111..2222222 100644
     expect(workspaces).toHaveLength(1);
     expect(workspaces[0]?.folderPath).toBe(repoPath);
   });
+
+  test("watches for newly created session files after startup", async () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-tailer-watch-new-");
+    const store = new PromptreelStore(join(root, ".pl"));
+    const tailer = new CodexSessionTailer(store, join(root, "sessions"), 0);
+
+    try {
+      tailer.start();
+      writeCodexSession(
+        sessionsRoot,
+        repoPath,
+        "new-session.jsonl",
+        [
+          eventMsg("2026-03-29T07:00:01.000Z", "user_message", "Watch for this prompt."),
+          agentMessage("2026-03-29T07:00:02.000Z", "commentary", "Still working.")
+        ]
+      );
+
+      await waitForCondition(() => store.listWorkspaces().length === 1);
+      const workspace = store.listWorkspaces()[0]!;
+      await waitForCondition(() => store.listPrompts(workspace.id).length === 1);
+
+      expect(store.listPrompts(workspace.id)[0]?.status).toBe("in_progress");
+      expect(tailer.getStatus().workspaceStatuses[0]?.sessionFileCount).toBe(1);
+    } finally {
+      tailer.stop();
+    }
+  });
+
+  test("re-imports an active session file when Codex appends more events", async () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-tailer-watch-append-");
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "active-session.jsonl",
+      [eventMsg("2026-03-29T08:00:01.000Z", "user_message", "First prompt.")]
+    );
+    const store = new PromptreelStore(join(root, ".pl"));
+    const tailer = new CodexSessionTailer(store, join(root, "sessions"), 0);
+
+    try {
+      tailer.start();
+      await waitForCondition(() => store.listWorkspaces().length === 1);
+      const workspace = store.listWorkspaces()[0]!;
+      await waitForCondition(() => store.listPrompts(workspace.id).length === 1);
+
+      appendFileSync(
+        join(sessionsRoot, "active-session.jsonl"),
+        [
+          "",
+          agentMessage("2026-03-29T08:00:02.000Z", "final_answer", "First answer."),
+          eventMsg("2026-03-29T08:00:03.000Z", "user_message", "Second prompt."),
+          agentMessage("2026-03-29T08:00:04.000Z", "commentary", "Working on the second prompt.")
+        ].join("\n"),
+        "utf8"
+      );
+
+      await waitForCondition(() => store.listPrompts(workspace.id).length === 2);
+      const prompts = store.listPrompts(workspace.id);
+      const firstPrompt = prompts.find((prompt) => prompt.promptSummary === "First prompt.")!;
+      const secondPrompt = prompts.find((prompt) => prompt.promptSummary === "Second prompt.")!;
+      const firstPromptDetail = store.getPromptDetail(workspace.id, firstPrompt.id)!;
+
+      expect(firstPrompt.status).toBe("imported");
+      expect(secondPrompt.status).toBe("in_progress");
+      expect(firstPromptDetail.artifacts.some((artifact) => artifact.type === "final_output")).toBe(true);
+      expect(tailer.getStatus().workspaceStatuses[0]?.sessionFileCount).toBe(1);
+    } finally {
+      tailer.stop();
+    }
+  });
 });
 
 function createImportHarness(prefix: string): { root: string; repoPath: string; sessionsRoot: string } {
@@ -893,4 +964,19 @@ function customToolCallOutput(timestamp: string, callId: string, output: string)
 
 function escapeJson(value: string): string {
   return JSON.stringify(value).slice(1, -1);
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs = 3_000,
+  intervalMs = 25
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(`Condition not met within ${timeoutMs}ms`);
 }

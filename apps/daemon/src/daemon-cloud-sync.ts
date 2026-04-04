@@ -250,10 +250,12 @@ export function createCloudSyncController({
   store,
   tailer,
   runtimeStatus,
+  notifyChange,
 }: {
   store: PromptreelStore;
   tailer: CodexSessionTailer;
   runtimeStatus: DaemonRuntimeStatus;
+  notifyChange?: () => void;
 }) {
   let syncInFlight = false;
   let cloudSyncTimer: NodeJS.Timeout | null = null;
@@ -303,6 +305,7 @@ export function createCloudSyncController({
     const authState = store.getCloudAuthState();
     if (!authState?.daemonToken) {
       runtimeStatus.lastCloudSyncError = "Cloud sync paused: not signed in.";
+      notifyChange?.();
       reportCloudSyncNotice(
         "Cloud sync paused: not signed in. Run `pnpm dev:cli -- login` to reconnect this daemon.",
         "warn"
@@ -340,6 +343,7 @@ export function createCloudSyncController({
         syncedBlobCount += delta.bundle.blobs.length;
         syncedWorkspaces.push(`${workspace.slug} (${delta.bundle.prompts.length} prompts)`);
       }
+      notifyChange?.();
       if (syncedWorkspaces.length > 0) {
         runtimeStatus.lastCloudSyncStats = {
           workspaceCount: syncedWorkspaces.length,
@@ -353,10 +357,12 @@ export function createCloudSyncController({
       }
     } catch (error) {
       runtimeStatus.lastCloudSyncError = error instanceof Error ? error.message : String(error);
+      notifyChange?.();
       console.error(runtimeStatus.lastCloudSyncError);
     } finally {
       syncInFlight = false;
       runtimeStatus.syncInFlight = false;
+      notifyChange?.();
       scheduleCloudSync();
     }
   };

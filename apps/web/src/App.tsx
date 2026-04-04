@@ -7,6 +7,7 @@ import {
   fetchThreads,
   fetchWorkspaces,
   rescanSessions,
+  subscribeToLocalViewerEvents,
 } from "./api";
 import { CliLoginPage } from "./auth";
 import type {
@@ -63,10 +64,6 @@ async function warmDiffViewer() {
   await import("./diff-viewer");
 }
 
-const WORKSPACE_POLL_MS = 20_000;
-const ACTIVE_THREADS_POLL_MS = 5_000;
-const IDLE_THREADS_POLL_MS = 12_000;
-const ACTIVE_DETAIL_POLL_MS = 3_000;
 const HOSTED_WORKSPACE_POLL_MS = 10_000;
 const HOSTED_ACTIVE_THREADS_POLL_MS = 4_000;
 const HOSTED_IDLE_THREADS_POLL_MS = 12_000;
@@ -139,9 +136,13 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   const [blobCache, setBlobCache] = useState<Record<string, string>>({});
   const [blobLoadingById, setBlobLoadingById] = useState<Record<string, boolean>>({});
   const [viewerStatus, setViewerStatus] = useState<ViewerStatus | null>(null);
+  const [localRefreshTick, setLocalRefreshTick] = useState(0);
   const detailControllers = useRef<Record<string, AbortController | undefined>>({});
   const previousPromptStatusesRef = useRef<Partial<Record<string, PromptListItem["status"]>>>({});
   const promptRevisionsRef = useRef<Record<string, string>>({});
+  const localThreadRefreshRef = useRef<Record<string, number>>({});
+  const localPromptRefreshRef = useRef<Record<string, number>>({});
+  const localDetailRefreshRef = useRef<Record<string, number>>({});
   const isHostedViewer = viewerMode === "cloud";
 
   /* visibility */
@@ -156,6 +157,17 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   useEffect(() => persist(KEYS.workspace, selectedWorkspaceId), [selectedWorkspaceId]);
   useEffect(() => persist(KEYS.thread, selectedThreadId), [selectedThreadId]);
   useEffect(() => persist(KEYS.transcriptOrder, transcriptOrder), [transcriptOrder]);
+
+  useEffect(() => {
+    if (isHostedViewer) {
+      return;
+    }
+    return subscribeToLocalViewerEvents(() => {
+      startTransition(() => {
+        setLocalRefreshTick((current) => current + 1);
+      });
+    });
+  }, [isHostedViewer]);
 
   useEffect(() => {
     if (!visible) {
@@ -181,13 +193,19 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     };
 
     void go();
+    if (!isHostedViewer) {
+      return () => {
+        live = false;
+        ctrl?.abort();
+      };
+    }
     const id = setInterval(() => void go(), VIEWER_STATUS_POLL_MS);
     return () => {
       live = false;
       ctrl?.abort();
       clearInterval(id);
     };
-  }, [visible]);
+  }, [isHostedViewer, localRefreshTick, visible]);
 
   /* ── fetch workspaces ─────────────────────────────────────────────────── */
 
@@ -214,9 +232,12 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     };
 
     void go();
-    const id = setInterval(() => void go(), isHostedViewer ? HOSTED_WORKSPACE_POLL_MS : WORKSPACE_POLL_MS);
+    if (!isHostedViewer) {
+      return () => { live = false; ctrl?.abort(); };
+    }
+    const id = setInterval(() => void go(), HOSTED_WORKSPACE_POLL_MS);
     return () => { live = false; ctrl?.abort(); clearInterval(id); };
-  }, [isHostedViewer, visible]);
+  }, [isHostedViewer, localRefreshTick, visible]);
 
   /* ── fetch threads ────────────────────────────────────────────────────── */
 
@@ -229,8 +250,8 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     let ctrl: AbortController | null = null;
     const hasCached = Boolean(cachedThreads);
     const interval = selectedWorkspace?.isGenerating
-      ? (isHostedViewer ? HOSTED_ACTIVE_THREADS_POLL_MS : ACTIVE_THREADS_POLL_MS)
-      : (isHostedViewer ? HOSTED_IDLE_THREADS_POLL_MS : IDLE_THREADS_POLL_MS);
+      ? HOSTED_ACTIVE_THREADS_POLL_MS
+      : HOSTED_IDLE_THREADS_POLL_MS;
 
     const go = async () => {
       ctrl?.abort();
@@ -247,10 +268,20 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
       finally { if (live) setThreadsLoading(false); }
     };
 
+    if (!isHostedViewer) {
+      const previousTick = localThreadRefreshRef.current[selectedWorkspaceId] ?? -1;
+      const shouldRefresh = !hasCached || previousTick !== localRefreshTick;
+      if (shouldRefresh) {
+        localThreadRefreshRef.current[selectedWorkspaceId] = localRefreshTick;
+        void go();
+      }
+      return () => { live = false; ctrl?.abort(); };
+    }
+
     void go();
     const id = setInterval(() => void go(), interval);
     return () => { live = false; ctrl?.abort(); clearInterval(id); };
-  }, [cachedThreads, isHostedViewer, selectedWorkspace?.isGenerating, visible, selectedWorkspaceId]);
+  }, [cachedThreads, isHostedViewer, localRefreshTick, selectedWorkspace?.isGenerating, visible, selectedWorkspaceId]);
 
   /* ── fetch prompts ────────────────────────────────────────────────────── */
 
@@ -289,16 +320,20 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     };
 
     const previousRevision = promptRevisionsRef.current[ck];
-    const shouldRefresh = !hasCached || previousRevision !== selThreadRevision;
+    const previousLocalTick = localPromptRefreshRef.current[ck] ?? -1;
+    const shouldRefresh = !hasCached
+      || previousRevision !== selThreadRevision
+      || (!isHostedViewer && previousLocalTick !== localRefreshTick);
     if (shouldRefresh) {
       promptRevisionsRef.current[ck] = selThreadRevision;
+      localPromptRefreshRef.current[ck] = localRefreshTick;
       void go();
     }
     return () => {
       live = false;
       ctrl?.abort();
     };
-  }, [cachedPrompts, visible, selThreadRevision, selectedThreadId, selThreadKey, selectedWorkspaceId]);
+  }, [cachedPrompts, isHostedViewer, localRefreshTick, visible, selThreadRevision, selectedThreadId, selThreadKey, selectedWorkspaceId]);
 
   const prompts = pKey ? (promptsByKey[pKey] ?? []) : [];
 
@@ -306,6 +341,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     previousPromptStatusesRef.current = {};
     if (!pKey) {
       promptRevisionsRef.current = {};
+      localPromptRefreshRef.current = {};
     }
   }, [pKey]);
 
@@ -349,14 +385,22 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     const ep = prompts.find((p) => p.id === expandedPromptId);
     if (!ep) { setExpandedPromptId(null); return; }
     if (!detailsById[expandedPromptId]) void loadDetail(selectedWorkspaceId, expandedPromptId);
+    if (!isHostedViewer) {
+      const previousTick = localDetailRefreshRef.current[expandedPromptId] ?? -1;
+      if (previousTick !== localRefreshTick && detailsById[expandedPromptId]) {
+        localDetailRefreshRef.current[expandedPromptId] = localRefreshTick;
+        void loadDetail(selectedWorkspaceId, expandedPromptId, true);
+      }
+      return;
+    }
     if (ep.status !== "in_progress") return;
 
     const id = setInterval(
       () => void loadDetail(selectedWorkspaceId, expandedPromptId, true),
-      isHostedViewer ? HOSTED_ACTIVE_DETAIL_POLL_MS : ACTIVE_DETAIL_POLL_MS
+      HOSTED_ACTIVE_DETAIL_POLL_MS
     );
     return () => clearInterval(id);
-  }, [expandedPromptId, isHostedViewer, visible, detailsById, prompts, selectedWorkspaceId]);
+  }, [detailsById, expandedPromptId, isHostedViewer, localRefreshTick, prompts, selectedWorkspaceId, visible]);
 
   useEffect(() => {
     if (!selectedWorkspaceId || !expandedPromptId) return;
