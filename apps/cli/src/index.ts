@@ -231,7 +231,11 @@ function startDaemonProcess(): void {
   }
   const child = spawn(process.execPath, [daemonEntry], {
     detached: true,
-    stdio: "ignore"
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      PROMPTREEL_ENABLE_CLOUD_SYNC: "1",
+    },
   });
   child.unref();
   printBlock([

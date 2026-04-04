@@ -43,6 +43,7 @@ const CLOUD_DAEMON_CONNECTED_WINDOW_MS = 120_000;
 const CLOUD_SYNC_ACTIVE_INTERVAL_MS = 1_500;
 const CLOUD_SYNC_IDLE_INTERVAL_MS = 8_000;
 const CLOUD_SYNC_ERROR_INTERVAL_MS = 4_000;
+const CLOUD_SYNC_ENABLED = process.env.PROMPTREEL_ENABLE_CLOUD_SYNC === "1";
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -629,6 +630,9 @@ export async function startDaemon() {
   };
 
   const syncCloudWorkspaces = async () => {
+    if (!CLOUD_SYNC_ENABLED) {
+      return;
+    }
     if (syncInFlight) {
       return;
     }
@@ -688,7 +692,9 @@ export async function startDaemon() {
     port
   });
   tailer.start();
-  void syncCloudWorkspaces();
+  if (CLOUD_SYNC_ENABLED) {
+    void syncCloudWorkspaces();
+  }
   store.setDaemonState(process.pid);
   const shutdown = async () => {
     if (cloudSyncTimer) {
