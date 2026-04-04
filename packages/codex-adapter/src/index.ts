@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
 import WebSocket from "ws";
@@ -47,6 +47,7 @@ import {
 export const LIVE_ACTIVITY_WINDOW_MS = 90_000;
 const SESSION_WATCH_DEBOUNCE_MS = 150;
 const SESSION_RECOVERY_SWEEP_INTERVAL_MS = 300_000;
+const SESSION_META_READ_BYTES = 8_192;
 
 interface JsonRpcResponse {
   id: number;
@@ -134,12 +135,58 @@ export interface CodexSessionFileMatch {
   mtimeMs: number | null;
 }
 
+export interface CodexSessionTailerUpdate {
+  kind: "ingest";
+  at: string;
+  workspaceIds: string[];
+  threadKeys: string[];
+}
+
+function readSessionHead(filePath: string, maxBytes = SESSION_META_READ_BYTES): string {
+  const fd = openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+    return buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function parseSessionLines(text: string): SessionLine[] {
+  const lines = text.split(/\r?\n/);
+  const parsed: SessionLine[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.trim() ?? "";
+    if (!line) {
+      continue;
+    }
+    try {
+      parsed.push(JSON.parse(line) as SessionLine);
+    } catch (error) {
+      if (index === lines.length - 1) {
+        break;
+      }
+      throw error;
+    }
+  }
+  return parsed;
+}
+
+function findSessionMetaLine(lines: SessionLine[]): SessionLine | null {
+  return lines.find((line) => line.type === "session_meta") ?? null;
+}
+
+function readSessionMetaFromHead(filePath: string): SessionMeta | null {
+  const lines = parseSessionLines(readSessionHead(filePath));
+  return findSessionMetaLine(lines) ? readSessionMeta(lines) : null;
+}
+
 function discoverCodexSessionFile(filePath: string): CodexSessionFileMatch | null {
   if (!filePath.endsWith(".jsonl") || !existsSync(filePath)) {
     return null;
   }
-  const lines = readSessionLines(filePath);
-  const meta = readSessionMeta(lines);
+  const meta = readSessionMetaFromHead(filePath) ?? readSessionMeta(readSessionLines(filePath));
   const workspacePath = meta.normalizedCwd ?? (meta.cwd && isAbsolute(meta.cwd) ? normalize(meta.cwd) : null);
   if (!workspacePath) {
     return null;
@@ -177,27 +224,11 @@ function walkFiles(root: string): string[] {
 }
 
 function readSessionLines(filePath: string): SessionLine[] {
-  const lines = readFileSync(filePath, "utf8").split(/\r?\n/);
-  const parsed: SessionLine[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]?.trim() ?? "";
-    if (!line) {
-      continue;
-    }
-    try {
-      parsed.push(JSON.parse(line) as SessionLine);
-    } catch (error) {
-      if (index === lines.length - 1) {
-        break;
-      }
-      throw error;
-    }
-  }
-  return parsed;
+  return parseSessionLines(readFileSync(filePath, "utf8"));
 }
 
 function readSessionMeta(lines: SessionLine[]): SessionMeta {
-  const meta = lines.find((line) => line.type === "session_meta");
+  const meta = findSessionMetaLine(lines);
   const cwd = typeof meta?.payload?.cwd === "string" ? meta.payload.cwd : null;
   const normalizedCwd = normalizeSessionCwd(cwd);
   return {
@@ -1306,7 +1337,7 @@ export class CodexSessionTailer {
   private readonly recentlyUpdatedSessionIdsByWorkspace = new Map<string, Set<string>>();
   private readonly trackedSessionFiles = new Map<string, CodexSessionFileMatch>();
   private readonly pendingFileTimers = new Map<string, NodeJS.Timeout>();
-  private readonly listeners = new Set<() => void>();
+  private readonly listeners = new Set<(update: CodexSessionTailerUpdate) => void>();
   private watcher: FSWatcher | null = null;
   private recoveryTimer: NodeJS.Timeout | null = null;
   private lastScanAt: string | null = null;
@@ -1398,7 +1429,7 @@ export class CodexSessionTailer {
     return new Set(this.recentlyUpdatedSessionIdsByWorkspace.get(workspaceId) ?? []);
   }
 
-  subscribe(listener: () => void): () => void {
+  subscribe(listener: (update: CodexSessionTailerUpdate) => void): () => void {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -1457,12 +1488,18 @@ export class CodexSessionTailer {
     try {
       const matches = discoverCodexSessionFiles(this.sessionsRoot);
       const nextTrackedFiles = new Map(matches.map((match) => [normalize(match.filePath), match]));
+      const changedWorkspaceIds = new Set<string>();
+      const changedThreadKeys = new Set<string>();
       for (const match of matches) {
         const normalizedPath = normalize(match.filePath);
         const previous = this.trackedSessionFiles.get(normalizedPath);
         this.trackedSessionFiles.set(normalizedPath, match);
         if (previous && previous.mtimeMs === match.mtimeMs) {
           continue;
+        }
+        changedWorkspaceIds.add(match.workspaceId);
+        if (match.threadId ?? match.sessionId) {
+          changedThreadKeys.add(match.threadId ?? match.sessionId ?? "");
         }
         try {
           const result = importSessionFiles(this.store, [match], {
@@ -1491,10 +1528,21 @@ export class CodexSessionTailer {
         }
         this.trackedSessionFiles.delete(filePath);
         this.statusByWorkspace.set(previousMatch.workspaceId, this.buildWorkspaceStatus(previousMatch.workspaceId));
+        changedWorkspaceIds.add(previousMatch.workspaceId);
+        if (previousMatch.threadId ?? previousMatch.sessionId) {
+          changedThreadKeys.add(previousMatch.threadId ?? previousMatch.sessionId ?? "");
+        }
       }
       this.refreshAllWorkspaceStatuses();
       this.lastScanAt = nowIso();
-      this.emitUpdate();
+      if (changedWorkspaceIds.size > 0 || changedThreadKeys.size > 0) {
+        this.emitUpdate({
+          kind: "ingest",
+          at: this.lastScanAt ?? nowIso(),
+          workspaceIds: [...changedWorkspaceIds],
+          threadKeys: [...changedThreadKeys],
+        });
+      }
     } finally {
       this.scanning = false;
     }
@@ -1517,7 +1565,12 @@ export class CodexSessionTailer {
         }
         this.refreshAllWorkspaceStatuses();
         this.lastScanAt = nowIso();
-        this.emitUpdate();
+        this.emitUpdate({
+          kind: "ingest",
+          at: this.lastScanAt ?? nowIso(),
+          workspaceIds: previous ? [previous.workspaceId] : [],
+          threadKeys: previous ? [previous.threadId ?? previous.sessionId].filter((value): value is string => Boolean(value)) : []
+        });
         return;
       }
       const match = discoverCodexSessionFile(filePath);
@@ -1528,7 +1581,12 @@ export class CodexSessionTailer {
             lastError: null
           }));
           this.refreshAllWorkspaceStatuses();
-          this.emitUpdate();
+          this.emitUpdate({
+            kind: "ingest",
+            at: nowIso(),
+            workspaceIds: [previous.workspaceId],
+            threadKeys: [previous.threadId ?? previous.sessionId].filter((value): value is string => Boolean(value))
+          });
         }
         this.lastScanAt = nowIso();
         return;
@@ -1563,7 +1621,12 @@ export class CodexSessionTailer {
       }
       this.refreshAllWorkspaceStatuses();
       this.lastScanAt = nowIso();
-      this.emitUpdate();
+      this.emitUpdate({
+        kind: "ingest",
+        at: this.lastScanAt ?? nowIso(),
+        workspaceIds: [...new Set([match.workspaceId, previous?.workspaceId].filter((value): value is string => Boolean(value)))],
+        threadKeys: [...new Set([match.threadId ?? match.sessionId, previous?.threadId ?? previous?.sessionId].filter((value): value is string => Boolean(value)))]
+      });
     } finally {
       this.scanning = false;
     }
@@ -1580,9 +1643,9 @@ export class CodexSessionTailer {
     }
   }
 
-  private emitUpdate(): void {
+  private emitUpdate(update: CodexSessionTailerUpdate): void {
     for (const listener of this.listeners) {
-      listener();
+      listener(update);
     }
   }
 

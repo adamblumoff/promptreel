@@ -7,6 +7,7 @@ import {
   fetchThreads,
   fetchWorkspaces,
   rescanSessions,
+  type LocalViewerEvent,
   subscribeToLocalViewerEvents,
 } from "./api";
 import { CliLoginPage } from "./auth";
@@ -137,6 +138,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   const [blobLoadingById, setBlobLoadingById] = useState<Record<string, boolean>>({});
   const [viewerStatus, setViewerStatus] = useState<ViewerStatus | null>(null);
   const [localRefreshTick, setLocalRefreshTick] = useState(0);
+  const [localRefreshEvent, setLocalRefreshEvent] = useState<LocalViewerEvent | null>(null);
   const detailControllers = useRef<Record<string, AbortController | undefined>>({});
   const previousPromptStatusesRef = useRef<Partial<Record<string, PromptListItem["status"]>>>({});
   const promptRevisionsRef = useRef<Record<string, string>>({});
@@ -162,8 +164,9 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     if (isHostedViewer) {
       return;
     }
-    return subscribeToLocalViewerEvents(() => {
+    return subscribeToLocalViewerEvents((event) => {
       startTransition(() => {
+        setLocalRefreshEvent(event);
         setLocalRefreshTick((current) => current + 1);
       });
     });
@@ -243,6 +246,12 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
 
   const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
   const cachedThreads = selectedWorkspaceId ? threadsByWs[selectedWorkspaceId] : undefined;
+  const localEventTouchesSelectedWorkspace = Boolean(
+    !isHostedViewer
+    && selectedWorkspaceId
+    && localRefreshEvent?.kind === "ingest"
+    && localRefreshEvent.workspaceIds?.includes(selectedWorkspaceId)
+  );
 
   useEffect(() => {
     if (!selectedWorkspaceId || !visible) return;
@@ -270,7 +279,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
 
     if (!isHostedViewer) {
       const previousTick = localThreadRefreshRef.current[selectedWorkspaceId] ?? -1;
-      const shouldRefresh = !hasCached || previousTick !== localRefreshTick;
+      const shouldRefresh = !hasCached || (previousTick !== localRefreshTick && localEventTouchesSelectedWorkspace);
       if (shouldRefresh) {
         localThreadRefreshRef.current[selectedWorkspaceId] = localRefreshTick;
         void go();
@@ -281,7 +290,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     void go();
     const id = setInterval(() => void go(), interval);
     return () => { live = false; ctrl?.abort(); clearInterval(id); };
-  }, [cachedThreads, isHostedViewer, localRefreshTick, selectedWorkspace?.isGenerating, visible, selectedWorkspaceId]);
+  }, [cachedThreads, isHostedViewer, localEventTouchesSelectedWorkspace, localRefreshTick, selectedWorkspace?.isGenerating, visible, selectedWorkspaceId]);
 
   /* ── fetch prompts ────────────────────────────────────────────────────── */
 
@@ -289,6 +298,15 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   const selThread = threads.find((t) => t.id === selectedThreadId) ?? null;
   const selThreadKey = selThread?.threadId ?? selThread?.sessionId ?? "";
   const selThreadRevision = toThreadRevision(selThread);
+  const localEventTouchesSelectedThread = Boolean(
+    !isHostedViewer
+    && selThreadKey
+    && localRefreshEvent?.kind === "ingest"
+    && (
+      localRefreshEvent.threadKeys?.includes(selThreadKey)
+      || localRefreshEvent.workspaceIds?.includes(selectedWorkspaceId)
+    )
+  );
   const pKey = selectedWorkspaceId && selectedThreadId
     ? cacheKey(selectedWorkspaceId, selectedThreadId)
     : "";
@@ -323,7 +341,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     const previousLocalTick = localPromptRefreshRef.current[ck] ?? -1;
     const shouldRefresh = !hasCached
       || previousRevision !== selThreadRevision
-      || (!isHostedViewer && previousLocalTick !== localRefreshTick);
+      || (!isHostedViewer && previousLocalTick !== localRefreshTick && localEventTouchesSelectedThread);
     if (shouldRefresh) {
       promptRevisionsRef.current[ck] = selThreadRevision;
       localPromptRefreshRef.current[ck] = localRefreshTick;
@@ -333,7 +351,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
       live = false;
       ctrl?.abort();
     };
-  }, [cachedPrompts, isHostedViewer, localRefreshTick, visible, selThreadRevision, selectedThreadId, selThreadKey, selectedWorkspaceId]);
+  }, [cachedPrompts, isHostedViewer, localEventTouchesSelectedThread, localRefreshTick, visible, selThreadRevision, selectedThreadId, selThreadKey, selectedWorkspaceId]);
 
   const prompts = pKey ? (promptsByKey[pKey] ?? []) : [];
 
@@ -387,7 +405,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     if (!detailsById[expandedPromptId]) void loadDetail(selectedWorkspaceId, expandedPromptId);
     if (!isHostedViewer) {
       const previousTick = localDetailRefreshRef.current[expandedPromptId] ?? -1;
-      if (previousTick !== localRefreshTick && detailsById[expandedPromptId]) {
+      if (previousTick !== localRefreshTick && detailsById[expandedPromptId] && localEventTouchesSelectedThread) {
         localDetailRefreshRef.current[expandedPromptId] = localRefreshTick;
         void loadDetail(selectedWorkspaceId, expandedPromptId, true);
       }
@@ -400,7 +418,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
       HOSTED_ACTIVE_DETAIL_POLL_MS
     );
     return () => clearInterval(id);
-  }, [detailsById, expandedPromptId, isHostedViewer, localRefreshTick, prompts, selectedWorkspaceId, visible]);
+  }, [detailsById, expandedPromptId, isHostedViewer, localEventTouchesSelectedThread, localRefreshTick, prompts, selectedWorkspaceId, visible]);
 
   useEffect(() => {
     if (!selectedWorkspaceId || !expandedPromptId) return;

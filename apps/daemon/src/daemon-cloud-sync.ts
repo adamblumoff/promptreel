@@ -12,9 +12,8 @@ import { CodexSessionTailer, LIVE_ACTIVITY_WINDOW_MS } from "@promptreel/codex-a
 import { nowIso, type WorkspaceListItem } from "@promptreel/domain";
 import { PromptreelStore } from "@promptreel/storage";
 
-const CLOUD_SYNC_ACTIVE_INTERVAL_MS = 1_500;
-const CLOUD_SYNC_IDLE_INTERVAL_MS = 8_000;
-const CLOUD_SYNC_ERROR_INTERVAL_MS = 4_000;
+const CLOUD_SYNC_EVENT_DEBOUNCE_MS = 500;
+const CLOUD_SYNC_RETRY_INTERVAL_MS = 4_000;
 const CLOUD_SYNC_PROMPT_RECORD_TYPE = "cloud_prompt";
 const CLOUD_SYNC_BLOB_RECORD_TYPE = "cloud_blob";
 
@@ -259,22 +258,18 @@ export function createCloudSyncController({
 }) {
   let syncInFlight = false;
   let cloudSyncTimer: NodeJS.Timeout | null = null;
+  let tailerUnsubscribe: (() => void) | null = null;
   let lastCloudSyncNotice: string | null = null;
+  let pendingSyncRequested = false;
 
-  const getNextCloudSyncInterval = () => {
-    const status = tailer.getStatus();
-    const hasRecentActivity = status.workspaceStatuses.some((workspaceStatus) => hasRecentWorkspaceActivity(workspaceStatus));
-
-    if (hasRecentActivity) {
-      return CLOUD_SYNC_ACTIVE_INTERVAL_MS;
+  const scheduleCloudSync = (delayMs = 0) => {
+    if (!CLOUD_SYNC_ENABLED) {
+      return;
     }
-    if (runtimeStatus.lastCloudSyncError) {
-      return CLOUD_SYNC_ERROR_INTERVAL_MS;
+    if (syncInFlight) {
+      pendingSyncRequested = true;
+      return;
     }
-    return CLOUD_SYNC_IDLE_INTERVAL_MS;
-  };
-
-  const scheduleCloudSync = (delayMs = getNextCloudSyncInterval()) => {
     if (cloudSyncTimer) {
       clearTimeout(cloudSyncTimer);
     }
@@ -310,12 +305,13 @@ export function createCloudSyncController({
         "Cloud sync paused: not signed in. Run `pnpm dev:cli -- login` to reconnect this daemon.",
         "warn"
       );
-      scheduleCloudSync(CLOUD_SYNC_ERROR_INTERVAL_MS);
+      scheduleCloudSync(CLOUD_SYNC_RETRY_INTERVAL_MS);
       return;
     }
 
     syncInFlight = true;
     runtimeStatus.syncInFlight = true;
+    notifyChange?.();
     try {
       reportCloudSyncNotice("Cloud sync authenticated. Watching for local changes...");
       const syncScope = buildCloudSyncScope(authState);
@@ -363,20 +359,29 @@ export function createCloudSyncController({
       syncInFlight = false;
       runtimeStatus.syncInFlight = false;
       notifyChange?.();
-      scheduleCloudSync();
+      if (pendingSyncRequested) {
+        pendingSyncRequested = false;
+        scheduleCloudSync();
+      } else if (runtimeStatus.lastCloudSyncError) {
+        scheduleCloudSync(CLOUD_SYNC_RETRY_INTERVAL_MS);
+      }
     }
   };
 
   return {
     start() {
       if (CLOUD_SYNC_ENABLED) {
-        void syncCloudWorkspaces();
+        tailerUnsubscribe = tailer.subscribe(() => {
+          scheduleCloudSync(CLOUD_SYNC_EVENT_DEBOUNCE_MS);
+        });
+        scheduleCloudSync();
       }
     },
     stop() {
       if (cloudSyncTimer) {
         clearTimeout(cloudSyncTimer);
       }
+      tailerUnsubscribe?.();
     },
   };
 }

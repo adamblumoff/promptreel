@@ -97,13 +97,21 @@ export function buildServer() {
       blobCount: number;
     },
   };
-  const streamSubscribers = new Set<() => void>();
-  const broadcastDaemonEvent = () => {
+  type DaemonEventPayload = {
+    kind: "ingest" | "cloud";
+    at: string;
+    workspaceIds?: string[];
+    threadKeys?: string[];
+  };
+  const streamSubscribers = new Set<(payload: DaemonEventPayload) => void>();
+  const broadcastDaemonEvent = (payload: DaemonEventPayload) => {
     for (const subscriber of streamSubscribers) {
-      subscriber();
+      subscriber(payload);
     }
   };
-  tailer.subscribe(broadcastDaemonEvent);
+  tailer.subscribe((update) => {
+    broadcastDaemonEvent(update);
+  });
 
   app.register(cors, {
     origin: true
@@ -129,13 +137,13 @@ export function buildServer() {
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
-    const writeEvent = (event: string, data: Record<string, unknown>) => {
+    const writeEvent = (event: string, data: DaemonEventPayload | { at: string }) => {
       reply.raw.write(`event: ${event}\n`);
       reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
     };
     writeEvent("ready", { at: new Date().toISOString() });
-    const subscriber = () => {
-      writeEvent("update", { at: new Date().toISOString() });
+    const subscriber = (payload: DaemonEventPayload) => {
+      writeEvent("update", payload);
     };
     streamSubscribers.add(subscriber);
     const keepAlive = setInterval(() => {
@@ -393,7 +401,9 @@ export async function startDaemon() {
     store,
     tailer,
     runtimeStatus,
-    notifyChange: broadcastDaemonEvent,
+    notifyChange: () => {
+      broadcastDaemonEvent({ kind: "cloud", at: new Date().toISOString() });
+    },
   });
 
   await cloudStore.ensureReady();

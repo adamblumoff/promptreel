@@ -21,6 +21,13 @@ type RequestOptions = {
   signal?: AbortSignal;
 };
 
+export type LocalViewerEvent = {
+  kind: "ingest" | "cloud";
+  at: string;
+  workspaceIds?: string[];
+  threadKeys?: string[];
+};
+
 export function setApiAuthTokenProvider(provider: (() => Promise<string | null>) | null): void {
   authTokenProvider = provider;
 }
@@ -147,10 +154,13 @@ export function getApiBaseUrl(): string {
   return API_BASE;
 }
 
-export function subscribeToLocalViewerEvents(onUpdate: () => void): () => void {
+export function subscribeToLocalViewerEvents(onUpdate: (event: LocalViewerEvent) => void): () => void {
   const eventSource = new EventSource(`${API_BASE}/events`);
-  const handleUpdate = () => {
-    onUpdate();
+  const handleUpdate = (event: Event) => {
+    if (!(event instanceof MessageEvent)) {
+      return;
+    }
+    onUpdate(JSON.parse(event.data) as LocalViewerEvent);
   };
   eventSource.addEventListener("update", handleUpdate);
   return () => {
