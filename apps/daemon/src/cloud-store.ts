@@ -599,57 +599,91 @@ class DrizzleCloudStore implements CloudStore {
           },
         });
 
-      await tx.delete(cloudThreads).where(and(eq(cloudThreads.userId, userId), eq(cloudThreads.workspaceId, sanitizedBundle.workspace.id)));
-      await tx.delete(cloudPrompts).where(and(eq(cloudPrompts.userId, userId), eq(cloudPrompts.workspaceId, sanitizedBundle.workspace.id)));
-      await tx.delete(cloudPromptDetails).where(and(eq(cloudPromptDetails.userId, userId), eq(cloudPromptDetails.workspaceId, sanitizedBundle.workspace.id)));
-      await tx.delete(cloudBlobs).where(and(eq(cloudBlobs.userId, userId), eq(cloudBlobs.workspaceId, sanitizedBundle.workspace.id)));
-
       for (const chunk of chunkArray(sanitizedBundle.threads, CLOUD_SYNC_INSERT_CHUNK_SIZE)) {
-        await tx.insert(cloudThreads).values(
-          chunk.map((thread) => ({
-            userId,
-            workspaceId: sanitizedBundle.workspace.id,
-            threadId: thread.id,
-            lastActivityAt: thread.lastActivityAt,
-            payloadJson: thread,
-            updatedAt: now,
-          }))
-        );
+        await tx
+          .insert(cloudThreads)
+          .values(
+            chunk.map((thread) => ({
+              userId,
+              workspaceId: sanitizedBundle.workspace.id,
+              threadId: thread.id,
+              lastActivityAt: thread.lastActivityAt,
+              payloadJson: thread,
+              updatedAt: now,
+            }))
+          )
+          .onConflictDoUpdate({
+            target: [cloudThreads.userId, cloudThreads.workspaceId, cloudThreads.threadId],
+            set: {
+              lastActivityAt: sql`excluded.last_activity_at`,
+              payloadJson: sql`excluded.payload_json`,
+              updatedAt: sql`excluded.updated_at`,
+            },
+          });
       }
       for (const chunk of chunkArray(sanitizedBundle.prompts, CLOUD_SYNC_INSERT_CHUNK_SIZE)) {
-        await tx.insert(cloudPrompts).values(
-          chunk.map((prompt) => ({
-            userId,
-            workspaceId: sanitizedBundle.workspace.id,
-            promptId: prompt.id,
-            threadLookupKey: getThreadLookupKey(prompt),
-            startedAt: prompt.startedAt,
-            payloadJson: prompt,
-            updatedAt: now,
-          }))
-        );
+        await tx
+          .insert(cloudPrompts)
+          .values(
+            chunk.map((prompt) => ({
+              userId,
+              workspaceId: sanitizedBundle.workspace.id,
+              promptId: prompt.id,
+              threadLookupKey: getThreadLookupKey(prompt),
+              startedAt: prompt.startedAt,
+              payloadJson: prompt,
+              updatedAt: now,
+            }))
+          )
+          .onConflictDoUpdate({
+            target: [cloudPrompts.userId, cloudPrompts.workspaceId, cloudPrompts.promptId],
+            set: {
+              threadLookupKey: sql`excluded.thread_lookup_key`,
+              startedAt: sql`excluded.started_at`,
+              payloadJson: sql`excluded.payload_json`,
+              updatedAt: sql`excluded.updated_at`,
+            },
+          });
       }
       for (const chunk of chunkArray(sanitizedBundle.promptDetails, CLOUD_SYNC_INSERT_CHUNK_SIZE)) {
-        await tx.insert(cloudPromptDetails).values(
-          chunk.map((detail) => ({
-            userId,
-            workspaceId: sanitizedBundle.workspace.id,
-            promptId: detail.id,
-            payloadJson: detail,
-            updatedAt: now,
-          }))
-        );
+        await tx
+          .insert(cloudPromptDetails)
+          .values(
+            chunk.map((detail) => ({
+              userId,
+              workspaceId: sanitizedBundle.workspace.id,
+              promptId: detail.id,
+              payloadJson: detail,
+              updatedAt: now,
+            }))
+          )
+          .onConflictDoUpdate({
+            target: [cloudPromptDetails.userId, cloudPromptDetails.workspaceId, cloudPromptDetails.promptId],
+            set: {
+              payloadJson: sql`excluded.payload_json`,
+              updatedAt: sql`excluded.updated_at`,
+            },
+          });
       }
       for (const chunk of chunkArray(sanitizedBundle.blobs, CLOUD_SYNC_INSERT_CHUNK_SIZE)) {
-        await tx.insert(cloudBlobs).values(
-          chunk.map((blob) => ({
-            userId,
-            workspaceId: sanitizedBundle.workspace.id,
-            blobId: blob.blobId,
-            content: blob.content,
-            updatedAt: now,
-          }))
-        );
+        await tx
+          .insert(cloudBlobs)
+          .values(
+            chunk.map((blob) => ({
+              userId,
+              workspaceId: sanitizedBundle.workspace.id,
+              blobId: blob.blobId,
+              content: blob.content,
+              updatedAt: now,
+            }))
+          )
+          .onConflictDoUpdate({
+            target: [cloudBlobs.userId, cloudBlobs.workspaceId, cloudBlobs.blobId],
+            set: {
+              content: sql`excluded.content`,
+              updatedAt: sql`excluded.updated_at`,
+            },
+          });
       }
     });
 

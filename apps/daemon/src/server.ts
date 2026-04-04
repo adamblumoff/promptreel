@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +45,8 @@ const CLOUD_SYNC_ACTIVE_INTERVAL_MS = 1_500;
 const CLOUD_SYNC_IDLE_INTERVAL_MS = 8_000;
 const CLOUD_SYNC_ERROR_INTERVAL_MS = 4_000;
 const CLOUD_SYNC_ENABLED = process.env.PROMPTREEL_ENABLE_CLOUD_SYNC === "1";
+const CLOUD_SYNC_PROMPT_RECORD_TYPE = "cloud_prompt";
+const CLOUD_SYNC_BLOB_RECORD_TYPE = "cloud_blob";
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -212,6 +215,125 @@ function buildCloudBootstrapBundle(
     prompts,
     promptDetails,
     blobs: [...blobMap.entries()].map(([blobId, content]) => ({ blobId, content })),
+  };
+}
+
+function buildCloudSyncScope(apiBaseUrl: string, deviceId: string): string {
+  return `${trimTrailingSlash(apiBaseUrl)}|${deviceId}`;
+}
+
+function buildCloudSyncCursorKey(syncScope: string): string {
+  return `cloud-sync:${syncScope}:state`;
+}
+
+function getPromptSyncFingerprint(detail: NonNullable<ReturnType<PromptreelStore["getPromptDetail"]>>): string {
+  return createHash("sha256").update(JSON.stringify(detail)).digest("hex");
+}
+
+function getCloudSyncCursor(
+  store: PromptreelStore,
+  workspaceId: string,
+  syncScope: string
+): { lastSyncedAt: string | null } {
+  const row = store.getIngestCursor(workspaceId, buildCloudSyncCursorKey(syncScope));
+  if (!row) {
+    return { lastSyncedAt: null };
+  }
+  return JSON.parse(row.cursorValue) as { lastSyncedAt: string | null };
+}
+
+function setCloudSyncCursor(
+  store: PromptreelStore,
+  workspaceId: string,
+  syncScope: string,
+  cursor: { lastSyncedAt: string | null }
+): void {
+  store.setIngestCursor(workspaceId, buildCloudSyncCursorKey(syncScope), JSON.stringify(cursor));
+}
+
+function buildCloudDeltaBundle(
+  store: PromptreelStore,
+  tailer: CodexSessionTailer,
+  workspaceId: string,
+  syncScope: string
+): {
+  bundle: CloudBootstrapSyncRequest;
+  promptSyncRecords: Array<{ recordId: string; recordHash: string }>;
+  blobSyncRecords: Array<{ recordId: string; recordHash: string }>;
+} | null {
+  const workspace = buildWorkspaceListItem(store, tailer, workspaceId);
+  if (!workspace) {
+    return null;
+  }
+
+  const prompts = store.listPrompts(workspaceId);
+  if (prompts.length === 0) {
+    return null;
+  }
+
+  const cursor = getCloudSyncCursor(store, workspaceId, syncScope);
+  const syncedPromptHashes = store.getSyncRecordHashes(workspaceId, syncScope, CLOUD_SYNC_PROMPT_RECORD_TYPE);
+  const syncedBlobHashes = store.getSyncRecordHashes(workspaceId, syncScope, CLOUD_SYNC_BLOB_RECORD_TYPE);
+  const changedPromptDetails: NonNullable<ReturnType<PromptreelStore["getPromptDetail"]>>[] = [];
+  const promptSyncRecords: Array<{ recordId: string; recordHash: string }> = [];
+
+  for (const prompt of prompts) {
+    const shouldConsider =
+      !syncedPromptHashes.has(prompt.id)
+      || prompt.status === "in_progress"
+      || Boolean(cursor.lastSyncedAt && prompt.endedAt && prompt.endedAt > cursor.lastSyncedAt);
+
+    if (!shouldConsider) {
+      continue;
+    }
+
+    const detail = store.getPromptDetail(workspaceId, prompt.id);
+    if (!detail) {
+      continue;
+    }
+    const fingerprint = getPromptSyncFingerprint(detail);
+    if (syncedPromptHashes.get(prompt.id) === fingerprint) {
+      continue;
+    }
+    changedPromptDetails.push(detail);
+    promptSyncRecords.push({ recordId: prompt.id, recordHash: fingerprint });
+  }
+
+  if (changedPromptDetails.length === 0) {
+    return null;
+  }
+
+  const promptIds = new Set(changedPromptDetails.map((detail) => detail.id));
+  const touchedThreadKeys = new Set(
+    changedPromptDetails.map((detail) => detail.threadId ?? detail.sessionId ?? `prompt:${detail.id}`)
+  );
+  const threads = store
+    .listThreads(workspaceId)
+    .filter((thread) => touchedThreadKeys.has(thread.threadId ?? thread.sessionId ?? `prompt:${thread.id}`));
+  const promptsUpsert = prompts.filter((prompt) => promptIds.has(prompt.id));
+
+  const blobMap = new Map<string, string>();
+  const blobSyncRecords: Array<{ recordId: string; recordHash: string }> = [];
+  for (const detail of changedPromptDetails) {
+    for (const artifact of detail.artifacts) {
+      if (!artifact.blobId || blobMap.has(artifact.blobId) || syncedBlobHashes.has(artifact.blobId)) {
+        continue;
+      }
+      blobMap.set(artifact.blobId, store.readBlob(workspaceId, artifact.blobId));
+      blobSyncRecords.push({ recordId: artifact.blobId, recordHash: artifact.blobId });
+    }
+  }
+
+  return {
+    bundle: {
+      workspace,
+      threads,
+      prompts: promptsUpsert,
+      promptDetails: changedPromptDetails,
+      blobs: [...blobMap.entries()].map(([blobId, content]) => ({ blobId, content })),
+    },
+    promptSyncRecords,
+    blobSyncRecords,
   };
 }
 
@@ -603,7 +725,6 @@ export async function startDaemon() {
   const { app, store, tailer, cloudStore, runtimeStatus } = buildServer();
   const port = Number(process.env.PORT ?? process.env.PROMPTLINE_PORT ?? "4312");
   const host = process.env.PROMPTLINE_HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
-  const syncedWorkspaceFingerprints = new Map<string, string>();
   let syncInFlight = false;
   let cloudSyncTimer: NodeJS.Timeout | null = null;
   let lastCloudSyncNotice: string | null = null;
@@ -664,39 +785,26 @@ export async function startDaemon() {
     runtimeStatus.syncInFlight = true;
     try {
       reportCloudSyncNotice("Cloud sync authenticated. Watching for local changes...");
+      const syncScope = buildCloudSyncScope(authState.apiBaseUrl, authState.deviceId);
       const syncedWorkspaces: string[] = [];
-      const statusByWorkspace = new Map(
-        tailer.getStatus().workspaceStatuses.map((status) => [status.workspaceId, status])
-      );
       const workspaces = store.listWorkspaces();
       for (const workspace of workspaces) {
-        const promptCount = store.listPrompts(workspace.id).length;
-        if (promptCount === 0) {
-          continue;
-        }
-        const status = statusByWorkspace.get(workspace.id);
-        const fingerprint = [
-          status?.lastSessionUpdateAt ?? "",
-          String(status?.recentlyUpdatedSessionCount ?? 0),
-          String(promptCount),
-        ].join("|");
-        if (syncedWorkspaceFingerprints.get(workspace.id) === fingerprint) {
-          continue;
-        }
-        const bundle = buildCloudBootstrapBundle(store, tailer, workspace.id);
-        if (!bundle) {
+        const delta = buildCloudDeltaBundle(store, tailer, workspace.id, syncScope);
+        if (!delta) {
           continue;
         }
         await postJsonWithToken<CloudBootstrapSyncResponse, CloudBootstrapSyncRequest>(
           authState.apiBaseUrl,
           "/cloud/sync/bootstrap",
           authState.daemonToken,
-          bundle
+          delta.bundle
         );
-        syncedWorkspaceFingerprints.set(workspace.id, fingerprint);
+        store.upsertSyncRecords(workspace.id, syncScope, CLOUD_SYNC_PROMPT_RECORD_TYPE, delta.promptSyncRecords);
+        store.upsertSyncRecords(workspace.id, syncScope, CLOUD_SYNC_BLOB_RECORD_TYPE, delta.blobSyncRecords);
+        setCloudSyncCursor(store, workspace.id, syncScope, { lastSyncedAt: nowIso() });
         runtimeStatus.lastCloudSyncAt = nowIso();
         runtimeStatus.lastCloudSyncError = null;
-        syncedWorkspaces.push(`${workspace.slug} (${bundle.prompts.length} prompts)`);
+        syncedWorkspaces.push(`${workspace.slug} (${delta.bundle.prompts.length} prompts)`);
       }
       if (syncedWorkspaces.length > 0) {
         console.log(`Synced ${syncedWorkspaces.length} workspace${syncedWorkspaces.length === 1 ? "" : "s"} to Promptreel Cloud.`);

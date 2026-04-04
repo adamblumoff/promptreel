@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname, platform } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -15,7 +16,7 @@ import type {
 } from "@promptreel/api-contracts";
 import { importCodexSessionsForRepo, runLiveDoctor } from "@promptreel/codex-adapter";
 import { PromptreelStore, type CloudAuthState } from "@promptreel/storage";
-import { createId, type WorkspaceListItem } from "@promptreel/domain";
+import { createId, nowIso, type WorkspaceListItem } from "@promptreel/domain";
 
 loadCliEnvFiles();
 
@@ -28,9 +29,23 @@ const DEFAULT_CLOUD_BASE_URL = trimTrailingSlash(
 );
 const DEFAULT_API_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_API_URL ?? `${DEFAULT_CLOUD_BASE_URL}/api`);
 const DEFAULT_WEB_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_WEB_URL ?? DEFAULT_CLOUD_BASE_URL);
+const CLOUD_SYNC_PROMPT_RECORD_TYPE = "cloud_prompt";
+const CLOUD_SYNC_BLOB_RECORD_TYPE = "cloud_blob";
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function buildCloudSyncScope(apiBaseUrl: string, deviceId: string): string {
+  return `${trimTrailingSlash(apiBaseUrl)}|${deviceId}`;
+}
+
+function buildCloudSyncCursorKey(syncScope: string): string {
+  return `cloud-sync:${syncScope}:state`;
+}
+
+function getPromptSyncFingerprint(detail: CloudBootstrapSyncRequest["promptDetails"][number]): string {
+  return createHash("sha256").update(JSON.stringify(detail)).digest("hex");
 }
 
 function loadCliEnvFiles(): void {
@@ -658,6 +673,7 @@ program
         }
 
         const synced: CloudBootstrapSyncResponse[] = [];
+        const syncScope = buildCloudSyncScope(authState.apiBaseUrl, authState.deviceId);
         for (const workspaceId of workspaceIds) {
           const bundle = buildBootstrapBundle(store, workspaceId);
           const result = await postJson<CloudBootstrapSyncResponse, CloudBootstrapSyncRequest>(
@@ -665,6 +681,29 @@ program
             "/cloud/sync/bootstrap",
             bundle,
             authState.daemonToken
+          );
+          store.upsertSyncRecords(
+            workspaceId,
+            syncScope,
+            CLOUD_SYNC_PROMPT_RECORD_TYPE,
+            bundle.promptDetails.map((detail) => ({
+              recordId: detail.id,
+              recordHash: getPromptSyncFingerprint(detail),
+            }))
+          );
+          store.upsertSyncRecords(
+            workspaceId,
+            syncScope,
+            CLOUD_SYNC_BLOB_RECORD_TYPE,
+            bundle.blobs.map((blob) => ({
+              recordId: blob.blobId,
+              recordHash: blob.blobId,
+            }))
+          );
+          store.setIngestCursor(
+            workspaceId,
+            buildCloudSyncCursorKey(syncScope),
+            JSON.stringify({ lastSyncedAt: nowIso() })
           );
           synced.push(result);
         }

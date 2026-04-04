@@ -722,6 +722,55 @@ export class PromptreelStore {
     db.close();
   }
 
+  getSyncRecordHashes(
+    workspaceId: string,
+    syncScope: string,
+    recordType: string
+  ): Map<string, string | null> {
+    this.ensureWorkspaceSchema(workspaceId);
+    const db = this.openWorkspace(workspaceId);
+    const rows = db.prepare(
+      `SELECT record_id AS recordId, record_hash AS recordHash
+       FROM sync_records
+       WHERE sync_scope = ? AND record_type = ?`
+    ).all(syncScope, recordType) as Array<{ recordId: string; recordHash: string | null }>;
+    db.close();
+    return new Map(rows.map((row) => [row.recordId, row.recordHash ?? null]));
+  }
+
+  upsertSyncRecords(
+    workspaceId: string,
+    syncScope: string,
+    recordType: string,
+    records: Array<{ recordId: string; recordHash?: string | null }>
+  ): void {
+    if (records.length === 0) {
+      return;
+    }
+    this.ensureWorkspaceSchema(workspaceId);
+    const db = this.openWorkspace(workspaceId);
+    const now = nowIso();
+    const statement = db.prepare(
+      `INSERT INTO sync_records (sync_scope, record_type, record_id, record_hash, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(sync_scope, record_type, record_id) DO UPDATE SET
+         record_hash = excluded.record_hash,
+         updated_at = excluded.updated_at`
+    );
+    db.exec("BEGIN");
+    try {
+      for (const record of records) {
+        statement.run(syncScope, recordType, record.recordId, record.recordHash ?? null, now);
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    } finally {
+      db.close();
+    }
+  }
+
   getDaemonState(): { pid: number | null } {
     const file = join(this.homeDir, "daemon", "daemon.json");
     if (!existsSync(file)) {
@@ -1157,16 +1206,15 @@ export class PromptreelStore {
         now
       );
 
-      db.prepare(`DELETE FROM cloud_threads WHERE user_id = ? AND workspace_id = ?`).run(userId, bundle.workspace.id);
-      db.prepare(`DELETE FROM cloud_prompts WHERE user_id = ? AND workspace_id = ?`).run(userId, bundle.workspace.id);
-      db.prepare(`DELETE FROM cloud_prompt_details WHERE user_id = ? AND workspace_id = ?`).run(userId, bundle.workspace.id);
-      db.prepare(`DELETE FROM cloud_blobs WHERE user_id = ? AND workspace_id = ?`).run(userId, bundle.workspace.id);
-
       for (const thread of bundle.threads) {
         db.prepare(
           `INSERT INTO cloud_threads
            (user_id, workspace_id, thread_id, last_activity_at, payload_json, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, workspace_id, thread_id) DO UPDATE SET
+             last_activity_at = excluded.last_activity_at,
+             payload_json = excluded.payload_json,
+             updated_at = excluded.updated_at`
         ).run(
           userId,
           bundle.workspace.id,
@@ -1181,7 +1229,12 @@ export class PromptreelStore {
         db.prepare(
           `INSERT INTO cloud_prompts
            (user_id, workspace_id, prompt_id, thread_lookup_key, started_at, payload_json, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, workspace_id, prompt_id) DO UPDATE SET
+             thread_lookup_key = excluded.thread_lookup_key,
+             started_at = excluded.started_at,
+             payload_json = excluded.payload_json,
+             updated_at = excluded.updated_at`
         ).run(
           userId,
           bundle.workspace.id,
@@ -1197,7 +1250,10 @@ export class PromptreelStore {
         db.prepare(
           `INSERT INTO cloud_prompt_details
            (user_id, workspace_id, prompt_id, payload_json, updated_at)
-           VALUES (?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, workspace_id, prompt_id) DO UPDATE SET
+             payload_json = excluded.payload_json,
+             updated_at = excluded.updated_at`
         ).run(
           userId,
           bundle.workspace.id,
@@ -1211,7 +1267,10 @@ export class PromptreelStore {
         db.prepare(
           `INSERT INTO cloud_blobs
            (user_id, workspace_id, blob_id, content, updated_at)
-           VALUES (?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, workspace_id, blob_id) DO UPDATE SET
+             content = excluded.content,
+             updated_at = excluded.updated_at`
         ).run(userId, bundle.workspace.id, blob.blobId, blob.content, now);
       }
 
@@ -1568,6 +1627,14 @@ export class PromptreelStore {
         cursor_key TEXT PRIMARY KEY,
         cursor_value TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS sync_records (
+        sync_scope TEXT NOT NULL,
+        record_type TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        record_hash TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (sync_scope, record_type, record_id)
       );
     `);
     this.ensureColumn(db, "prompt_events", "execution_path", "TEXT");

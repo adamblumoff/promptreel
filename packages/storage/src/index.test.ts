@@ -525,4 +525,170 @@ describe("PromptreelStore", () => {
     expect(store.getCloudPromptDetail("user_cloud", workspace.id, prompt.id)).toEqual(detail);
     expect(store.readCloudBlob("user_cloud", workspace.id, "blob_cloud")).toContain("+++ b/src/index.ts");
   });
+
+  test("upserts cloud sync deltas without deleting existing synced rows", () => {
+    const root = mkdtempSync(join(tmpdir(), "promptreel-store-cloud-delta-"));
+    const store = new PromptreelStore(join(root, ".pl"));
+
+    const workspace: WorkspaceListItem = {
+      id: "workspace_cloud_delta",
+      slug: "repo",
+      folderPath: "C:\\repo",
+      gitRootPath: "C:\\repo",
+      gitDir: "C:\\repo\\.git",
+      createdAt: "2026-04-03T00:00:00.000Z",
+      lastSeenAt: "2026-04-03T00:00:00.000Z",
+      status: "active",
+      source: "manual",
+      threadCount: 2,
+      openThreadCount: 0,
+      isGenerating: false,
+      lastActivityAt: "2026-04-03T01:00:03.000Z",
+      sessionFileCount: 0,
+      recentlyUpdatedSessionCount: 0,
+      mode: "idle",
+    };
+
+    const thread1: ThreadSummary = {
+      id: "thread_cloud_1",
+      workspaceId: workspace.id,
+      sessionId: "session-1",
+      threadId: "thread-1",
+      folderPath: workspace.folderPath,
+      startedAt: "2026-04-03T00:00:00.000Z",
+      lastActivityAt: "2026-04-03T00:00:02.000Z",
+      promptCount: 1,
+      openPromptCount: 0,
+      isGenerating: false,
+      lastPromptSummary: "Prompt one",
+      status: "closed",
+    };
+
+    const prompt1: PromptEventListItem = {
+      id: "prompt_cloud_1",
+      workspaceId: workspace.id,
+      executionPath: workspace.folderPath,
+      sessionId: "session-1",
+      threadId: "thread-1",
+      parentPromptEventId: null,
+      startedAt: "2026-04-03T00:00:00.000Z",
+      endedAt: "2026-04-03T00:00:02.000Z",
+      boundaryReason: "import_end",
+      status: "imported",
+      mode: "default",
+      artifactCount: 1,
+      childCount: 0,
+      filesTouched: ["src/one.ts"],
+      filesTouchedCount: 1,
+      additions: 3,
+      deletions: 1,
+      promptSummary: "Prompt one",
+      primaryArtifactId: "artifact_cloud_1",
+      baselineSnapshotId: null,
+      endSnapshotId: null,
+      primaryArtifactType: "code_diff",
+      primaryArtifactSummary: "Patch one",
+      hasCodeDiff: true,
+      hasPlanArtifact: false,
+      hasFinalResponse: false,
+      isLiveDerived: false,
+    };
+
+    const detail1: PromptEventDetail = {
+      ...prompt1,
+      promptText: "Prompt one",
+      transcript: [],
+      artifacts: [
+        {
+          id: "artifact_cloud_1",
+          promptEventId: prompt1.id,
+          type: "code_diff",
+          role: "primary",
+          summary: "Patch one",
+          blobId: "blob_cloud_1",
+          fileStatsJson: null,
+          metadataJson: null,
+        },
+      ],
+      artifactLinks: [],
+      gitLinks: [],
+    };
+
+    store.upsertCloudWorkspaceBundle("user_cloud", {
+      workspace: { ...workspace, threadCount: 1, lastActivityAt: thread1.lastActivityAt },
+      threads: [thread1],
+      prompts: [prompt1],
+      promptDetails: [detail1],
+      blobs: [{ blobId: "blob_cloud_1", content: "one" }],
+    });
+
+    const thread2: ThreadSummary = {
+      id: "thread_cloud_2",
+      workspaceId: workspace.id,
+      sessionId: "session-2",
+      threadId: "thread-2",
+      folderPath: workspace.folderPath,
+      startedAt: "2026-04-03T01:00:00.000Z",
+      lastActivityAt: "2026-04-03T01:00:03.000Z",
+      promptCount: 1,
+      openPromptCount: 0,
+      isGenerating: false,
+      lastPromptSummary: "Prompt two",
+      status: "closed",
+    };
+
+    const prompt2: PromptEventListItem = {
+      ...prompt1,
+      id: "prompt_cloud_2",
+      sessionId: "session-2",
+      threadId: "thread-2",
+      startedAt: "2026-04-03T01:00:00.000Z",
+      endedAt: "2026-04-03T01:00:03.000Z",
+      promptSummary: "Prompt two",
+      primaryArtifactId: "artifact_cloud_2",
+      primaryArtifactSummary: "Patch two",
+      filesTouched: ["src/two.ts"],
+    };
+
+    const detail2: PromptEventDetail = {
+      ...prompt2,
+      promptText: "Prompt two",
+      transcript: [],
+      artifacts: [
+        {
+          id: "artifact_cloud_2",
+          promptEventId: prompt2.id,
+          type: "code_diff",
+          role: "primary",
+          summary: "Patch two",
+          blobId: "blob_cloud_2",
+          fileStatsJson: null,
+          metadataJson: null,
+        },
+      ],
+      artifactLinks: [],
+      gitLinks: [],
+    };
+
+    store.upsertCloudWorkspaceBundle("user_cloud", {
+      workspace,
+      threads: [thread2],
+      prompts: [prompt2],
+      promptDetails: [detail2],
+      blobs: [{ blobId: "blob_cloud_2", content: "two" }],
+    });
+
+    expect(store.listCloudThreads("user_cloud", workspace.id).map((thread) => thread.id)).toEqual([
+      "thread_cloud_2",
+      "thread_cloud_1",
+    ]);
+    expect(store.listCloudPrompts("user_cloud", workspace.id).map((prompt) => prompt.id)).toEqual([
+      "prompt_cloud_2",
+      "prompt_cloud_1",
+    ]);
+    expect(store.getCloudPromptDetail("user_cloud", workspace.id, "prompt_cloud_1")?.promptText).toBe("Prompt one");
+    expect(store.getCloudPromptDetail("user_cloud", workspace.id, "prompt_cloud_2")?.promptText).toBe("Prompt two");
+    expect(store.readCloudBlob("user_cloud", workspace.id, "blob_cloud_1")).toBe("one");
+    expect(store.readCloudBlob("user_cloud", workspace.id, "blob_cloud_2")).toBe("two");
+  });
 });
