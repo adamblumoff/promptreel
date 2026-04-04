@@ -66,16 +66,12 @@ async function warmDiffViewer() {
 const WORKSPACE_POLL_MS = 20_000;
 const ACTIVE_THREADS_POLL_MS = 5_000;
 const IDLE_THREADS_POLL_MS = 12_000;
-const ACTIVE_PROMPTS_POLL_MS = 2_000;
-const IDLE_PROMPTS_POLL_MS = 10_000;
 const ACTIVE_DETAIL_POLL_MS = 3_000;
-const HOSTED_WORKSPACE_POLL_MS = 4_000;
-const HOSTED_ACTIVE_THREADS_POLL_MS = 2_000;
-const HOSTED_IDLE_THREADS_POLL_MS = 5_000;
-const HOSTED_ACTIVE_PROMPTS_POLL_MS = 1_000;
-const HOSTED_IDLE_PROMPTS_POLL_MS = 3_000;
-const HOSTED_ACTIVE_DETAIL_POLL_MS = 1_500;
-const VIEWER_STATUS_POLL_MS = 3_000;
+const HOSTED_WORKSPACE_POLL_MS = 10_000;
+const HOSTED_ACTIVE_THREADS_POLL_MS = 4_000;
+const HOSTED_IDLE_THREADS_POLL_MS = 12_000;
+const HOSTED_ACTIVE_DETAIL_POLL_MS = 2_500;
+const VIEWER_STATUS_POLL_MS = 5_000;
 const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
 function formatLastSeenLabel(timestamp: string | null): string | null {
@@ -84,6 +80,19 @@ function formatLastSeenLabel(timestamp: string | null): string | null {
   }
   const deltaMinutes = Math.round((Date.parse(timestamp) - Date.now()) / 60_000);
   return `seen ${relativeTimeFormatter.format(deltaMinutes, "minute")}`;
+}
+
+function toThreadRevision(thread: ThreadSummary | null): string {
+  if (!thread) {
+    return "";
+  }
+  return [
+    thread.lastActivityAt,
+    thread.promptCount,
+    thread.openPromptCount,
+    thread.status,
+    thread.lastPromptSummary,
+  ].join("|");
 }
 
 /* ─── App ───────────────────────────────────────────────────────────────── */
@@ -132,6 +141,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   const [viewerStatus, setViewerStatus] = useState<ViewerStatus | null>(null);
   const detailControllers = useRef<Record<string, AbortController | undefined>>({});
   const previousPromptStatusesRef = useRef<Partial<Record<string, PromptListItem["status"]>>>({});
+  const promptRevisionsRef = useRef<Record<string, string>>({});
   const isHostedViewer = viewerMode === "cloud";
 
   /* visibility */
@@ -247,6 +257,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   const threads = selectedWorkspaceId ? (threadsByWs[selectedWorkspaceId] ?? []) : [];
   const selThread = threads.find((t) => t.id === selectedThreadId) ?? null;
   const selThreadKey = selThread?.threadId ?? selThread?.sessionId ?? "";
+  const selThreadRevision = toThreadRevision(selThread);
   const pKey = selectedWorkspaceId && selectedThreadId
     ? cacheKey(selectedWorkspaceId, selectedThreadId)
     : "";
@@ -257,10 +268,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     let live = true;
     let ctrl: AbortController | null = null;
     const ck = cacheKey(selectedWorkspaceId, selectedThreadId);
-    const hasCached = Boolean(cachedPrompts);
-    const interval = selThread?.openPromptCount
-      ? (isHostedViewer ? HOSTED_ACTIVE_PROMPTS_POLL_MS : ACTIVE_PROMPTS_POLL_MS)
-      : (isHostedViewer ? HOSTED_IDLE_PROMPTS_POLL_MS : IDLE_PROMPTS_POLL_MS);
+    const hasCached = Boolean(cachedPrompts?.length);
 
     const go = async () => {
       ctrl?.abort();
@@ -280,15 +288,25 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
       finally { if (live) setPromptsLoading(false); }
     };
 
-    void go();
-    const id = setInterval(() => void go(), interval);
-    return () => { live = false; ctrl?.abort(); clearInterval(id); };
-  }, [cachedPrompts, isHostedViewer, visible, selThread?.openPromptCount, selectedThreadId, selThreadKey, selectedWorkspaceId]);
+    const previousRevision = promptRevisionsRef.current[ck];
+    const shouldRefresh = !hasCached || previousRevision !== selThreadRevision;
+    if (shouldRefresh) {
+      promptRevisionsRef.current[ck] = selThreadRevision;
+      void go();
+    }
+    return () => {
+      live = false;
+      ctrl?.abort();
+    };
+  }, [cachedPrompts, visible, selThreadRevision, selectedThreadId, selThreadKey, selectedWorkspaceId]);
 
   const prompts = pKey ? (promptsByKey[pKey] ?? []) : [];
 
   useEffect(() => {
     previousPromptStatusesRef.current = {};
+    if (!pKey) {
+      promptRevisionsRef.current = {};
+    }
   }, [pKey]);
 
   /* ── load prompt detail ───────────────────────────────────────────────── */
