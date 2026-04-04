@@ -202,6 +202,7 @@ export type ViewerStatus = {
     source: "local" | "cloud";
     label: string;
     detail: string | null;
+    syncDetail: string | null;
     lastSeenAt: string | null;
     syncState: "active" | "idle" | "error" | "disconnected";
   };

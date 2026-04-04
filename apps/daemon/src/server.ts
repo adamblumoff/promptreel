@@ -409,6 +409,11 @@ export function buildServer() {
     lastCloudSyncAt: null as string | null,
     lastCloudSyncError: null as string | null,
     syncInFlight: false,
+    lastCloudSyncStats: null as null | {
+      workspaceCount: number;
+      promptCount: number;
+      blobCount: number;
+    },
   };
 
   app.register(cors, {
@@ -465,6 +470,7 @@ export function buildServer() {
             ? (isActive ? "Syncing live" : isConnected ? "Daemon connected" : "Daemon offline")
             : "No daemon linked",
           detail: device?.deviceName ?? null,
+          syncDetail: null,
           lastSeenAt: device?.lastSeenAt ?? null,
           syncState: device ? (isActive ? "active" : isConnected ? "idle" : "disconnected") : "disconnected",
         },
@@ -481,6 +487,15 @@ export function buildServer() {
         source: "local",
         label: ingestion.watcher === "running" ? "Local daemon running" : "Local daemon stopped",
         detail: `${ingestion.workspaceStatuses.length} workspace${ingestion.workspaceStatuses.length === 1 ? "" : "s"} watching`,
+        syncDetail: runtimeStatus.lastCloudSyncError
+          ? runtimeStatus.lastCloudSyncError
+          : runtimeStatus.syncInFlight
+          ? "Syncing deltas..."
+          : runtimeStatus.lastCloudSyncStats
+          ? `Last sync: ${runtimeStatus.lastCloudSyncStats.promptCount} prompt${runtimeStatus.lastCloudSyncStats.promptCount === 1 ? "" : "s"}, ${runtimeStatus.lastCloudSyncStats.blobCount} blob${runtimeStatus.lastCloudSyncStats.blobCount === 1 ? "" : "s"}`
+          : CLOUD_SYNC_ENABLED
+          ? "Watching for local changes"
+          : null,
         lastSeenAt: ingestion.lastScanAt,
         syncState: runtimeStatus.lastCloudSyncError
           ? "error"
@@ -787,6 +802,8 @@ export async function startDaemon() {
       reportCloudSyncNotice("Cloud sync authenticated. Watching for local changes...");
       const syncScope = buildCloudSyncScope(authState.apiBaseUrl, authState.deviceId);
       const syncedWorkspaces: string[] = [];
+      let syncedPromptCount = 0;
+      let syncedBlobCount = 0;
       const workspaces = store.listWorkspaces();
       for (const workspace of workspaces) {
         const delta = buildCloudDeltaBundle(store, tailer, workspace.id, syncScope);
@@ -804,9 +821,16 @@ export async function startDaemon() {
         setCloudSyncCursor(store, workspace.id, syncScope, { lastSyncedAt: nowIso() });
         runtimeStatus.lastCloudSyncAt = nowIso();
         runtimeStatus.lastCloudSyncError = null;
+        syncedPromptCount += delta.bundle.prompts.length;
+        syncedBlobCount += delta.bundle.blobs.length;
         syncedWorkspaces.push(`${workspace.slug} (${delta.bundle.prompts.length} prompts)`);
       }
       if (syncedWorkspaces.length > 0) {
+        runtimeStatus.lastCloudSyncStats = {
+          workspaceCount: syncedWorkspaces.length,
+          promptCount: syncedPromptCount,
+          blobCount: syncedBlobCount,
+        };
         console.log(`Synced ${syncedWorkspaces.length} workspace${syncedWorkspaces.length === 1 ? "" : "s"} to Promptreel Cloud.`);
         for (const summary of syncedWorkspaces) {
           console.log(`- ${summary}`);

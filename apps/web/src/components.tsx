@@ -131,6 +131,7 @@ export function TopBar({
     connected: boolean;
     label: string;
     detail: string | null;
+    syncDetail: string | null;
     syncState: "active" | "idle" | "error" | "disconnected";
     lastSeenLabel: string | null;
   } | null;
@@ -358,6 +359,9 @@ export function TopBar({
               <span>{daemonStatus.label}</span>
               {daemonStatus.lastSeenLabel && (
                 <span className="text-t4">· {daemonStatus.lastSeenLabel}</span>
+              )}
+              {daemonStatus.syncDetail && (
+                <span className="text-t4">· {daemonStatus.syncDetail}</span>
               )}
             </div>
           )}

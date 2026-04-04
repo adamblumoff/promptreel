@@ -528,6 +528,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
           connected: viewerStatus.daemon.connected,
           label: viewerStatus.daemon.label,
           detail: viewerStatus.daemon.detail,
+          syncDetail: viewerStatus.daemon.syncDetail,
           syncState: viewerStatus.daemon.syncState,
           lastSeenLabel: formatLastSeenLabel(viewerStatus.daemon.lastSeenAt),
         } : null}
