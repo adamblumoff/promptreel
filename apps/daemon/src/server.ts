@@ -33,7 +33,7 @@ import type {
   WorkspaceListResponse
 } from "@promptreel/api-contracts";
 import { CodexSessionTailer, LIVE_ACTIVITY_WINDOW_MS } from "@promptreel/codex-adapter";
-import { PromptreelStore } from "@promptreel/storage";
+import { PromptreelStore, type CloudAuthState } from "@promptreel/storage";
 import { nowIso, type AuthUserProfile, type WorkspaceListItem } from "@promptreel/domain";
 import { createCloudStore } from "./cloud-store.js";
 
@@ -218,8 +218,8 @@ function buildCloudBootstrapBundle(
   };
 }
 
-function buildCloudSyncScope(apiBaseUrl: string, deviceId: string): string {
-  return `${trimTrailingSlash(apiBaseUrl)}|${deviceId}`;
+function buildCloudSyncScope(authState: Pick<CloudAuthState, "userId" | "deviceId">): string {
+  return authState.userId ? `user:${authState.userId}` : `device:${authState.deviceId}`;
 }
 
 function buildCloudSyncCursorKey(syncScope: string): string {
@@ -255,7 +255,8 @@ function buildCloudDeltaBundle(
   store: PromptreelStore,
   tailer: CodexSessionTailer,
   workspaceId: string,
-  syncScope: string
+  syncScope: string,
+  legacyDeviceId: string | null = null
 ): {
   bundle: CloudBootstrapSyncRequest;
   promptSyncRecords: Array<{ recordId: string; recordHash: string }>;
@@ -272,8 +273,48 @@ function buildCloudDeltaBundle(
   }
 
   const cursor = getCloudSyncCursor(store, workspaceId, syncScope);
-  const syncedPromptHashes = store.getSyncRecordHashes(workspaceId, syncScope, CLOUD_SYNC_PROMPT_RECORD_TYPE);
-  const syncedBlobHashes = store.getSyncRecordHashes(workspaceId, syncScope, CLOUD_SYNC_BLOB_RECORD_TYPE);
+  let syncedPromptHashes = store.getSyncRecordHashes(workspaceId, syncScope, CLOUD_SYNC_PROMPT_RECORD_TYPE);
+  let syncedBlobHashes = store.getSyncRecordHashes(workspaceId, syncScope, CLOUD_SYNC_BLOB_RECORD_TYPE);
+  let lastSyncedAt = cursor.lastSyncedAt;
+
+  if (legacyDeviceId && (syncedPromptHashes.size === 0 || syncedBlobHashes.size === 0 || !lastSyncedAt)) {
+    const legacyPromptHashes = store.getLegacySyncRecordHashesForDevice(
+      workspaceId,
+      legacyDeviceId,
+      CLOUD_SYNC_PROMPT_RECORD_TYPE
+    );
+    const legacyBlobHashes = store.getLegacySyncRecordHashesForDevice(
+      workspaceId,
+      legacyDeviceId,
+      CLOUD_SYNC_BLOB_RECORD_TYPE
+    );
+    const legacyCursor = store.getLegacyCloudSyncCursorForDevice(workspaceId, legacyDeviceId);
+
+    if (syncedPromptHashes.size === 0 && legacyPromptHashes.size > 0) {
+      store.upsertSyncRecords(
+        workspaceId,
+        syncScope,
+        CLOUD_SYNC_PROMPT_RECORD_TYPE,
+        [...legacyPromptHashes.entries()].map(([recordId, recordHash]) => ({ recordId, recordHash }))
+      );
+      syncedPromptHashes = store.getSyncRecordHashes(workspaceId, syncScope, CLOUD_SYNC_PROMPT_RECORD_TYPE);
+    }
+
+    if (syncedBlobHashes.size === 0 && legacyBlobHashes.size > 0) {
+      store.upsertSyncRecords(
+        workspaceId,
+        syncScope,
+        CLOUD_SYNC_BLOB_RECORD_TYPE,
+        [...legacyBlobHashes.entries()].map(([recordId, recordHash]) => ({ recordId, recordHash }))
+      );
+      syncedBlobHashes = store.getSyncRecordHashes(workspaceId, syncScope, CLOUD_SYNC_BLOB_RECORD_TYPE);
+    }
+
+    if (!lastSyncedAt && legacyCursor) {
+      store.setIngestCursor(workspaceId, buildCloudSyncCursorKey(syncScope), legacyCursor.cursorValue);
+      lastSyncedAt = (JSON.parse(legacyCursor.cursorValue) as { lastSyncedAt: string | null }).lastSyncedAt;
+    }
+  }
   const changedPromptDetails: NonNullable<ReturnType<PromptreelStore["getPromptDetail"]>>[] = [];
   const promptSyncRecords: Array<{ recordId: string; recordHash: string }> = [];
 
@@ -281,7 +322,7 @@ function buildCloudDeltaBundle(
     const shouldConsider =
       !syncedPromptHashes.has(prompt.id)
       || prompt.status === "in_progress"
-      || Boolean(cursor.lastSyncedAt && prompt.endedAt && prompt.endedAt > cursor.lastSyncedAt);
+      || Boolean(lastSyncedAt && prompt.endedAt && prompt.endedAt > lastSyncedAt);
 
     if (!shouldConsider) {
       continue;
@@ -800,13 +841,13 @@ export async function startDaemon() {
     runtimeStatus.syncInFlight = true;
     try {
       reportCloudSyncNotice("Cloud sync authenticated. Watching for local changes...");
-      const syncScope = buildCloudSyncScope(authState.apiBaseUrl, authState.deviceId);
+      const syncScope = buildCloudSyncScope(authState);
       const syncedWorkspaces: string[] = [];
       let syncedPromptCount = 0;
       let syncedBlobCount = 0;
       const workspaces = store.listWorkspaces();
       for (const workspace of workspaces) {
-        const delta = buildCloudDeltaBundle(store, tailer, workspace.id, syncScope);
+        const delta = buildCloudDeltaBundle(store, tailer, workspace.id, syncScope, authState.deviceId);
         if (!delta) {
           continue;
         }

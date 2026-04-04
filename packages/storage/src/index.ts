@@ -111,6 +111,7 @@ type CliLoginRequestRow = {
 export interface CloudAuthState {
   apiBaseUrl: string;
   webBaseUrl: string;
+  userId: string | null;
   deviceId: string;
   deviceName: string | null;
   daemonToken: string;
@@ -722,6 +723,23 @@ export class PromptreelStore {
     db.close();
   }
 
+  getLegacyCloudSyncCursorForDevice(
+    workspaceId: string,
+    deviceId: string
+  ): { cursorValue: string; updatedAt: string } | null {
+    this.ensureWorkspaceSchema(workspaceId);
+    const db = this.openWorkspace(workspaceId);
+    const row = db.prepare(
+      `SELECT cursor_value AS cursorValue, updated_at AS updatedAt
+       FROM ingestion_cursors
+       WHERE cursor_key LIKE ?
+       ORDER BY updated_at DESC
+       LIMIT 1`
+    ).get(`cloud-sync:%|${deviceId}:state`) as { cursorValue: string; updatedAt: string } | undefined;
+    db.close();
+    return row ?? null;
+  }
+
   getSyncRecordHashes(
     workspaceId: string,
     syncScope: string,
@@ -736,6 +754,35 @@ export class PromptreelStore {
     ).all(syncScope, recordType) as Array<{ recordId: string; recordHash: string | null }>;
     db.close();
     return new Map(rows.map((row) => [row.recordId, row.recordHash ?? null]));
+  }
+
+  getLegacySyncRecordHashesForDevice(
+    workspaceId: string,
+    deviceId: string,
+    recordType: string
+  ): Map<string, string | null> {
+    this.ensureWorkspaceSchema(workspaceId);
+    const db = this.openWorkspace(workspaceId);
+    const rows = db.prepare(
+      `SELECT record_id AS recordId, record_hash AS recordHash, updated_at AS updatedAt
+       FROM sync_records
+       WHERE record_type = ?
+         AND sync_scope LIKE ?
+       ORDER BY updated_at DESC`
+    ).all(recordType, `%|${deviceId}`) as Array<{
+      recordId: string;
+      recordHash: string | null;
+      updatedAt: string;
+    }>;
+    db.close();
+    const latest = new Map<string, string | null>();
+    for (const row of rows) {
+      if (latest.has(row.recordId)) {
+        continue;
+      }
+      latest.set(row.recordId, row.recordHash ?? null);
+    }
+    return latest;
   }
 
   upsertSyncRecords(
@@ -792,7 +839,19 @@ export class PromptreelStore {
     if (!existsSync(file)) {
       return null;
     }
-    return safeJsonParse<CloudAuthState | null>(readFileSync(file, "utf8"), null);
+    const parsed = safeJsonParse<Partial<CloudAuthState> | null>(readFileSync(file, "utf8"), null);
+    if (!parsed?.apiBaseUrl || !parsed?.webBaseUrl || !parsed?.deviceId || !parsed?.daemonToken || !parsed?.linkedAt) {
+      return null;
+    }
+    return {
+      apiBaseUrl: parsed.apiBaseUrl,
+      webBaseUrl: parsed.webBaseUrl,
+      userId: parsed.userId ?? null,
+      deviceId: parsed.deviceId,
+      deviceName: parsed.deviceName ?? null,
+      daemonToken: parsed.daemonToken,
+      linkedAt: parsed.linkedAt,
+    };
   }
 
   setCloudAuthState(state: CloudAuthState): void {

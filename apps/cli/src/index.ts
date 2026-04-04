@@ -36,8 +36,8 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-function buildCloudSyncScope(apiBaseUrl: string, deviceId: string): string {
-  return `${trimTrailingSlash(apiBaseUrl)}|${deviceId}`;
+function buildCloudSyncScope(authState: Pick<CloudAuthState, "userId" | "deviceId">): string {
+  return authState.userId ? `user:${authState.userId}` : `device:${authState.deviceId}`;
 }
 
 function buildCloudSyncCursorKey(syncScope: string): string {
@@ -201,6 +201,24 @@ function printBootstrapSyncResult(result: { workspaceCount: number; synced: Clou
   ]);
 }
 
+async function resolveAuthenticatedCloudUser(
+  authState: CloudAuthState
+): Promise<{ authState: CloudAuthState; whoami: AuthWhoamiResponse }> {
+  const whoami = await getJson<AuthWhoamiResponse>(authState.apiBaseUrl, "/auth/me", authState.daemonToken);
+  if (!whoami.authenticated || !whoami.user) {
+    throw new Error("Cloud auth is no longer valid. Run `pl login` again.");
+  }
+  if (authState.userId === whoami.user.id) {
+    return { authState, whoami };
+  }
+  const nextState: CloudAuthState = {
+    ...authState,
+    userId: whoami.user.id,
+  };
+  store.setCloudAuthState(nextState);
+  return { authState: nextState, whoami };
+}
+
 function printResetResult(result: { revokedTokens: number; clearedLoginRequests: number }): void {
   printBlock([
     "Promptreel Cloud credentials reset.",
@@ -258,7 +276,10 @@ function isRecordedDaemonAlive(pid: number | null): boolean {
 }
 
 async function startDaemonProcess(detach = false): Promise<void> {
-  const authState = store.getCloudAuthState();
+  const existingAuthState = store.getCloudAuthState();
+  const authState = existingAuthState?.daemonToken
+    ? (await resolveAuthenticatedCloudUser(existingAuthState)).authState
+    : existingAuthState;
   if (!authState?.daemonToken) {
     throw new Error(
       "Not logged in. Run `pl login` first. For local-only development, use `pnpm dev`, `pnpm dev:web`, or `pnpm dev:daemon`."
@@ -625,6 +646,7 @@ program
     store.setCloudAuthState({
       apiBaseUrl,
       webBaseUrl,
+      userId: exchange.user?.id ?? null,
       deviceId,
       deviceName,
       daemonToken: exchange.daemonToken,
@@ -644,12 +666,15 @@ program
   .command("whoami")
   .description("Show the connected Promptreel Cloud account")
   .action(async () => {
-    const authState = store.getCloudAuthState();
+    const existingAuthState = store.getCloudAuthState();
+    const resolved = existingAuthState?.daemonToken
+      ? await resolveAuthenticatedCloudUser(existingAuthState)
+      : null;
+    const authState = resolved?.authState ?? existingAuthState;
     if (!authState?.daemonToken) {
       throw new Error("Not logged in. Run `pl login` first.");
     }
-    const result = await getJson<AuthWhoamiResponse>(authState.apiBaseUrl, "/auth/me", authState.daemonToken);
-    printWhoAmI(result);
+    printWhoAmI(resolved?.whoami ?? await getJson<AuthWhoamiResponse>(authState.apiBaseUrl, "/auth/me", authState.daemonToken));
   });
 
 program
@@ -659,7 +684,10 @@ program
     new Command("bootstrap")
       .option("--workspace <workspaceId>", "Sync a single workspace id")
       .action(async (options: { workspace?: string }) => {
-        const authState = store.getCloudAuthState();
+        const existingAuthState = store.getCloudAuthState();
+        const authState = existingAuthState?.daemonToken
+          ? (await resolveAuthenticatedCloudUser(existingAuthState)).authState
+          : existingAuthState;
         if (!authState?.daemonToken) {
           throw new Error("Not logged in. Run `pl login` first.");
         }
@@ -673,7 +701,7 @@ program
         }
 
         const synced: CloudBootstrapSyncResponse[] = [];
-        const syncScope = buildCloudSyncScope(authState.apiBaseUrl, authState.deviceId);
+        const syncScope = buildCloudSyncScope(authState);
         for (const workspaceId of workspaceIds) {
           const bundle = buildBootstrapBundle(store, workspaceId);
           const result = await postJson<CloudBootstrapSyncResponse, CloudBootstrapSyncRequest>(

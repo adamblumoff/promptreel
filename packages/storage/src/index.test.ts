@@ -691,4 +691,39 @@ describe("PromptreelStore", () => {
     expect(store.readCloudBlob("user_cloud", workspace.id, "blob_cloud_1")).toBe("one");
     expect(store.readCloudBlob("user_cloud", workspace.id, "blob_cloud_2")).toBe("two");
   });
+
+  test("can recover legacy device-scoped sync state after moving to user-scoped sync", () => {
+    const root = mkdtempSync(join(tmpdir(), "promptreel-store-cloud-scope-"));
+    const repoPath = join(root, "repo");
+    mkdirSync(repoPath, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repoPath, stdio: "ignore" });
+
+    const store = new PromptreelStore(join(root, ".pl"));
+    const repo = store.addRepo(repoPath);
+
+    store.upsertSyncRecords(repo.id, "https://old-domain.test/api|device_123", "cloud_prompt", [
+      { recordId: "prompt_1", recordHash: "hash_old" },
+      { recordId: "prompt_2", recordHash: "hash_newer" },
+    ]);
+    store.upsertSyncRecords(repo.id, "https://older-domain.test/api|device_123", "cloud_prompt", [
+      { recordId: "prompt_3", recordHash: "hash_older" },
+    ]);
+    store.setIngestCursor(
+      repo.id,
+      "cloud-sync:https://old-domain.test/api|device_123:state",
+      JSON.stringify({ lastSyncedAt: "2026-04-04T10:00:00.000Z" })
+    );
+
+    expect(store.getLegacySyncRecordHashesForDevice(repo.id, "device_123", "cloud_prompt")).toEqual(
+      new Map([
+        ["prompt_1", "hash_old"],
+        ["prompt_2", "hash_newer"],
+        ["prompt_3", "hash_older"],
+      ])
+    );
+    expect(store.getLegacyCloudSyncCursorForDevice(repo.id, "device_123")).toEqual({
+      cursorValue: JSON.stringify({ lastSyncedAt: "2026-04-04T10:00:00.000Z" }),
+      updatedAt: expect.any(String),
+    });
+  });
 });
