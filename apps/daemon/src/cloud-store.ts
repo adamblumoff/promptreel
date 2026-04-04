@@ -1,14 +1,6 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
-import {
-  index,
-  jsonb,
-  pgTable,
-  primaryKey,
-  text,
-  uniqueIndex,
-} from "drizzle-orm/pg-core";
 import { Pool } from "pg";
 import type {
   CloudBootstrapSyncRequest,
@@ -23,240 +15,31 @@ import type {
   WorkspaceListItem,
 } from "@promptreel/domain";
 import { createId, nowIso } from "@promptreel/domain";
-
-type CliLoginRequestRow = {
-  loginCode: string;
-  deviceId: string;
-  deviceName: string | null;
-  requestedAt: string;
-  expiresAt: string;
-  approvedAt: string | null;
-  completedAt: string | null;
-  userId: string | null;
-  daemonToken: string | null;
-};
-
-type CloudBundle = {
-  workspace: WorkspaceListItem;
-  threads: ThreadSummary[];
-  prompts: PromptEventListItem[];
-  promptDetails: PromptEventDetail[];
-  blobs: Array<{ blobId: string; content: string }>;
-};
-
-const CLOUD_SYNC_INSERT_CHUNK_SIZE = 100;
-
-export interface CloudStore {
-  ensureReady(): Promise<void>;
-  createCliLoginRequest(deviceId: string, deviceName: string | null, ttlMs?: number): Promise<CliLoginRequestRow>;
-  approveCliLoginRequest(input: {
-    loginCode: string;
-    clerkUserId: string;
-    email: string | null;
-    name: string | null;
-    avatarUrl: string | null;
-    deviceId: string;
-    deviceName: string | null;
-  }): Promise<{ user: AuthUserProfile; device: AuthDevice; daemonToken: string } | null>;
-  exchangeCliLoginRequest(loginCode: string, deviceId: string): Promise<CliLoginExchangeResponse>;
-  authenticateDaemonToken(daemonToken: string): Promise<{ user: AuthUserProfile; device: AuthDevice } | null>;
-  getAuthUserByClerkUserId(clerkUserId: string): Promise<AuthUserProfile | null>;
-  getLatestAuthDeviceForUser(userId: string): Promise<AuthDevice | null>;
-  upsertCloudWorkspaceBundle(
-    userId: string,
-    bundle: CloudBootstrapSyncRequest
-  ): Promise<{ workspaceId: string; threadCount: number; promptCount: number; blobCount: number }>;
-  listCloudWorkspaces(userId: string): Promise<WorkspaceListItem[]>;
-  listCloudThreads(userId: string, workspaceId: string): Promise<ThreadSummary[]>;
-  listCloudPrompts(userId: string, workspaceId: string, threadLookupKey?: string | null): Promise<PromptEventListItem[]>;
-  getCloudPromptDetail(userId: string, workspaceId: string, promptId: string): Promise<PromptEventDetail | null>;
-  readCloudBlob(userId: string, workspaceId: string, blobId: string): Promise<string>;
-}
-
-const authUsers = pgTable("auth_users", {
-  id: text("id").primaryKey(),
-  clerkUserId: text("clerk_user_id").notNull().unique(),
-  email: text("email"),
-  name: text("name"),
-  avatarUrl: text("avatar_url"),
-  createdAt: text("created_at").notNull(),
-  updatedAt: text("updated_at").notNull(),
-});
-
-const authDevices = pgTable(
-  "auth_devices",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id").notNull(),
-    deviceId: text("device_id").notNull(),
-    deviceName: text("device_name"),
-    createdAt: text("created_at").notNull(),
-    lastSeenAt: text("last_seen_at").notNull(),
-  },
-  (table) => ({
-    userDeviceUnique: uniqueIndex("auth_devices_user_device_unique").on(table.userId, table.deviceId),
-  })
-);
-
-const authDaemonTokens = pgTable(
-  "auth_daemon_tokens",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id").notNull(),
-    deviceRowId: text("device_row_id").notNull(),
-    tokenHash: text("token_hash").notNull(),
-    createdAt: text("created_at").notNull(),
-    lastUsedAt: text("last_used_at"),
-    revokedAt: text("revoked_at"),
-  },
-  (table) => ({
-    tokenHashUnique: uniqueIndex("auth_daemon_tokens_token_hash_unique").on(table.tokenHash),
-  })
-);
-
-const cliLoginRequests = pgTable("cli_login_requests", {
-  loginCode: text("login_code").primaryKey(),
-  deviceId: text("device_id").notNull(),
-  deviceName: text("device_name"),
-  requestedAt: text("requested_at").notNull(),
-  expiresAt: text("expires_at").notNull(),
-  approvedAt: text("approved_at"),
-  completedAt: text("completed_at"),
-  userId: text("user_id"),
-  daemonToken: text("daemon_token"),
-});
-
-const cloudWorkspaces = pgTable(
-  "cloud_workspaces",
-  {
-    userId: text("user_id").notNull(),
-    workspaceId: text("workspace_id").notNull(),
-    lastActivityAt: text("last_activity_at"),
-    payloadJson: jsonb("payload_json").$type<WorkspaceListItem>().notNull(),
-    updatedAt: text("updated_at").notNull(),
-  },
-  (table) => ({
-    pk: primaryKey({ columns: [table.userId, table.workspaceId] }),
-    activityIdx: index("cloud_workspaces_user_activity_idx").on(table.userId, table.lastActivityAt),
-  })
-);
-
-const cloudThreads = pgTable(
-  "cloud_threads",
-  {
-    userId: text("user_id").notNull(),
-    workspaceId: text("workspace_id").notNull(),
-    threadId: text("thread_id").notNull(),
-    lastActivityAt: text("last_activity_at").notNull(),
-    payloadJson: jsonb("payload_json").$type<ThreadSummary>().notNull(),
-    updatedAt: text("updated_at").notNull(),
-  },
-  (table) => ({
-    pk: primaryKey({ columns: [table.userId, table.workspaceId, table.threadId] }),
-    activityIdx: index("cloud_threads_user_workspace_activity_idx").on(table.userId, table.workspaceId, table.lastActivityAt),
-  })
-);
-
-const cloudPrompts = pgTable(
-  "cloud_prompts",
-  {
-    userId: text("user_id").notNull(),
-    workspaceId: text("workspace_id").notNull(),
-    promptId: text("prompt_id").notNull(),
-    threadLookupKey: text("thread_lookup_key").notNull(),
-    startedAt: text("started_at").notNull(),
-    payloadJson: jsonb("payload_json").$type<PromptEventListItem>().notNull(),
-    updatedAt: text("updated_at").notNull(),
-  },
-  (table) => ({
-    pk: primaryKey({ columns: [table.userId, table.workspaceId, table.promptId] }),
-    threadIdx: index("cloud_prompts_user_workspace_thread_idx").on(table.userId, table.workspaceId, table.threadLookupKey, table.startedAt),
-  })
-);
-
-const cloudPromptDetails = pgTable(
-  "cloud_prompt_details",
-  {
-    userId: text("user_id").notNull(),
-    workspaceId: text("workspace_id").notNull(),
-    promptId: text("prompt_id").notNull(),
-    payloadJson: jsonb("payload_json").$type<PromptEventDetail>().notNull(),
-    updatedAt: text("updated_at").notNull(),
-  },
-  (table) => ({
-    pk: primaryKey({ columns: [table.userId, table.workspaceId, table.promptId] }),
-  })
-);
-
-const cloudBlobs = pgTable(
-  "cloud_blobs",
-  {
-    userId: text("user_id").notNull(),
-    workspaceId: text("workspace_id").notNull(),
-    blobId: text("blob_id").notNull(),
-    content: text("content").notNull(),
-    updatedAt: text("updated_at").notNull(),
-  },
-  (table) => ({
-    pk: primaryKey({ columns: [table.userId, table.workspaceId, table.blobId] }),
-  })
-);
-
-class DisabledCloudStore implements CloudStore {
-  async ensureReady(): Promise<void> {}
-
-  private unavailable(): never {
-    throw new Error("Promptreel Cloud requires DATABASE_URL.");
-  }
-
-  async createCliLoginRequest(): Promise<CliLoginRequestRow> {
-    return this.unavailable();
-  }
-
-  async approveCliLoginRequest(): Promise<{ user: AuthUserProfile; device: AuthDevice; daemonToken: string } | null> {
-    return this.unavailable();
-  }
-
-  async exchangeCliLoginRequest(): Promise<CliLoginExchangeResponse> {
-    return this.unavailable();
-  }
-
-  async authenticateDaemonToken(): Promise<{ user: AuthUserProfile; device: AuthDevice } | null> {
-    return this.unavailable();
-  }
-
-  async getAuthUserByClerkUserId(): Promise<AuthUserProfile | null> {
-    return this.unavailable();
-  }
-
-  async getLatestAuthDeviceForUser(): Promise<AuthDevice | null> {
-    return this.unavailable();
-  }
-
-  async upsertCloudWorkspaceBundle(): Promise<{ workspaceId: string; threadCount: number; promptCount: number; blobCount: number }> {
-    return this.unavailable();
-  }
-
-  async listCloudWorkspaces(): Promise<WorkspaceListItem[]> {
-    return this.unavailable();
-  }
-
-  async listCloudThreads(): Promise<ThreadSummary[]> {
-    return this.unavailable();
-  }
-
-  async listCloudPrompts(): Promise<PromptEventListItem[]> {
-    return this.unavailable();
-  }
-
-  async getCloudPromptDetail(): Promise<PromptEventDetail | null> {
-    return this.unavailable();
-  }
-
-  async readCloudBlob(): Promise<string> {
-    return this.unavailable();
-  }
-}
+import {
+  authDaemonTokens,
+  authDevices,
+  authUsers,
+  cliLoginRequests,
+  cloudBlobs,
+  cloudPromptDetails,
+  cloudPrompts,
+  cloudThreads,
+  cloudWorkspaces,
+} from "./cloud-store-schema.js";
+import {
+  CLOUD_SYNC_INSERT_CHUNK_SIZE,
+  chunkArray,
+  createCloudPool,
+  DisabledCloudStore,
+  type CliLoginRequestRow,
+  type CloudStore,
+  getThreadLookupKey,
+  hashToken,
+  isExpiredIso,
+  sanitizeCloudBootstrapBundle,
+  toAuthDevice,
+  toAuthUser,
+} from "./cloud-store-support.js";
 
 class DrizzleCloudStore implements CloudStore {
   private readonly db;
@@ -781,89 +564,10 @@ class DrizzleCloudStore implements CloudStore {
   }
 }
 
-function chunkArray<T>(items: T[], size: number): T[][] {
-  if (items.length === 0) {
-    return [];
-  }
-  const chunks: T[][] = [];
-  for (let index = 0; index < items.length; index += size) {
-    chunks.push(items.slice(index, index + size));
-  }
-  return chunks;
-}
-
-function sanitizeCloudBootstrapBundle(bundle: CloudBootstrapSyncRequest): CloudBootstrapSyncRequest {
-  return sanitizeForPostgresJson(bundle);
-}
-
-function sanitizeForPostgresJson<T>(value: T): T {
-  if (typeof value === "string") {
-    return value.replace(/\u0000/g, "") as T;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeForPostgresJson(item)) as T;
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, sanitizeForPostgresJson(item)])
-    ) as T;
-  }
-  return value;
-}
-
 export function createCloudStore(): CloudStore {
-  const connectionString = process.env.DATABASE_URL?.trim();
-  if (!connectionString) {
+  const pool = createCloudPool();
+  if (!pool) {
     return new DisabledCloudStore();
   }
-  const sslMode = process.env.PROMPTREEL_CLOUD_DATABASE_SSL?.trim()?.toLowerCase();
-  const ssl =
-    sslMode === "require" || sslMode === "true"
-      ? { rejectUnauthorized: false }
-      : undefined;
-  const pool = new Pool({
-    connectionString,
-    ssl,
-    max: Number(process.env.PROMPTREEL_CLOUD_DATABASE_POOL_MAX ?? "10"),
-  });
   return new DrizzleCloudStore(pool);
-}
-
-function hashToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
-
-function isExpiredIso(value: string): boolean {
-  return Date.parse(value) <= Date.now();
-}
-
-function getThreadLookupKey(prompt: {
-  id: string;
-  threadId: string | null;
-  sessionId: string | null;
-}): string {
-  return prompt.threadId ?? prompt.sessionId ?? `prompt:${prompt.id}`;
-}
-
-function toAuthUser(row: typeof authUsers.$inferSelect): AuthUserProfile {
-  return {
-    id: row.id,
-    clerkUserId: row.clerkUserId,
-    email: row.email,
-    name: row.name,
-    avatarUrl: row.avatarUrl,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  };
-}
-
-function toAuthDevice(row: typeof authDevices.$inferSelect): AuthDevice {
-  return {
-    id: row.id,
-    userId: row.userId,
-    deviceId: row.deviceId,
-    deviceName: row.deviceName,
-    createdAt: row.createdAt,
-    lastSeenAt: row.lastSeenAt,
-  };
 }
