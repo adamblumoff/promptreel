@@ -606,6 +606,7 @@ export async function startDaemon() {
   const syncedWorkspaceFingerprints = new Map<string, string>();
   let syncInFlight = false;
   let cloudSyncTimer: NodeJS.Timeout | null = null;
+  let lastCloudSyncNotice: string | null = null;
 
   const getNextCloudSyncInterval = () => {
     const status = tailer.getStatus();
@@ -629,6 +630,18 @@ export async function startDaemon() {
     }, delayMs);
   };
 
+  const reportCloudSyncNotice = (message: string, tone: "info" | "warn" = "info") => {
+    if (lastCloudSyncNotice === message) {
+      return;
+    }
+    lastCloudSyncNotice = message;
+    if (tone === "warn") {
+      console.warn(message);
+      return;
+    }
+    console.log(message);
+  };
+
   const syncCloudWorkspaces = async () => {
     if (!CLOUD_SYNC_ENABLED) {
       return;
@@ -638,12 +651,20 @@ export async function startDaemon() {
     }
     const authState = store.getCloudAuthState();
     if (!authState?.daemonToken) {
+      runtimeStatus.lastCloudSyncError = "Cloud sync paused: not signed in.";
+      reportCloudSyncNotice(
+        "Cloud sync paused: not signed in. Run `pnpm dev:cli -- login` to reconnect this daemon.",
+        "warn"
+      );
+      scheduleCloudSync(CLOUD_SYNC_ERROR_INTERVAL_MS);
       return;
     }
 
     syncInFlight = true;
     runtimeStatus.syncInFlight = true;
     try {
+      reportCloudSyncNotice("Cloud sync authenticated. Watching for local changes...");
+      const syncedWorkspaces: string[] = [];
       const statusByWorkspace = new Map(
         tailer.getStatus().workspaceStatuses.map((status) => [status.workspaceId, status])
       );
@@ -675,6 +696,13 @@ export async function startDaemon() {
         syncedWorkspaceFingerprints.set(workspace.id, fingerprint);
         runtimeStatus.lastCloudSyncAt = nowIso();
         runtimeStatus.lastCloudSyncError = null;
+        syncedWorkspaces.push(`${workspace.slug} (${bundle.prompts.length} prompts)`);
+      }
+      if (syncedWorkspaces.length > 0) {
+        console.log(`Synced ${syncedWorkspaces.length} workspace${syncedWorkspaces.length === 1 ? "" : "s"} to Promptreel Cloud.`);
+        for (const summary of syncedWorkspaces) {
+          console.log(`- ${summary}`);
+        }
       }
     } catch (error) {
       runtimeStatus.lastCloudSyncError = error instanceof Error ? error.message : String(error);
@@ -691,6 +719,8 @@ export async function startDaemon() {
     host,
     port
   });
+  console.log(`Promptreel daemon listening on http://${host}:${port}`);
+  console.log(CLOUD_SYNC_ENABLED ? "Cloud sync enabled." : "Local-only mode.");
   tailer.start();
   if (CLOUD_SYNC_ENABLED) {
     void syncCloudWorkspaces();

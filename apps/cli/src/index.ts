@@ -206,11 +206,43 @@ function ensureDeviceId(existing: CloudAuthState | null): string {
 function resolveDaemonEntry(): string {
   return resolve(
     dirname(fileURLToPath(import.meta.url)),
-    "../../../../../../apps/daemon/dist/apps/daemon/src/server.js"
+    "../../daemon/dist/apps/daemon/src/server.js"
   );
 }
 
-function startDaemonProcess(): void {
+function resolveDaemonSource(): string {
+  return resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../daemon/src/server.ts"
+  );
+}
+
+function resolveDevDaemonCommand(): { command: string; args: string[] } | null {
+  const daemonSource = resolveDaemonSource();
+  const workspaceFile = resolve(dirname(fileURLToPath(import.meta.url)), "../../../pnpm-workspace.yaml");
+  const tsxCli = resolve(dirname(fileURLToPath(import.meta.url)), "../../../node_modules/tsx/dist/cli.mjs");
+  if (!existsSync(daemonSource) || !existsSync(workspaceFile) || !existsSync(tsxCli)) {
+    return null;
+  }
+  return {
+    command: process.execPath,
+    args: [tsxCli, daemonSource],
+  };
+}
+
+function isRecordedDaemonAlive(pid: number | null): boolean {
+  if (!pid) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function startDaemonProcess(detach = false): Promise<void> {
   const authState = store.getCloudAuthState();
   if (!authState?.daemonToken) {
     throw new Error(
@@ -218,30 +250,71 @@ function startDaemonProcess(): void {
     );
   }
   const current = store.getDaemonState();
-  if (current.pid) {
+  if (isRecordedDaemonAlive(current.pid)) {
     printBlock([
       "Daemon is already recorded as running.",
       `PID: ${current.pid}`,
+      "Stop it with: pnpm dev:cli -- stop",
     ]);
     return;
   }
+  if (current.pid) {
+    store.clearDaemonState();
+  }
+  const devDaemon = resolveDevDaemonCommand();
   const daemonEntry = resolveDaemonEntry();
-  if (!existsSync(daemonEntry)) {
+  let command = process.execPath;
+  let args = [daemonEntry];
+  if (devDaemon) {
+    command = devDaemon.command;
+    args = devDaemon.args;
+  } else if (!existsSync(daemonEntry)) {
     throw new Error(`Build the daemon first: missing ${daemonEntry}`);
   }
-  const child = spawn(process.execPath, [daemonEntry], {
-    detached: true,
-    stdio: "ignore",
+  const child = spawn(command, args, {
+    detached: detach,
+    stdio: detach ? "ignore" : "inherit",
     env: {
       ...process.env,
       PROMPTREEL_ENABLE_CLOUD_SYNC: "1",
     },
+    cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../daemon"),
   });
-  child.unref();
+  if (!child.pid) {
+    throw new Error("Failed to start daemon.");
+  }
+  store.setDaemonState(child.pid);
+  if (detach) {
+    child.unref();
+    printBlock([
+      "Daemon started in background.",
+      `PID: ${child.pid}`,
+      "Stop it with: pnpm dev:cli -- stop",
+    ]);
+    return;
+  }
+
   printBlock([
-    "Daemon started.",
+    "Daemon started in foreground.",
     `PID: ${child.pid}`,
+    "Press Ctrl+C to stop.",
+    "If you later run it in background, stop it with: pnpm dev:cli -- stop",
   ]);
+
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      const state = store.getDaemonState();
+      if (state.pid === child.pid) {
+        store.clearDaemonState();
+      }
+      if (code && code !== 0 && signal !== "SIGINT" && signal !== "SIGTERM") {
+        reject(new Error(`Daemon exited with code ${code}.`));
+        return;
+      }
+      resolve();
+    });
+  });
 }
 
 function stopDaemonProcess(): void {
@@ -250,11 +323,17 @@ function stopDaemonProcess(): void {
     console.log("No daemon pid recorded.");
     return;
   }
+  if (!isRecordedDaemonAlive(state.pid)) {
+    store.clearDaemonState();
+    console.log("Cleared stale daemon state.");
+    return;
+  }
   process.kill(state.pid);
   store.clearDaemonState();
   printBlock([
     "Daemon stop requested.",
     `PID: ${state.pid}`,
+    "If the process takes a moment to exit, rerun this command once.",
   ]);
 }
 
@@ -371,8 +450,9 @@ program.name("pl").description("Promptreel CLI");
 program
   .command("start")
   .description("Start the Promptreel Cloud sync daemon")
-  .action(() => {
-    startDaemonProcess();
+  .option("--detach", "Run the daemon in the background")
+  .action(async (options: { detach?: boolean }) => {
+    await startDaemonProcess(Boolean(options.detach));
   });
 
 program
@@ -414,8 +494,9 @@ program
   .addCommand(
     new Command("start")
       .description("Start the Promptreel Cloud sync daemon")
-      .action(() => {
-      startDaemonProcess();
+      .option("--detach", "Run the daemon in the background")
+      .action(async (options: { detach?: boolean }) => {
+      await startDaemonProcess(Boolean(options.detach));
       })
   )
   .addCommand(
