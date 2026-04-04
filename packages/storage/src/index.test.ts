@@ -320,6 +320,101 @@ describe("PromptreelStore", () => {
     ]);
   });
 
+  test("backfills web searches into transcript activity rows from raw web search calls", () => {
+    const root = mkdtempSync(join(tmpdir(), "promptreel-store-web-search-"));
+    const repoPath = join(root, "repo");
+    mkdirSync(repoPath, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repoPath, stdio: "ignore" });
+
+    const store = new PromptreelStore(join(root, ".pl"));
+    const repo = store.addRepo(repoPath);
+    const baseline = store.createSnapshot(repo.id, {
+      repoPath,
+      headSha: null,
+      branchName: null,
+      gitStatusSummary: "baseline",
+      dirtyFileHashes: {},
+      files: []
+    });
+    const ending = store.createSnapshot(repo.id, {
+      repoPath,
+      headSha: null,
+      branchName: null,
+      gitStatusSummary: "end",
+      dirtyFileHashes: {},
+      files: []
+    });
+    const prompt: PromptEventRecord = {
+      id: "prompt_web_search",
+      workspaceId: repo.id,
+      executionPath: repoPath,
+      sessionId: "session-search",
+      threadId: "thread-search",
+      parentPromptEventId: null,
+      startedAt: "2026-03-29T00:00:00.000Z",
+      endedAt: "2026-03-29T00:00:03.000Z",
+      boundaryReason: "turn_completed",
+      status: "imported",
+      promptText: "Find the latest Promptreel docs.",
+      promptSummary: "Find the latest Promptreel docs.",
+      primaryArtifactId: null,
+      baselineSnapshotId: baseline.id,
+      endSnapshotId: ending.id
+    };
+
+    store.persistPromptBundle(repo.id, {
+      prompt,
+      snapshots: [baseline, ending],
+      artifacts: [],
+      artifactLinks: [],
+      gitLinks: [],
+      rawEvents: [
+        {
+          record: {
+            id: "raw_search_call",
+            workspaceId: repo.id,
+            source: "codex-session",
+            sessionId: "session-search",
+            threadId: "thread-search",
+            eventType: "response_item:web_search_call",
+            occurredAt: "2026-03-29T00:00:01.000Z",
+            ingestPath: "session.jsonl",
+            payloadBlobId: ""
+          },
+          payload: {
+            type: "response_item",
+            payload: {
+              type: "web_search_call",
+              status: "completed",
+              action: {
+                type: "search",
+                query: "Promptreel Clerk GitHub auth setup",
+                queries: [
+                  "Promptreel Clerk GitHub auth setup",
+                  "Promptreel GitHub sign in docs"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    });
+
+    const detail = store.getPromptDetail(repo.id, prompt.id)!;
+    const searchEntry = detail.transcript.find(
+      (entry) => entry.kind === "activity" && entry.label === "web search"
+    );
+
+    expect(searchEntry).toMatchObject({
+      kind: "activity",
+      activityType: "search",
+      label: "web search",
+      summary: "Promptreel Clerk GitHub auth setup +1",
+      detail: null,
+      status: "completed",
+    });
+  });
+
   test("stores and reads back cloud bootstrap bundles by user", () => {
     const root = mkdtempSync(join(tmpdir(), "promptreel-store-cloud-sync-"));
     const store = new PromptreelStore(join(root, ".pl"));

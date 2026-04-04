@@ -153,7 +153,7 @@ export type PromptDetail = Omit<PromptListItem, "filesTouched" | "filesTouchedCo
     | {
         kind: "activity";
         occurredAt: string;
-        activityType: "command" | "tool";
+        activityType: "command" | "tool" | "search";
         label: string;
         summary: string;
         detail: string | null;

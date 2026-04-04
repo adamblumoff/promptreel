@@ -2051,6 +2051,67 @@ function parseResponseItemArguments(payload: Record<string, unknown> | undefined
   return safeJsonParse<Record<string, unknown> | null>(rawArguments, null);
 }
 
+function parseWebSearchCallAction(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  const action = payload?.action;
+  if (!action || typeof action !== "object" || Array.isArray(action)) {
+    return null;
+  }
+  return action as Record<string, unknown>;
+}
+
+function isWebSearchFunctionCall(
+  payload: Record<string, unknown>,
+  parsedArguments: Record<string, unknown> | null
+): boolean {
+  const name = typeof payload.name === "string" ? payload.name.trim() : "";
+  if (name === "search_query" || name === "web_search") {
+    return true;
+  }
+  return Boolean(
+    Array.isArray(parsedArguments?.search_query)
+  );
+}
+
+function collectWebSearchQueries(
+  parsedArguments: Record<string, unknown> | null,
+  action: Record<string, unknown> | null = null
+): string[] {
+  const queryGroups = [
+    ...(Array.isArray(parsedArguments?.search_query) ? parsedArguments.search_query : []),
+  ];
+
+  const functionQueries = queryGroups
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return null;
+      }
+      const query = (item as Record<string, unknown>).q;
+      return typeof query === "string" ? query.trim() : null;
+    })
+    .filter((query): query is string => Boolean(query));
+
+  const webSearchQueries = [
+    typeof action?.query === "string" ? action.query.trim() : null,
+    ...(Array.isArray(action?.queries) ? action.queries : []).map((value) =>
+      typeof value === "string" ? value.trim() : null
+    ),
+  ].filter((query): query is string => Boolean(query));
+
+  return [...new Set([...functionQueries, ...webSearchQueries])];
+}
+
+function summarizeWebSearchQueries(
+  parsedArguments: Record<string, unknown> | null,
+  action: Record<string, unknown> | null = null
+): string {
+  const queries = collectWebSearchQueries(parsedArguments, action);
+  if (queries.length === 0) {
+    return "web search";
+  }
+  const first = queries[0]!;
+  return queries.length === 1 ? first : `${first} +${queries.length - 1}`;
+}
+
 function summarizeTranscriptCommand(command: string): string {
   return command.trim().replace(/\s+/g, " ");
 }
@@ -2080,7 +2141,7 @@ function normalizeTranscriptActivityDetail(value: string | null): string | null 
 
 function buildTranscriptActivityEntry(input: {
   occurredAt: string;
-  activityType: "command" | "tool";
+  activityType: "command" | "tool" | "search";
   label: string;
   summary: string;
   detail?: string | null;
@@ -2180,14 +2241,48 @@ function upsertResponseItemActivity(
   payload: Record<string, unknown> | undefined
 ): PromptTranscriptActivity | null {
   const payloadType = typeof payload?.type === "string" ? payload.type : null;
-  const callId = typeof payload?.call_id === "string" ? payload.call_id : null;
-  if (!payloadType || !callId) {
+  if (!payloadType) {
     return null;
   }
   const safePayload: Record<string, unknown> = payload ?? {};
 
+  if (payloadType === "web_search_call") {
+    const action = parseWebSearchCallAction(safePayload);
+    if (action?.type !== "search") {
+      return null;
+    }
+    const entry = buildTranscriptActivityEntry({
+      occurredAt,
+      activityType: "search",
+      label: "web search",
+      summary: summarizeWebSearchQueries(null, action),
+      detail: null,
+      status: typeof safePayload.status === "string" ? safePayload.status : null,
+    });
+    transcript.push(entry);
+    return entry;
+  }
+
+  const callId = typeof payload?.call_id === "string" ? payload.call_id : null;
+  if (!callId) {
+    return null;
+  }
+
   if (payloadType === "function_call") {
     const parsedArguments = parseResponseItemArguments(safePayload);
+    if (isWebSearchFunctionCall(safePayload, parsedArguments)) {
+      const entry = buildTranscriptActivityEntry({
+        occurredAt,
+        activityType: "search",
+        label: "web search",
+        summary: summarizeWebSearchQueries(parsedArguments),
+        detail: null,
+        status: null,
+      });
+      activityEntries.set(callId, entry);
+      transcript.push(entry);
+      return entry;
+    }
     const command = typeof parsedArguments?.cmd === "string" ? parsedArguments.cmd.trim() : "";
     const entry = buildTranscriptActivityEntry({
       occurredAt,
