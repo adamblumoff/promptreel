@@ -1,11 +1,9 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifyToken } from "@clerk/backend";
-import { trimTrailingSlash } from "@promptreel/api-contracts";
 import type {
   AuthWhoamiResponse,
   BlobResponse,
@@ -45,96 +43,16 @@ import {
   hasRecentWorkspaceActivity,
   type DaemonRuntimeStatus,
 } from "./daemon-cloud-sync.js";
+import {
+  buildCliLoginUrl,
+  getBearerToken,
+  loadDaemonEnvFiles,
+  resolveCloudViewerUser,
+  verifyClerkSessionToken,
+} from "./daemon-auth.js";
+import { buildViewerStatus, listLocalWorkspaceItems } from "./daemon-viewer.js";
 
 loadDaemonEnvFiles();
-
-function loadDaemonEnvFiles(): void {
-  const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const repoRoot = resolve(scriptDir, "../../..");
-  const candidates = [
-    resolve(process.cwd(), ".env"),
-    resolve(process.cwd(), ".env.local"),
-    resolve(repoRoot, ".env"),
-    resolve(repoRoot, ".env.local"),
-    resolve(repoRoot, "apps/daemon/.env"),
-    resolve(repoRoot, "apps/daemon/.env.local"),
-    resolve(repoRoot, "apps/web/.env"),
-    resolve(repoRoot, "apps/web/.env.local"),
-  ];
-
-  for (const filePath of candidates) {
-    if (!existsSync(filePath)) {
-      continue;
-    }
-    const contents = readFileSync(filePath, "utf8");
-    for (const line of contents.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) {
-        continue;
-      }
-      const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-      if (!match) {
-        continue;
-      }
-      const [, key, rawValue] = match;
-      if (process.env[key] !== undefined) {
-        continue;
-      }
-      let value = rawValue.trim();
-      if (
-        (value.startsWith('"') && value.endsWith('"'))
-        || (value.startsWith("'") && value.endsWith("'"))
-      ) {
-        value = value.slice(1, -1);
-      }
-      process.env[key] = value;
-    }
-  }
-}
-
-function getBearerToken(headers: Record<string, unknown>): string | null {
-  const raw = typeof headers.authorization === "string" ? headers.authorization : null;
-  if (!raw) {
-    return null;
-  }
-  const match = raw.match(/^Bearer\s+(.+)$/i);
-  return match?.[1]?.trim() ?? null;
-}
-
-async function verifyClerkSessionToken(token: string): Promise<{ clerkUserId: string } | null> {
-  const secretKey = process.env.CLERK_SECRET_KEY?.trim();
-  if (!secretKey) {
-    return null;
-  }
-
-  try {
-    const verified = await verifyToken(token, {
-      secretKey,
-      authorizedParties: process.env.CLERK_AUTHORIZED_PARTIES
-        ? process.env.CLERK_AUTHORIZED_PARTIES.split(",").map((value) => value.trim()).filter(Boolean)
-        : undefined,
-    });
-    const clerkUserId = typeof verified.sub === "string" ? verified.sub : null;
-    return clerkUserId ? { clerkUserId } : null;
-  } catch {
-    return null;
-  }
-}
-
-function buildCliLoginUrl(loginCode: string, deviceId: string, deviceName: string | null): string {
-  const baseUrl = trimTrailingSlash(
-    process.env.PROMPTREEL_WEB_URL?.trim()
-    || process.env.APP_URL?.trim()
-    || "http://127.0.0.1:4175"
-  );
-  const url = new URL(`${baseUrl}/cli-login`);
-  url.searchParams.set("code", loginCode);
-  url.searchParams.set("deviceId", deviceId);
-  if (deviceName) {
-    url.searchParams.set("deviceName", deviceName);
-  }
-  return url.toString();
-}
 
 function resolveWebDistDir(): string | null {
   const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -169,21 +87,6 @@ export function buildServer() {
     return error;
   };
   const notFound = (message: string) => httpError(404, message);
-  const resolveCloudViewerUser = async (headers: Record<string, unknown>): Promise<AuthUserProfile | null> => {
-    const cloudViewerMode = headers["x-promptreel-cloud-viewer"] === "1";
-    if (!cloudViewerMode) {
-      return null;
-    }
-    const bearerToken = getBearerToken(headers);
-    if (!bearerToken) {
-      return null;
-    }
-    const clerkSession = await verifyClerkSessionToken(bearerToken);
-    if (!clerkSession) {
-      return null;
-    }
-    return cloudStore.getAuthUserByClerkUserId(clerkSession.clerkUserId);
-  };
   const runtimeStatus: DaemonRuntimeStatus = {
     lastCloudSyncAt: null as string | null,
     lastCloudSyncError: null as string | null,
@@ -199,27 +102,6 @@ export function buildServer() {
     origin: true
   });
 
-  const listWorkspaceItems = (): WorkspaceListItem[] => {
-    const statusByWorkspace = new Map(
-      tailer.getStatus().workspaceStatuses.map((status) => [status.workspaceId, status])
-    );
-
-    return store.listWorkspaces().map((workspace) => {
-      const threads = store.listThreads(workspace.id);
-      const status = statusByWorkspace.get(workspace.id);
-      return {
-        ...workspace,
-        threadCount: threads.length,
-        openThreadCount: threads.filter((thread) => thread.status === "open").length,
-        isGenerating: hasRecentWorkspaceActivity(status),
-        lastActivityAt: threads[0]?.lastActivityAt ?? null,
-        sessionFileCount: status?.sessionFileCount ?? 0,
-        recentlyUpdatedSessionCount: status?.recentlyUpdatedSessionCount ?? 0,
-        mode: status?.mode ?? "idle"
-      };
-    });
-  };
-
   app.get("/api/health", async (): Promise<HealthResponse> => ({
     ok: true,
     daemonPid: process.pid,
@@ -228,72 +110,19 @@ export function buildServer() {
   }));
 
   app.get("/api/viewer-status", async (request): Promise<ViewerStatusResponse> => {
-    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
-    if (cloudUser) {
-      const device = await cloudStore.getLatestAuthDeviceForUser(cloudUser.id);
-      const isActive = Boolean(
-        device?.lastSeenAt
-        && Date.now() - Date.parse(device.lastSeenAt) <= CLOUD_DAEMON_ACTIVE_WINDOW_MS
-      );
-      const isConnected = Boolean(
-        device?.lastSeenAt
-        && Date.now() - Date.parse(device.lastSeenAt) <= CLOUD_DAEMON_CONNECTED_WINDOW_MS
-      );
-
-      return {
-        mode: "cloud",
-        daemon: {
-          connected: isConnected,
-          source: "cloud",
-          label: device
-            ? (isActive ? "Syncing live" : isConnected ? "Daemon connected" : "Daemon offline")
-            : "No daemon linked",
-          detail: device?.deviceName ?? null,
-          syncDetail: null,
-          lastSeenAt: device?.lastSeenAt ?? null,
-          syncState: device ? (isActive ? "active" : isConnected ? "idle" : "disconnected") : "disconnected",
-        },
-      };
-    }
-
-    const ingestion = tailer.getStatus();
-    const hasRecentLocalActivity = ingestion.workspaceStatuses.some((status) => hasRecentWorkspaceActivity(status));
-
-    return {
-      mode: "local",
-      daemon: {
-        connected: ingestion.watcher === "running",
-        source: "local",
-        label: ingestion.watcher === "running" ? "Local daemon running" : "Local daemon stopped",
-        detail: `${ingestion.workspaceStatuses.length} workspace${ingestion.workspaceStatuses.length === 1 ? "" : "s"} watching`,
-        syncDetail: runtimeStatus.lastCloudSyncError
-          ? runtimeStatus.lastCloudSyncError
-          : runtimeStatus.syncInFlight
-          ? "Syncing deltas..."
-          : runtimeStatus.lastCloudSyncStats
-          ? `Last sync: ${runtimeStatus.lastCloudSyncStats.promptCount} prompt${runtimeStatus.lastCloudSyncStats.promptCount === 1 ? "" : "s"}, ${runtimeStatus.lastCloudSyncStats.blobCount} blob${runtimeStatus.lastCloudSyncStats.blobCount === 1 ? "" : "s"}`
-          : CLOUD_SYNC_ENABLED
-          ? "Watching for local changes"
-          : null,
-        lastSeenAt: ingestion.lastScanAt,
-        syncState: runtimeStatus.lastCloudSyncError
-          ? "error"
-          : hasRecentLocalActivity || runtimeStatus.syncInFlight
-          ? "active"
-          : "idle",
-      },
-    };
+    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
+    return buildViewerStatus(cloudUser, cloudStore, tailer, runtimeStatus);
   });
 
   app.get("/api/workspaces", async (request): Promise<WorkspaceListResponse> => {
-    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
+    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
     return {
-      workspaces: cloudUser ? await cloudStore.listCloudWorkspaces(cloudUser.id) : listWorkspaceItems()
+      workspaces: cloudUser ? await cloudStore.listCloudWorkspaces(cloudUser.id) : listLocalWorkspaceItems(store, tailer)
     };
   });
 
   app.get("/api/repos", async (): Promise<RepoListResponse> => ({
-    repos: listWorkspaceItems()
+    repos: listLocalWorkspaceItems(store, tailer)
   }));
 
   app.post<{ Body: WorkspaceCreateRequest }>("/api/workspaces", async (request): Promise<WorkspaceCreateResponse> => ({
@@ -310,7 +139,7 @@ export function buildServer() {
   }));
 
   app.get<{ Querystring: { workspaceId: string } }>("/api/threads", async (request): Promise<ThreadListResponse> => {
-    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
+    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
     if (cloudUser) {
       return {
         threads: await cloudStore.listCloudThreads(cloudUser.id, request.query.workspaceId)
@@ -329,7 +158,7 @@ export function buildServer() {
     "/api/prompt-events",
     async (request): Promise<PromptEventListResponse> => {
       const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
-      const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
+      const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
       return {
         prompts: cloudUser
           ? await cloudStore.listCloudPrompts(cloudUser.id, workspaceId, request.query.threadId ?? null)
@@ -342,7 +171,7 @@ export function buildServer() {
     "/api/prompt-events/:id",
     async (request): Promise<PromptEventResponse> => {
       const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
-      const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
+      const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
       const prompt = cloudUser
         ? await cloudStore.getCloudPromptDetail(cloudUser.id, workspaceId, request.params.id)
         : store.getPromptDetail(workspaceId, request.params.id);
@@ -382,7 +211,7 @@ export function buildServer() {
     async (request, reply): Promise<BlobResponse> => {
       const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
       try {
-        const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>);
+        const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
         const content = cloudUser
           ? await cloudStore.readCloudBlob(cloudUser.id, workspaceId, request.params.blobId)
           : store.readBlob(workspaceId, request.params.blobId);
