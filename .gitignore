@@ -7,6 +7,7 @@ test-results/
 *.log
 *.pid
 pnpm-lock.yaml
+package-lock.json
 .env
 .env.local
 .env.*

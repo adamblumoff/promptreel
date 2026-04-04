@@ -29,7 +29,7 @@ pnpm dev:web
 
 - `pl login` opens a browser-based machine-link flow and stores a daemon token in `~/.pl/cloud-auth.json`.
 - The hosted web app expects `apps/web/.env.example` values, especially `VITE_CLERK_PUBLISHABLE_KEY`.
-- The API expects `apps/daemon/.env.example` values, especially `CLERK_SECRET_KEY` and `PROMPTLINE_WEB_URL`.
+- The API expects `apps/daemon/.env.example` values, especially `CLERK_SECRET_KEY`, `PROMPTREEL_WEB_URL`, and `PROMPTREEL_CLOUD_DATABASE_URL`.
 - For local development, keep the API on `http://127.0.0.1:4312/api` and the web app on `http://127.0.0.1:4175`.
 
 ## Local Dev Loop

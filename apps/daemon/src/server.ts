@@ -127,7 +127,7 @@ async function verifyClerkSessionToken(token: string): Promise<{ clerkUserId: st
 
 function buildCliLoginUrl(loginCode: string, deviceId: string, deviceName: string | null): string {
   const baseUrl = trimTrailingSlash(
-    process.env.PROMPTLINE_WEB_URL?.trim()
+    process.env.PROMPTREEL_WEB_URL?.trim()
     || process.env.APP_URL?.trim()
     || "http://127.0.0.1:4175"
   );
@@ -422,7 +422,7 @@ export function buildServer() {
     bodyLimit: 50 * 1024 * 1024,
   });
   const store = new PromptreelStore();
-  const cloudStore = createCloudStore(store);
+  const cloudStore = createCloudStore();
   const tailer = new CodexSessionTailer(store);
   const webDistDir = resolveWebDistDir();
   const httpError = (statusCode: number, message: string) => {
@@ -779,8 +779,8 @@ export function buildServer() {
 
 export async function startDaemon() {
   const { app, store, tailer, cloudStore, runtimeStatus } = buildServer();
-  const port = Number(process.env.PORT ?? process.env.PROMPTLINE_PORT ?? "4312");
-  const host = process.env.PROMPTLINE_HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
+  const port = Number(process.env.PORT ?? process.env.PROMPTREEL_PORT ?? "4312");
+  const host = process.env.PROMPTREEL_HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
   let syncInFlight = false;
   let cloudSyncTimer: NodeJS.Timeout | null = null;
   let lastCloudSyncNotice: string | null = null;

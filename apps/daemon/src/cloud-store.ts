@@ -23,7 +23,6 @@ import type {
   WorkspaceListItem,
 } from "@promptreel/domain";
 import { createId, nowIso } from "@promptreel/domain";
-import { PromptreelStore } from "@promptreel/storage";
 
 type CliLoginRequestRow = {
   loginCode: string;
@@ -203,44 +202,59 @@ const cloudBlobs = pgTable(
   })
 );
 
-class SqliteCloudStoreAdapter implements CloudStore {
-  constructor(private readonly store: PromptreelStore) {}
+class DisabledCloudStore implements CloudStore {
   async ensureReady(): Promise<void> {}
-  async createCliLoginRequest(deviceId: string, deviceName: string | null, ttlMs?: number) {
-    return this.store.createCliLoginRequest(deviceId, deviceName, ttlMs);
+
+  private unavailable(): never {
+    throw new Error("Promptreel Cloud requires PROMPTREEL_CLOUD_DATABASE_URL.");
   }
-  async approveCliLoginRequest(input: Parameters<PromptreelStore["approveCliLoginRequest"]>[0]) {
-    return this.store.approveCliLoginRequest(input);
+
+  async createCliLoginRequest(): Promise<CliLoginRequestRow> {
+    return this.unavailable();
   }
-  async exchangeCliLoginRequest(loginCode: string, deviceId: string) {
-    return this.store.exchangeCliLoginRequest(loginCode, deviceId);
+
+  async approveCliLoginRequest(): Promise<{ user: AuthUserProfile; device: AuthDevice; daemonToken: string } | null> {
+    return this.unavailable();
   }
-  async authenticateDaemonToken(daemonToken: string) {
-    return this.store.authenticateDaemonToken(daemonToken);
+
+  async exchangeCliLoginRequest(): Promise<CliLoginExchangeResponse> {
+    return this.unavailable();
   }
-  async getAuthUserByClerkUserId(clerkUserId: string) {
-    return this.store.getAuthUserByClerkUserId(clerkUserId);
+
+  async authenticateDaemonToken(): Promise<{ user: AuthUserProfile; device: AuthDevice } | null> {
+    return this.unavailable();
   }
-  async getLatestAuthDeviceForUser(userId: string) {
-    return this.store.getLatestAuthDeviceForUser(userId);
+
+  async getAuthUserByClerkUserId(): Promise<AuthUserProfile | null> {
+    return this.unavailable();
   }
-  async upsertCloudWorkspaceBundle(userId: string, bundle: CloudBootstrapSyncRequest) {
-    return this.store.upsertCloudWorkspaceBundle(userId, bundle);
+
+  async getLatestAuthDeviceForUser(): Promise<AuthDevice | null> {
+    return this.unavailable();
   }
-  async listCloudWorkspaces(userId: string) {
-    return this.store.listCloudWorkspaces(userId);
+
+  async upsertCloudWorkspaceBundle(): Promise<{ workspaceId: string; threadCount: number; promptCount: number; blobCount: number }> {
+    return this.unavailable();
   }
-  async listCloudThreads(userId: string, workspaceId: string) {
-    return this.store.listCloudThreads(userId, workspaceId);
+
+  async listCloudWorkspaces(): Promise<WorkspaceListItem[]> {
+    return this.unavailable();
   }
-  async listCloudPrompts(userId: string, workspaceId: string, threadLookupKey?: string | null) {
-    return this.store.listCloudPrompts(userId, workspaceId, threadLookupKey);
+
+  async listCloudThreads(): Promise<ThreadSummary[]> {
+    return this.unavailable();
   }
-  async getCloudPromptDetail(userId: string, workspaceId: string, promptId: string) {
-    return this.store.getCloudPromptDetail(userId, workspaceId, promptId);
+
+  async listCloudPrompts(): Promise<PromptEventListItem[]> {
+    return this.unavailable();
   }
-  async readCloudBlob(userId: string, workspaceId: string, blobId: string) {
-    return this.store.readCloudBlob(userId, workspaceId, blobId);
+
+  async getCloudPromptDetail(): Promise<PromptEventDetail | null> {
+    return this.unavailable();
+  }
+
+  async readCloudBlob(): Promise<string> {
+    return this.unavailable();
   }
 }
 
@@ -797,12 +811,12 @@ function sanitizeForPostgresJson<T>(value: T): T {
   return value;
 }
 
-export function createCloudStore(store: PromptreelStore): CloudStore {
-  const connectionString = process.env.PROMPTLINE_CLOUD_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
+export function createCloudStore(): CloudStore {
+  const connectionString = process.env.PROMPTREEL_CLOUD_DATABASE_URL?.trim();
   if (!connectionString) {
-    return new SqliteCloudStoreAdapter(store);
+    return new DisabledCloudStore();
   }
-  const sslMode = process.env.PROMPTLINE_CLOUD_DATABASE_SSL?.trim()?.toLowerCase();
+  const sslMode = process.env.PROMPTREEL_CLOUD_DATABASE_SSL?.trim()?.toLowerCase();
   const ssl =
     sslMode === "require" || sslMode === "true"
       ? { rejectUnauthorized: false }
@@ -810,7 +824,7 @@ export function createCloudStore(store: PromptreelStore): CloudStore {
   const pool = new Pool({
     connectionString,
     ssl,
-    max: Number(process.env.PROMPTLINE_CLOUD_DATABASE_POOL_MAX ?? "10"),
+    max: Number(process.env.PROMPTREEL_CLOUD_DATABASE_POOL_MAX ?? "10"),
   });
   return new DrizzleCloudStore(pool);
 }

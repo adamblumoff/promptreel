@@ -23,12 +23,12 @@ loadCliEnvFiles();
 const program = new Command();
 const store = new PromptreelStore();
 const DEFAULT_CLOUD_BASE_URL = trimTrailingSlash(
-  process.env.PROMPTLINE_CLOUD_URL
-  ?? process.env.PROMPTLINE_CLOUD_WEB_URL
+  process.env.PROMPTREEL_CLOUD_URL
+  ?? process.env.PROMPTREEL_CLOUD_WEB_URL
   ?? "https://promptreeldaemon-production.up.railway.app"
 );
-const DEFAULT_API_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_API_URL ?? `${DEFAULT_CLOUD_BASE_URL}/api`);
-const DEFAULT_WEB_BASE_URL = trimTrailingSlash(process.env.PROMPTLINE_CLOUD_WEB_URL ?? DEFAULT_CLOUD_BASE_URL);
+const DEFAULT_API_BASE_URL = trimTrailingSlash(process.env.PROMPTREEL_CLOUD_API_URL ?? `${DEFAULT_CLOUD_BASE_URL}/api`);
+const DEFAULT_WEB_BASE_URL = trimTrailingSlash(process.env.PROMPTREEL_CLOUD_WEB_URL ?? DEFAULT_CLOUD_BASE_URL);
 const CLOUD_SYNC_PROMPT_RECORD_TYPE = "cloud_prompt";
 const CLOUD_SYNC_BLOB_RECORD_TYPE = "cloud_blob";
 
