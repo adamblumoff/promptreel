@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AuthDevice,
   AuthUserProfile,
@@ -151,4 +152,20 @@ export interface CloudBootstrapSyncResponse {
   threadCount: number;
   promptCount: number;
   blobCount: number;
+}
+
+export function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+export function buildCloudSyncScope(authState: { userId: string | null; deviceId: string }): string {
+  return authState.userId ? `user:${authState.userId}` : `device:${authState.deviceId}`;
+}
+
+export function buildCloudSyncCursorKey(syncScope: string): string {
+  return `cloud-sync:${syncScope}:state`;
+}
+
+export function getPromptSyncFingerprint(detail: CloudBootstrapSyncRequest["promptDetails"][number]): string {
+  return createHash("sha256").update(JSON.stringify(detail)).digest("hex");
 }

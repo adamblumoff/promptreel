@@ -1,11 +1,16 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyToken } from "@clerk/backend";
+import {
+  buildCloudSyncCursorKey,
+  buildCloudSyncScope,
+  getPromptSyncFingerprint,
+  trimTrailingSlash,
+} from "@promptreel/api-contracts";
 import type {
   AuthWhoamiResponse,
   BlobResponse,
@@ -30,7 +35,7 @@ import type {
   ViewerStatusResponse,
   WorkspaceCreateRequest,
   WorkspaceCreateResponse,
-  WorkspaceListResponse
+  WorkspaceListResponse,
 } from "@promptreel/api-contracts";
 import { CodexSessionTailer, LIVE_ACTIVITY_WINDOW_MS } from "@promptreel/codex-adapter";
 import { PromptreelStore, type CloudAuthState } from "@promptreel/storage";
@@ -47,10 +52,6 @@ const CLOUD_SYNC_ERROR_INTERVAL_MS = 4_000;
 const CLOUD_SYNC_ENABLED = process.env.PROMPTREEL_ENABLE_CLOUD_SYNC === "1";
 const CLOUD_SYNC_PROMPT_RECORD_TYPE = "cloud_prompt";
 const CLOUD_SYNC_BLOB_RECORD_TYPE = "cloud_blob";
-
-function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, "");
-}
 
 function loadDaemonEnvFiles(): void {
   const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -216,18 +217,6 @@ function buildCloudBootstrapBundle(
     promptDetails,
     blobs: [...blobMap.entries()].map(([blobId, content]) => ({ blobId, content })),
   };
-}
-
-function buildCloudSyncScope(authState: Pick<CloudAuthState, "userId" | "deviceId">): string {
-  return authState.userId ? `user:${authState.userId}` : `device:${authState.deviceId}`;
-}
-
-function buildCloudSyncCursorKey(syncScope: string): string {
-  return `cloud-sync:${syncScope}:state`;
-}
-
-function getPromptSyncFingerprint(detail: NonNullable<ReturnType<PromptreelStore["getPromptDetail"]>>): string {
-  return createHash("sha256").update(JSON.stringify(detail)).digest("hex");
 }
 
 function getCloudSyncCursor(

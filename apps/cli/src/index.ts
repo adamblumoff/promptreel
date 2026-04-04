@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname, platform } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { Command } from "commander";
+import {
+  buildCloudSyncCursorKey,
+  buildCloudSyncScope,
+  getPromptSyncFingerprint,
+  trimTrailingSlash,
+} from "@promptreel/api-contracts";
 import type {
   AuthWhoamiResponse,
   CloudBootstrapSyncRequest,
@@ -31,22 +36,6 @@ const DEFAULT_API_BASE_URL = trimTrailingSlash(process.env.PROMPTREEL_CLOUD_API_
 const DEFAULT_WEB_BASE_URL = trimTrailingSlash(process.env.PROMPTREEL_CLOUD_WEB_URL ?? DEFAULT_CLOUD_BASE_URL);
 const CLOUD_SYNC_PROMPT_RECORD_TYPE = "cloud_prompt";
 const CLOUD_SYNC_BLOB_RECORD_TYPE = "cloud_blob";
-
-function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, "");
-}
-
-function buildCloudSyncScope(authState: Pick<CloudAuthState, "userId" | "deviceId">): string {
-  return authState.userId ? `user:${authState.userId}` : `device:${authState.deviceId}`;
-}
-
-function buildCloudSyncCursorKey(syncScope: string): string {
-  return `cloud-sync:${syncScope}:state`;
-}
-
-function getPromptSyncFingerprint(detail: CloudBootstrapSyncRequest["promptDetails"][number]): string {
-  return createHash("sha256").update(JSON.stringify(detail)).digest("hex");
-}
 
 function loadCliEnvFiles(): void {
   const scriptDir = dirname(fileURLToPath(import.meta.url));

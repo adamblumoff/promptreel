@@ -206,7 +206,7 @@ class DisabledCloudStore implements CloudStore {
   async ensureReady(): Promise<void> {}
 
   private unavailable(): never {
-    throw new Error("Promptreel Cloud requires PROMPTREEL_CLOUD_DATABASE_URL.");
+    throw new Error("Promptreel Cloud requires DATABASE_URL.");
   }
 
   async createCliLoginRequest(): Promise<CliLoginRequestRow> {
@@ -812,7 +812,7 @@ function sanitizeForPostgresJson<T>(value: T): T {
 }
 
 export function createCloudStore(): CloudStore {
-  const connectionString = process.env.PROMPTREEL_CLOUD_DATABASE_URL?.trim();
+  const connectionString = process.env.DATABASE_URL?.trim();
   if (!connectionString) {
     return new DisabledCloudStore();
   }
