@@ -897,6 +897,52 @@ index 1111111..2222222 100644
       tailer.stop();
     }
   });
+
+  test("buffers partial appended jsonl lines until the event completes", async () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-tailer-watch-partial-");
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "partial-session.jsonl",
+      [eventMsg("2026-03-29T09:00:01.000Z", "user_message", "Keep going.")]
+    );
+    const store = new PromptreelStore(join(root, ".pl"));
+    const tailer = new CodexSessionTailer(store, join(root, "sessions"), 0);
+
+    try {
+      tailer.start();
+      await waitForCondition(() => store.listWorkspaces().length === 1);
+      const workspace = store.listWorkspaces()[0]!;
+      await waitForCondition(() => store.listPrompts(workspace.id).length === 1);
+
+      appendFileSync(
+        join(sessionsRoot, "partial-session.jsonl"),
+        `\n{"timestamp":"2026-03-29T09:00:02.000Z","type":"event_msg","payload":{"type":"agent_message","phase":"final_answer"`,
+        "utf8"
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      let detail = store.getPromptDetail(workspace.id, store.listPrompts(workspace.id)[0]!.id)!;
+      expect(detail.artifacts.some((artifact) => artifact.type === "final_output")).toBe(false);
+
+      appendFileSync(
+        join(sessionsRoot, "partial-session.jsonl"),
+        `,"message":"Done."}}\n`,
+        "utf8"
+      );
+
+      await waitForCondition(() => {
+        const nextDetail = store.getPromptDetail(workspace.id, store.listPrompts(workspace.id)[0]!.id);
+        return Boolean(nextDetail?.artifacts.some((artifact) => artifact.type === "final_output"));
+      });
+
+      detail = store.getPromptDetail(workspace.id, store.listPrompts(workspace.id)[0]!.id)!;
+      expect(store.readBlob(workspace.id, detail.artifacts.find((artifact) => artifact.type === "final_output")?.blobId ?? "")).toBe("Done.");
+      expect(store.listPrompts(workspace.id)).toHaveLength(1);
+    } finally {
+      tailer.stop();
+    }
+  });
 });
 
 function createImportHarness(prefix: string): { root: string; repoPath: string; sessionsRoot: string } {

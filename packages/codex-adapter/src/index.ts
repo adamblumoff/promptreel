@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, watch, type FSWatcher } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
 import WebSocket from "ws";
@@ -133,6 +133,7 @@ export interface CodexSessionFileMatch {
   source: string | null;
   workspaceId: string;
   mtimeMs: number | null;
+  sizeBytes: number;
 }
 
 export interface CodexSessionTailerUpdate {
@@ -141,6 +142,20 @@ export interface CodexSessionTailerUpdate {
   workspaceIds: string[];
   threadKeys: string[];
 }
+
+type SessionChunkParseResult = {
+  lines: SessionLine[];
+  trailingText: string;
+};
+
+type SessionTailState = {
+  lastSizeBytes: number;
+  trailingText: string;
+  nextPromptIndex: number;
+  openPromptIndex: number | null;
+  openWindowLines: SessionLine[];
+  activePlanDecisions: PlanDecisionMetadata[];
+};
 
 function readSessionHead(filePath: string, maxBytes = SESSION_META_READ_BYTES): string {
   const fd = openSync(filePath, "r");
@@ -153,11 +168,13 @@ function readSessionHead(filePath: string, maxBytes = SESSION_META_READ_BYTES): 
   }
 }
 
-function parseSessionLines(text: string): SessionLine[] {
+function parseSessionChunk(text: string): SessionChunkParseResult {
   const lines = text.split(/\r?\n/);
   const parsed: SessionLine[] = [];
+  let trailingText = "";
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]?.trim() ?? "";
+    const rawLine = lines[index] ?? "";
+    const line = rawLine.trim();
     if (!line) {
       continue;
     }
@@ -165,12 +182,17 @@ function parseSessionLines(text: string): SessionLine[] {
       parsed.push(JSON.parse(line) as SessionLine);
     } catch (error) {
       if (index === lines.length - 1) {
+        trailingText = rawLine;
         break;
       }
       throw error;
     }
   }
-  return parsed;
+  return { lines: parsed, trailingText };
+}
+
+function parseSessionLines(text: string): SessionLine[] {
+  return parseSessionChunk(text).lines;
 }
 
 function findSessionMetaLine(lines: SessionLine[]): SessionLine | null {
@@ -178,8 +200,16 @@ function findSessionMetaLine(lines: SessionLine[]): SessionLine | null {
 }
 
 function readSessionMetaFromHead(filePath: string): SessionMeta | null {
-  const lines = parseSessionLines(readSessionHead(filePath));
+  const lines = parseSessionChunk(readSessionHead(filePath)).lines;
   return findSessionMetaLine(lines) ? readSessionMeta(lines) : null;
+}
+
+function getSessionFileSize(filePath: string): number {
+  try {
+    return statSync(filePath).size;
+  } catch {
+    return 0;
+  }
 }
 
 function discoverCodexSessionFile(filePath: string): CodexSessionFileMatch | null {
@@ -199,7 +229,8 @@ function discoverCodexSessionFile(filePath: string): CodexSessionFileMatch | nul
     normalizedCwd: meta.normalizedCwd,
     source: meta.source,
     workspaceId: workspaceGroupId(workspacePath),
-    mtimeMs: getFileMtimeMs(filePath)
+    mtimeMs: getFileMtimeMs(filePath),
+    sizeBytes: getSessionFileSize(filePath)
   };
 }
 
@@ -225,6 +256,36 @@ function walkFiles(root: string): string[] {
 
 function readSessionLines(filePath: string): SessionLine[] {
   return parseSessionLines(readFileSync(filePath, "utf8"));
+}
+
+function readSessionAppend(
+  filePath: string,
+  startOffset: number,
+  trailingText = ""
+): { lines: SessionLine[]; trailingText: string; endOffset: number } {
+  const fileSize = getSessionFileSize(filePath);
+  if (startOffset >= fileSize) {
+    return {
+      lines: [],
+      trailingText,
+      endOffset: fileSize,
+    };
+  }
+
+  const fd = openSync(filePath, "r");
+  try {
+    const bytesToRead = fileSize - startOffset;
+    const buffer = Buffer.alloc(bytesToRead);
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, startOffset);
+    const parsed = parseSessionChunk(`${trailingText}${buffer.toString("utf8", 0, bytesRead)}`);
+    return {
+      lines: parsed.lines,
+      trailingText: parsed.trailingText,
+      endOffset: startOffset + bytesRead,
+    };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function readSessionMeta(lines: SessionLine[]): SessionMeta {
@@ -312,6 +373,30 @@ function trimHistoricalWindowEndExclusive(
   }
 
   return trimmedEndExclusive;
+}
+
+function trimHistoricalWindowForBoundary(window: SessionLine[], boundaryTimestamp: string | null): SessionLine[] {
+  if (!boundaryTimestamp) {
+    return window;
+  }
+
+  let trimmedLength = window.length;
+  while (trimmedLength > 0) {
+    const candidate = window[trimmedLength - 1]!;
+    if (candidate.timestamp !== boundaryTimestamp) {
+      break;
+    }
+    if (!isMirroredUserResponseItem(candidate)) {
+      break;
+    }
+    trimmedLength -= 1;
+  }
+
+  return trimmedLength === window.length ? window : window.slice(0, trimmedLength);
+}
+
+function buildHistoricalPromptId(filePath: string, promptIndex: number): string {
+  return stableId("prompt", `${filePath}:${promptIndex}`);
 }
 
 function extractHistoricalFinalText(window: SessionLine[]): string {
@@ -1076,6 +1161,313 @@ function accumulateWorkspaceResult(
   };
 }
 
+function computeNextActivePlanDecisions(
+  filePath: string,
+  promptIndex: number,
+  promptText: string,
+  window: SessionLine[],
+  activePlanDecisions: PlanDecisionMetadata[],
+  nextUserLine: SessionLine | null
+): {
+  finalText: string;
+  planArtifactContent: { blobContent: string; metadata: PlanArtifactMetadata } | null;
+  nextActivePlanDecisions: PlanDecisionMetadata[];
+} {
+  const promptId = buildHistoricalPromptId(filePath, promptIndex);
+  const finalText = extractHistoricalFinalText(window);
+  const nextUserPromptText = nextUserLine ? isUserMessage(nextUserLine) ?? null : null;
+  const askedAt = window.at(-1)?.timestamp ?? window[0]?.timestamp ?? nowIso();
+  const answeredAt = nextUserLine?.timestamp ?? askedAt;
+  const extractedPlanDecision = extractPlanDecision(finalText, nextUserPromptText, promptId, askedAt, answeredAt);
+  const currentPlanDecision = extractedPlanDecision?.decision ?? null;
+  const planSourceText = extractedPlanDecision ? extractedPlanDecision.cleanedText : finalText;
+  const candidatePlanDecisions = currentPlanDecision
+    ? [...activePlanDecisions, currentPlanDecision]
+    : [...activePlanDecisions];
+  const planArtifactContent = buildPlanArtifactContent(promptText, window, planSourceText, candidatePlanDecisions);
+  return {
+    finalText,
+    planArtifactContent,
+    nextActivePlanDecisions: currentPlanDecision || planArtifactContent ? candidatePlanDecisions : [],
+  };
+}
+
+function persistHistoricalPromptWindow(
+  store: PromptreelStore,
+  file: CodexSessionFileMatch,
+  workspaceId: string,
+  resolvedFolderPath: string,
+  window: SessionLine[],
+  promptIndex: number,
+  activePlanDecisions: PlanDecisionMetadata[],
+  nextUserLine: SessionLine | null,
+  tailOpenPrompt: boolean
+): { imported: boolean; nextActivePlanDecisions: PlanDecisionMetadata[] } {
+  const userLine = window.find((line) => isUserMessage(line));
+  const promptText = userLine ? isUserMessage(userLine) ?? "" : "";
+  if (!promptText) {
+    return {
+      imported: false,
+      nextActivePlanDecisions: activePlanDecisions,
+    };
+  }
+
+  const promptSeed = `${file.filePath}:${promptIndex}`;
+  const promptId = buildHistoricalPromptId(file.filePath, promptIndex);
+  const promptMode = readHistoricalPromptMode(window);
+  const snapshots = createHistoricalSnapshots(store, workspaceId, resolvedFolderPath, promptSeed);
+  const prompt: PromptEventRecord = {
+    id: promptId,
+    workspaceId,
+    executionPath: resolvedFolderPath,
+    sessionId: file.sessionId || null,
+    threadId: (file.threadId ?? file.sessionId) || null,
+    parentPromptEventId: null,
+    startedAt: userLine?.timestamp ?? nowIso(),
+    endedAt: tailOpenPrompt
+      ? null
+      : window.at(-1)?.timestamp ?? userLine?.timestamp ?? nowIso(),
+    boundaryReason: tailOpenPrompt
+      ? null
+      : nextUserLine
+        ? "next_user_prompt"
+        : "import_end",
+    status: tailOpenPrompt ? "in_progress" : "imported",
+    mode: promptMode,
+    promptText,
+    promptSummary: summarizePrompt(promptText),
+    primaryArtifactId: null,
+    baselineSnapshotId: snapshots[0].id,
+    endSnapshotId: snapshots[1].id
+  };
+
+  const artifacts: ArtifactRecord[] = [];
+  const artifactLinks: ArtifactLinkRecord[] = [];
+  const toolEvents = normalizeSessionToolEvents(window);
+  const {
+    finalText,
+    planArtifactContent,
+    nextActivePlanDecisions,
+  } = computeNextActivePlanDecisions(file.filePath, promptIndex, promptText, window, activePlanDecisions, nextUserLine);
+
+  if (finalText) {
+    const blobId = store.writeBlob(workspaceId, finalText);
+    artifacts.push({
+      id: stableId("artifact", `${promptSeed}:final_output`),
+      promptEventId: promptId,
+      type: "final_output",
+      role: "secondary",
+      summary: summarizePrompt(finalText),
+      blobId,
+      fileStatsJson: null,
+      metadataJson: buildArtifactMetadata({
+        family: "final",
+        subtype: "final.answer",
+        displayLabel: "answer",
+      })
+    });
+  }
+
+  if (planArtifactContent) {
+    const blobId = store.writeBlob(workspaceId, planArtifactContent.blobContent);
+    artifacts.push({
+      id: stableId("artifact", `${promptSeed}:plan`),
+      promptEventId: promptId,
+      type: "plan",
+      role: "secondary",
+      summary:
+        planArtifactContent.metadata.steps[0]
+        ?? summarizePrompt(planArtifactContent.blobContent.replace(/^#+\s*/m, "")),
+      blobId,
+      fileStatsJson: null,
+      metadataJson: JSON.stringify(planArtifactContent.metadata)
+    });
+  }
+
+  const recoveredDiff = recoverHistoricalCodeDiff(toolEvents);
+  if (recoveredDiff) {
+    const normalizedDiff = normalizeRecoveredDiffPaths(recoveredDiff.diff, resolvedFolderPath);
+    const diffArtifact = buildCodeDiffArtifact(promptId, normalizedDiff, {
+      source: recoveredDiff.source,
+      sourceFormat: recoveredDiff.sourceFormat
+    });
+    diffArtifact.id = stableId("artifact", `${promptSeed}:code_diff`);
+    diffArtifact.blobId = store.writeBlob(workspaceId, recoveredDiff.diff.patch);
+    artifacts.push(diffArtifact);
+  }
+
+  artifacts.push(
+    ...createHistoricalCommandArtifacts(store, workspaceId, promptId, promptSeed, toolEvents)
+  );
+
+  const primaryType = choosePrimaryArtifactType(Boolean(planArtifactContent), Boolean(recoveredDiff), Boolean(finalText));
+  if (primaryType) {
+    const primary = artifacts.find((artifact) => artifact.type === primaryType);
+    if (primary) {
+      prompt.primaryArtifactId = primary.id;
+      primary.role = "primary";
+    }
+  }
+
+  const rawEvents = window.map((line, index) => ({
+    record: {
+      id: stableId("raw", `${promptSeed}:${index}`),
+      workspaceId,
+      source: "codex-session" as const,
+      sessionId: file.sessionId || null,
+      threadId: (file.threadId ?? file.sessionId) || null,
+      eventType: `${line.type}:${String(line.payload?.type ?? "none")}`,
+      occurredAt: line.timestamp ?? nowIso(),
+      ingestPath: file.filePath,
+      payloadBlobId: ""
+    },
+    payload: line
+  }));
+
+  store.persistPromptBundle(workspaceId, {
+    prompt,
+    snapshots,
+    artifacts,
+    artifactLinks,
+    gitLinks: [],
+    rawEvents
+  });
+
+  return {
+    imported: true,
+    nextActivePlanDecisions,
+  };
+}
+
+function buildSessionTailState(
+  file: CodexSessionFileMatch,
+  lines: SessionLine[],
+  trailingText = ""
+): SessionTailState {
+  let nextPromptIndex = 0;
+  let openPromptIndex: number | null = null;
+  let openWindowLines: SessionLine[] = [];
+  let activePlanDecisions: PlanDecisionMetadata[] = [];
+
+  for (const line of lines) {
+    if (isUserMessage(line)) {
+      if (openWindowLines.length > 0 && openPromptIndex != null) {
+        const trimmedWindow = trimHistoricalWindowForBoundary(openWindowLines, line.timestamp ?? null);
+        const promptText = isUserMessage(openWindowLines[0]!) ?? "";
+        activePlanDecisions = computeNextActivePlanDecisions(
+          file.filePath,
+          openPromptIndex,
+          promptText,
+          trimmedWindow,
+          activePlanDecisions,
+          line
+        ).nextActivePlanDecisions;
+      }
+      openPromptIndex = nextPromptIndex;
+      nextPromptIndex += 1;
+      openWindowLines = [line];
+      continue;
+    }
+
+    if (openWindowLines.length > 0) {
+      openWindowLines.push(line);
+    }
+  }
+
+  return {
+    lastSizeBytes: file.sizeBytes,
+    trailingText,
+    nextPromptIndex,
+    openPromptIndex,
+    openWindowLines,
+    activePlanDecisions,
+  };
+}
+
+function importSessionDelta(
+  store: PromptreelStore,
+  file: CodexSessionFileMatch,
+  resolvedFolderPath: string,
+  state: SessionTailState
+): { importedPrompts: number; nextState: SessionTailState } {
+  const appended = readSessionAppend(file.filePath, state.lastSizeBytes, state.trailingText);
+  if (appended.lines.length === 0) {
+    return {
+      importedPrompts: 0,
+      nextState: {
+        ...state,
+        lastSizeBytes: appended.endOffset,
+        trailingText: appended.trailingText,
+      },
+    };
+  }
+  let importedPrompts = 0;
+  let nextPromptIndex = state.nextPromptIndex;
+  let openPromptIndex = state.openPromptIndex;
+  let openWindowLines = [...state.openWindowLines];
+  let activePlanDecisions = [...state.activePlanDecisions];
+
+  for (const line of appended.lines) {
+    if (isUserMessage(line)) {
+      if (openWindowLines.length > 0 && openPromptIndex != null) {
+        const trimmedWindow = trimHistoricalWindowForBoundary(openWindowLines, line.timestamp ?? null);
+        const persisted = persistHistoricalPromptWindow(
+          store,
+          file,
+          file.workspaceId,
+          resolvedFolderPath,
+          trimmedWindow,
+          openPromptIndex,
+          activePlanDecisions,
+          line,
+          false
+        );
+        if (persisted.imported) {
+          importedPrompts += 1;
+        }
+        activePlanDecisions = persisted.nextActivePlanDecisions;
+      }
+      openPromptIndex = nextPromptIndex;
+      nextPromptIndex += 1;
+      openWindowLines = [line];
+      continue;
+    }
+
+    if (openWindowLines.length > 0) {
+      openWindowLines.push(line);
+    }
+  }
+
+  if (openWindowLines.length > 0 && openPromptIndex != null) {
+    const persisted = persistHistoricalPromptWindow(
+      store,
+      file,
+      file.workspaceId,
+      resolvedFolderPath,
+      openWindowLines,
+      openPromptIndex,
+      activePlanDecisions,
+      null,
+      true
+    );
+    if (persisted.imported) {
+      importedPrompts += 1;
+    }
+  }
+
+  return {
+    importedPrompts,
+    nextState: {
+      lastSizeBytes: appended.endOffset,
+      trailingText: appended.trailingText,
+      nextPromptIndex,
+      openPromptIndex,
+      openWindowLines,
+      activePlanDecisions,
+    },
+  };
+}
+
 function importSessionFiles(
   store: PromptreelStore,
   files: CodexSessionFileMatch[],
@@ -1108,164 +1500,29 @@ function importSessionFiles(
     let currentStart = -1;
     let promptIndex = 0;
     let activePlanDecisions: PlanDecisionMetadata[] = [];
-
     const flushWindow = (endExclusive: number) => {
       if (currentStart < 0) {
         return;
       }
-      const effectiveEndExclusive = trimHistoricalWindowEndExclusive(
-        lines,
-        currentStart,
-        endExclusive
-      );
+      const effectiveEndExclusive = trimHistoricalWindowEndExclusive(lines, currentStart, endExclusive);
       const window = lines.slice(currentStart, effectiveEndExclusive);
-      const userLine = window.find((line) => isUserMessage(line));
-      const promptText = userLine ? isUserMessage(userLine) ?? "" : "";
-      if (!promptText) {
-        currentStart = -1;
-        return;
-      }
-
-      const promptSeed = `${file.filePath}:${promptIndex}`;
-      const promptId = stableId("prompt", promptSeed);
-      const promptMode = readHistoricalPromptMode(window);
-      const snapshots = createHistoricalSnapshots(store, workspace.id, resolvedFolderPath, promptSeed);
-      const prompt: PromptEventRecord = {
-        id: promptId,
-        workspaceId: workspace.id,
-        executionPath: resolvedFolderPath,
-        sessionId: file.sessionId || null,
-        threadId: (file.threadId ?? file.sessionId) || null,
-        parentPromptEventId: null,
-        startedAt: userLine?.timestamp ?? nowIso(),
-        endedAt:
-          options.tailOpenPrompt && endExclusive === lines.length
-            ? null
-            : window.at(-1)?.timestamp ?? userLine?.timestamp ?? nowIso(),
-        boundaryReason:
-          options.tailOpenPrompt && endExclusive === lines.length
-            ? null
-            : endExclusive < lines.length
-              ? "next_user_prompt"
-              : "import_end",
-        status: options.tailOpenPrompt && endExclusive === lines.length ? "in_progress" : "imported",
-        mode: promptMode,
-        promptText,
-        promptSummary: summarizePrompt(promptText),
-        primaryArtifactId: null,
-        baselineSnapshotId: snapshots[0].id,
-        endSnapshotId: snapshots[1].id
-      };
-
-      const artifacts: ArtifactRecord[] = [];
-      const artifactLinks: ArtifactLinkRecord[] = [];
-      const toolEvents = normalizeSessionToolEvents(window);
-      const finalText = extractHistoricalFinalText(window);
-
-      if (finalText) {
-        const blobId = store.writeBlob(workspace.id, finalText);
-        artifacts.push({
-          id: stableId("artifact", `${promptSeed}:final_output`),
-          promptEventId: promptId,
-          type: "final_output",
-          role: "secondary",
-          summary: summarizePrompt(finalText),
-          blobId,
-          fileStatsJson: null,
-          metadataJson: buildArtifactMetadata({
-            family: "final",
-            subtype: "final.answer",
-            displayLabel: "answer",
-          })
-        });
-      }
-
-      const nextUserPromptText =
-        endExclusive < lines.length
-          ? isUserMessage(lines[endExclusive]!) ?? null
-          : null;
-      const askedAt = window.at(-1)?.timestamp ?? userLine?.timestamp ?? nowIso();
-      const answeredAt =
-        endExclusive < lines.length
-          ? lines[endExclusive]?.timestamp ?? askedAt
-          : askedAt;
-      const extractedPlanDecision = extractPlanDecision(finalText, nextUserPromptText, promptId, askedAt, answeredAt);
-      const currentPlanDecision = extractedPlanDecision?.decision ?? null;
-      const planSourceText = extractedPlanDecision ? extractedPlanDecision.cleanedText : finalText;
-      const candidatePlanDecisions = currentPlanDecision
-        ? [...activePlanDecisions, currentPlanDecision]
-        : [...activePlanDecisions];
-      const planArtifactContent = buildPlanArtifactContent(promptText, window, planSourceText, candidatePlanDecisions);
-      const planDecisions = currentPlanDecision || planArtifactContent ? candidatePlanDecisions : [];
-      if (planArtifactContent) {
-        const blobId = store.writeBlob(workspace.id, planArtifactContent.blobContent);
-        artifacts.push({
-          id: stableId("artifact", `${promptSeed}:plan`),
-          promptEventId: promptId,
-          type: "plan",
-          role: "secondary",
-          summary:
-            planArtifactContent.metadata.steps[0]
-            ?? summarizePrompt(planArtifactContent.blobContent.replace(/^#+\s*/m, "")),
-          blobId,
-          fileStatsJson: null,
-          metadataJson: JSON.stringify(planArtifactContent.metadata)
-        });
-      }
-
-      activePlanDecisions = planDecisions;
-
-      const recoveredDiff = recoverHistoricalCodeDiff(toolEvents);
-      if (recoveredDiff) {
-        const normalizedDiff = normalizeRecoveredDiffPaths(recoveredDiff.diff, resolvedFolderPath);
-        const diffArtifact = buildCodeDiffArtifact(promptId, normalizedDiff, {
-          source: recoveredDiff.source,
-          sourceFormat: recoveredDiff.sourceFormat
-        });
-        diffArtifact.id = stableId("artifact", `${promptSeed}:code_diff`);
-        diffArtifact.blobId = store.writeBlob(workspace.id, recoveredDiff.diff.patch);
-        artifacts.push(diffArtifact);
-      }
-
-      artifacts.push(
-        ...createHistoricalCommandArtifacts(store, workspace.id, promptId, promptSeed, toolEvents)
+      const nextUserLine = endExclusive < lines.length ? lines[endExclusive]! : null;
+      const persisted = persistHistoricalPromptWindow(
+        store,
+        file,
+        workspace.id,
+        resolvedFolderPath,
+        window,
+        promptIndex,
+        activePlanDecisions,
+        nextUserLine,
+        Boolean(options.tailOpenPrompt && endExclusive === lines.length)
       );
-
-      const primaryType = choosePrimaryArtifactType(Boolean(planArtifactContent), Boolean(recoveredDiff), Boolean(finalText));
-      if (primaryType) {
-        const primary = artifacts.find((artifact) => artifact.type === primaryType);
-        if (primary) {
-          prompt.primaryArtifactId = primary.id;
-          primary.role = "primary";
-        }
+      if (persisted.imported) {
+        importedPrompts += 1;
+        promptIndex += 1;
       }
-
-      const rawEvents = window.map((line, index) => ({
-        record: {
-          id: stableId("raw", `${promptSeed}:${index}`),
-          workspaceId: workspace.id,
-          source: "codex-session" as const,
-          sessionId: file.sessionId || null,
-          threadId: (file.threadId ?? file.sessionId) || null,
-          eventType: `${line.type}:${String(line.payload?.type ?? "none")}`,
-          occurredAt: line.timestamp ?? nowIso(),
-          ingestPath: file.filePath,
-          payloadBlobId: ""
-        },
-        payload: line
-      }));
-
-      store.persistPromptBundle(workspace.id, {
-        prompt,
-        snapshots,
-        artifacts,
-        artifactLinks,
-        gitLinks: [],
-        rawEvents
-      });
-
-      importedPrompts += 1;
-      promptIndex += 1;
+      activePlanDecisions = persisted.nextActivePlanDecisions;
       currentStart = -1;
     };
 
@@ -1336,6 +1593,7 @@ export class CodexSessionTailer {
   private readonly statusByWorkspace = new Map<string, WorkspaceIngestionStatus>();
   private readonly recentlyUpdatedSessionIdsByWorkspace = new Map<string, Set<string>>();
   private readonly trackedSessionFiles = new Map<string, CodexSessionFileMatch>();
+  private readonly sessionTailStates = new Map<string, SessionTailState>();
   private readonly pendingFileTimers = new Map<string, NodeJS.Timeout>();
   private readonly listeners = new Set<(update: CodexSessionTailerUpdate) => void>();
   private watcher: FSWatcher | null = null;
@@ -1375,6 +1633,7 @@ export class CodexSessionTailer {
       clearTimeout(timer);
     }
     this.pendingFileTimers.clear();
+    this.sessionTailStates.clear();
   }
 
   scanNow(): IngestionStatus {
@@ -1505,6 +1764,7 @@ export class CodexSessionTailer {
           const result = importSessionFiles(this.store, [match], {
             tailOpenPrompt: true
           });
+          this.sessionTailStates.set(normalizedPath, this.buildTailState(match));
           this.statusByWorkspace.set(
             match.workspaceId,
             this.buildWorkspaceStatus(match.workspaceId, {
@@ -1514,6 +1774,7 @@ export class CodexSessionTailer {
             })
           );
         } catch (error) {
+          this.sessionTailStates.delete(normalizedPath);
           this.statusByWorkspace.set(
             match.workspaceId,
             this.buildWorkspaceStatus(match.workspaceId, {
@@ -1527,6 +1788,7 @@ export class CodexSessionTailer {
           continue;
         }
         this.trackedSessionFiles.delete(filePath);
+        this.sessionTailStates.delete(filePath);
         this.statusByWorkspace.set(previousMatch.workspaceId, this.buildWorkspaceStatus(previousMatch.workspaceId));
         changedWorkspaceIds.add(previousMatch.workspaceId);
         if (previousMatch.threadId ?? previousMatch.sessionId) {
@@ -1559,6 +1821,7 @@ export class CodexSessionTailer {
       if (!existsSync(filePath)) {
         if (previous) {
           this.trackedSessionFiles.delete(filePath);
+          this.sessionTailStates.delete(filePath);
           this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, {
             lastError: null
           }));
@@ -1577,6 +1840,7 @@ export class CodexSessionTailer {
       if (!match) {
         if (previous) {
           this.trackedSessionFiles.delete(filePath);
+          this.sessionTailStates.delete(filePath);
           this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, {
             lastError: null
           }));
@@ -1597,9 +1861,14 @@ export class CodexSessionTailer {
       }
       this.trackedSessionFiles.set(filePath, match);
       try {
-        const result = importSessionFiles(this.store, [match], {
-          tailOpenPrompt: true
-        });
+        const deltaResult = this.tryImportDelta(match, previous);
+        const result = deltaResult
+          ?? importSessionFiles(this.store, [match], {
+            tailOpenPrompt: true
+          });
+        if (!deltaResult) {
+          this.sessionTailStates.set(filePath, this.buildTailState(match));
+        }
         this.statusByWorkspace.set(
           match.workspaceId,
           this.buildWorkspaceStatus(match.workspaceId, {
@@ -1609,6 +1878,7 @@ export class CodexSessionTailer {
           })
         );
       } catch (error) {
+        this.sessionTailStates.delete(filePath);
         this.statusByWorkspace.set(
           match.workspaceId,
           this.buildWorkspaceStatus(match.workspaceId, {
@@ -1647,6 +1917,44 @@ export class CodexSessionTailer {
     for (const listener of this.listeners) {
       listener(update);
     }
+  }
+
+  private buildTailState(file: CodexSessionFileMatch): SessionTailState {
+    const text = readFileSync(file.filePath, "utf8");
+    const parsed = parseSessionChunk(text);
+    return buildSessionTailState(file, parsed.lines, parsed.trailingText);
+  }
+
+  private tryImportDelta(
+    match: CodexSessionFileMatch,
+    previous: CodexSessionFileMatch | null
+  ): ImportCodexSessionsResult | null {
+    if (!previous) {
+      return null;
+    }
+    if (previous.workspaceId !== match.workspaceId || previous.sessionId !== match.sessionId || previous.threadId !== match.threadId) {
+      return null;
+    }
+    if (match.sizeBytes <= previous.sizeBytes) {
+      return null;
+    }
+    const existingState = this.sessionTailStates.get(normalize(match.filePath));
+    const resolvedFolderPath = match.normalizedCwd ?? this.store.resolveWorkspacePathAlias(match.cwd);
+    if (!existingState || !resolvedFolderPath) {
+      return null;
+    }
+    const delta = importSessionDelta(this.store, match, resolvedFolderPath, existingState);
+    this.sessionTailStates.set(normalize(match.filePath), delta.nextState);
+    return {
+      importedFiles: 1,
+      importedPrompts: delta.importedPrompts,
+      byWorkspace: {
+        [match.workspaceId]: {
+          importedFiles: 1,
+          importedPrompts: delta.importedPrompts,
+        },
+      },
+    };
   }
 
   private buildWorkspaceStatus(
