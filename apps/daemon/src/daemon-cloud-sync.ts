@@ -14,6 +14,7 @@ import { PromptreelStore } from "@promptreel/storage";
 
 const CLOUD_SYNC_EVENT_DEBOUNCE_MS = 500;
 export const CLOUD_SYNC_MIN_INTERVAL_MS = 3_000;
+export const CLOUD_SYNC_REQUEST_TIMEOUT_MS = 15_000;
 const CLOUD_SYNC_RETRY_INTERVAL_MS = 4_000;
 const CLOUD_SYNC_PROMPT_RECORD_TYPE = "cloud_prompt";
 const CLOUD_SYNC_BLOB_RECORD_TYPE = "cloud_blob";
@@ -40,6 +41,10 @@ export function shouldBypassCloudSyncCooldownForPrompt(prompt: {
   endedAt: string | null;
 }): boolean {
   return prompt.status !== "in_progress" && Boolean(prompt.endedAt);
+}
+
+export function isCloudSyncTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 export interface DaemonRuntimeStatus {
@@ -254,18 +259,32 @@ async function postJsonWithToken<TResponse, TBody extends object>(
   token: string,
   body: TBody
 ): Promise<TResponse> {
-  const response = await fetch(`${trimTrailingSlash(apiBaseUrl)}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    throw new Error(`Cloud sync request failed: ${response.status}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, CLOUD_SYNC_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${trimTrailingSlash(apiBaseUrl)}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Cloud sync request failed: ${response.status}`);
+    }
+    return response.json() as Promise<TResponse>;
+  } catch (error) {
+    if (isCloudSyncTimeoutError(error)) {
+      throw new Error(`Cloud sync request timed out after ${CLOUD_SYNC_REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  return response.json() as Promise<TResponse>;
 }
 
 export function createCloudSyncController({

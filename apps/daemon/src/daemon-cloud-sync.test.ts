@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
   CLOUD_SYNC_MIN_INTERVAL_MS,
+  CLOUD_SYNC_REQUEST_TIMEOUT_MS,
+  isCloudSyncTimeoutError,
   resolveCloudSyncDelay,
   shouldBypassCloudSyncCooldownForPrompt,
 } from "./daemon-cloud-sync.js";
@@ -31,5 +33,12 @@ describe("cloud sync cooldown", () => {
       status: "in_progress",
       endedAt: null,
     })).toBe(false);
+  });
+
+  test("recognizes aborted fetches as timeout candidates", () => {
+    const abortError = new Error(`Cloud sync request timed out after ${CLOUD_SYNC_REQUEST_TIMEOUT_MS}ms`);
+    abortError.name = "AbortError";
+    expect(isCloudSyncTimeoutError(abortError)).toBe(true);
+    expect(isCloudSyncTimeoutError(new Error("other"))).toBe(false);
   });
 });
