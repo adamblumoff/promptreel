@@ -1036,6 +1036,24 @@ index 1111111..2222222 100644
       wasRecentlyUpdated: false
     })).toBe(150);
   });
+
+  test("marks a same-file watcher event for follow-up when reconcile is already in flight", () => {
+    const { root, sessionsRoot } = createImportHarness("promptreel-tailer-followup-");
+    const tailer = new CodexSessionTailer(new PromptreelStore(join(root, ".pl")), join(root, "sessions"), 0);
+    const filePath = join(sessionsRoot, "active-session.jsonl");
+    const internalTailer = tailer as unknown as {
+      activeReconcileFilePath: string | null;
+      pendingFollowupFiles: Set<string>;
+      pendingFileTimers: Map<string, NodeJS.Timeout>;
+      queueFileReconcile: (filePath: string, trigger?: string) => void;
+    };
+
+    internalTailer.activeReconcileFilePath = filePath;
+    internalTailer.queueFileReconcile(filePath, "file-watch");
+
+    expect(internalTailer.pendingFollowupFiles.has(filePath)).toBe(true);
+    expect(internalTailer.pendingFileTimers.has(filePath)).toBe(false);
+  });
 });
 
 function createImportHarness(prefix: string): { root: string; repoPath: string; sessionsRoot: string } {

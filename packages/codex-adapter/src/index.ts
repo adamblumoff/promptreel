@@ -48,6 +48,7 @@ import {
 export const LIVE_ACTIVITY_WINDOW_MS = 90_000;
 const SESSION_WATCH_DEBOUNCE_MS = 150;
 export const ACTIVE_SESSION_WATCH_DEBOUNCE_MS = 40;
+const SESSION_FOLLOWUP_RECONCILE_MS = 120;
 const SESSION_RECOVERY_SWEEP_INTERVAL_MS = 300_000;
 const SESSION_META_READ_BYTES = 8_192;
 
@@ -1641,11 +1642,13 @@ export class CodexSessionTailer {
   private readonly trackedSessionFiles = new Map<string, CodexSessionFileMatch>();
   private readonly sessionTailStates = new Map<string, SessionTailState>();
   private readonly pendingFileTimers = new Map<string, NodeJS.Timeout>();
+  private readonly pendingFollowupFiles = new Set<string>();
   private readonly listeners = new Set<(update: CodexSessionTailerUpdate) => void>();
   private watcher: ChokidarWatcher | null = null;
   private recoveryTimer: NodeJS.Timeout | null = null;
   private lastScanAt: string | null = null;
   private scanning = false;
+  private activeReconcileFilePath: string | null = null;
 
   constructor(
     private readonly store: PromptreelStore,
@@ -1751,16 +1754,22 @@ export class CodexSessionTailer {
         ignoreInitial: true,
         persistent: true,
       });
-      const handlePath = (filePath: string) => {
+      const handlePath = (event: "add" | "change" | "unlink", filePath: string) => {
         const resolvedPath = normalize(filePath);
         if (!resolvedPath.endsWith(".jsonl")) {
           return;
         }
         this.queueFileReconcile(resolvedPath);
       };
-      this.watcher.on("add", handlePath);
-      this.watcher.on("change", handlePath);
-      this.watcher.on("unlink", handlePath);
+      this.watcher.on("add", (filePath) => {
+        handlePath("add", filePath);
+      });
+      this.watcher.on("change", (filePath) => {
+        handlePath("change", filePath);
+      });
+      this.watcher.on("unlink", (filePath) => {
+        handlePath("unlink", filePath);
+      });
       this.watcher.on("ready", () => {
         this.queueFullRescan("watcher-ready");
       });
@@ -1790,11 +1799,16 @@ export class CodexSessionTailer {
     });
   }
 
-  private queueFileReconcile(filePath: string, trigger = "file-watch"): void {
+  private queueFileReconcile(filePath: string, trigger = "file-watch", delayMsOverride?: number): void {
+    if (filePath !== "__full_rescan__" && this.activeReconcileFilePath === filePath) {
+      this.pendingFollowupFiles.add(filePath);
+      return;
+    }
     const existing = this.pendingFileTimers.get(filePath);
     if (existing) {
       clearTimeout(existing);
     }
+    const delayMs = delayMsOverride ?? this.resolveWatchDebounceMs(filePath);
     const timer = setTimeout(() => {
       this.pendingFileTimers.delete(filePath);
       if (filePath === "__full_rescan__") {
@@ -1802,7 +1816,7 @@ export class CodexSessionTailer {
         return;
       }
       this.reconcileFile(filePath, trigger);
-    }, this.resolveWatchDebounceMs(filePath));
+    }, delayMs);
     this.pendingFileTimers.set(filePath, timer);
   }
 
@@ -1921,6 +1935,7 @@ export class CodexSessionTailer {
       return;
     }
     this.scanning = true;
+    this.activeReconcileFilePath = filePath;
     const startedAt = Date.now();
     try {
       const previous = this.trackedSessionFiles.get(filePath) ?? null;
@@ -2048,7 +2063,11 @@ export class CodexSessionTailer {
         threadKeys: [...new Set([match.threadId ?? match.sessionId, previous?.threadId ?? previous?.sessionId].filter((value): value is string => Boolean(value)))]
       });
     } finally {
+      this.activeReconcileFilePath = null;
       this.scanning = false;
+      if (this.pendingFollowupFiles.delete(filePath)) {
+        this.queueFileReconcile(filePath, "file-watch-followup", SESSION_FOLLOWUP_RECONCILE_MS);
+      }
     }
   }
 
