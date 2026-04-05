@@ -79,6 +79,45 @@ export interface DaemonRuntimeStatus {
   };
 }
 
+type CloudSyncSummary =
+  | {
+    outcome: "synced";
+    durationMs: number;
+    workspaces: number;
+    prompts: number;
+    blobs: number;
+  }
+  | {
+    outcome: "skipped";
+    durationMs: number;
+    reason: "no-dirty-workspaces" | "no-deltas";
+    workspaces: number;
+  }
+  | {
+    outcome: "error";
+    durationMs: number;
+    message: string;
+    dirtyWorkspaces: number;
+  };
+
+function logCloudSyncSummary(summary: CloudSyncSummary): void {
+  if (summary.outcome === "synced") {
+    console.log(
+      `[cloud-sync] synced duration_ms=${summary.durationMs} workspaces=${summary.workspaces} prompts=${summary.prompts} blobs=${summary.blobs}`
+    );
+    return;
+  }
+  if (summary.outcome === "skipped") {
+    console.log(
+      `[cloud-sync] skipped reason=${summary.reason} duration_ms=${summary.durationMs} workspaces=${summary.workspaces}`
+    );
+    return;
+  }
+  console.error(
+    `[cloud-sync] error duration_ms=${summary.durationMs} dirty_workspaces=${summary.dirtyWorkspaces} message=${JSON.stringify(summary.message)}`
+  );
+}
+
 export function hasRecentWorkspaceActivity(
   status: {
     recentlyUpdatedSessionCount?: number;
@@ -341,19 +380,14 @@ export function createCloudSyncController({
     delayMs = 0,
     options: { bypassCooldown?: boolean; reason?: string } = {}
   ) => {
-    const reason = options.reason ?? "unspecified";
     if (!CLOUD_SYNC_ENABLED) {
       return;
     }
     if (syncInFlight) {
-      const firstPendingRequest = !pendingSyncRequested;
       pendingSyncRequested = true;
       pendingSyncBypassCooldown = pendingSyncBypassCooldown || Boolean(options.bypassCooldown);
-      pendingSyncReason = options.bypassCooldown ? reason : pendingSyncReason;
-      if (firstPendingRequest) {
-        console.log(
-          `[cloud-sync] deferred reason=in-flight trigger=${reason} dirty_workspaces=${dirtyWorkspaceIds.size}`
-        );
+      if (options.reason) {
+        pendingSyncReason = options.bypassCooldown ? options.reason : pendingSyncReason;
       }
       return;
     }
@@ -363,14 +397,6 @@ export function createCloudSyncController({
     const effectiveDelayMs = options.bypassCooldown
       ? delayMs
       : resolveCloudSyncDelay(delayMs, lastCompletedSyncAtMs, Date.now());
-    if (!options.bypassCooldown && effectiveDelayMs > delayMs) {
-      console.log(
-        `[cloud-sync] deferred reason=cooldown trigger=${reason} requested_delay_ms=${delayMs} effective_delay_ms=${effectiveDelayMs} dirty_workspaces=${dirtyWorkspaceIds.size}`
-      );
-    }
-    console.log(
-      `[cloud-sync] scheduled trigger=${reason} delay_ms=${effectiveDelayMs} dirty_workspaces=${dirtyWorkspaceIds.size} bypass_cooldown=${options.bypassCooldown ? "true" : "false"}`
-    );
     cloudSyncTimer = setTimeout(() => {
       cloudSyncTimer = null;
       void syncCloudWorkspaces();
@@ -436,9 +462,6 @@ export function createCloudSyncController({
       const workspaces = store.listWorkspaces();
       const workspacesById = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
       const workspaceIdsToSync = resolveDirtyWorkspaceIds(dirtyWorkspaceIds, workspacesById.keys());
-      console.log(
-        `[cloud-sync] start dirty_workspaces=${workspaceIdsToSync.length} pending_dirty_workspaces=${dirtyWorkspaceIds.size}`
-      );
       for (const staleWorkspaceId of [...dirtyWorkspaceIds]) {
         if (!workspacesById.has(staleWorkspaceId)) {
           dirtyWorkspaceIds.delete(staleWorkspaceId);
@@ -469,7 +492,7 @@ export function createCloudSyncController({
         runtimeStatus.lastCloudSyncError = null;
         syncedPromptCount += delta.bundle.prompts.length;
         syncedBlobCount += delta.bundle.blobs.length;
-        syncedWorkspaces.push(`${workspace.slug} (${delta.bundle.prompts.length} prompts)`);
+        syncedWorkspaces.push(workspace.slug);
       }
       notifyChange?.();
       const runResult = resolveCloudSyncRunResult(workspaceIdsToSync.length, syncedWorkspaces.length);
@@ -479,28 +502,35 @@ export function createCloudSyncController({
           promptCount: syncedPromptCount,
           blobCount: syncedBlobCount,
         };
-        console.log(
-          `[cloud-sync] success duration_ms=${Date.now() - startedAt} workspaces=${syncedWorkspaces.length} prompts=${syncedPromptCount} blobs=${syncedBlobCount}`
-        );
-        console.log(`Synced ${syncedWorkspaces.length} workspace${syncedWorkspaces.length === 1 ? "" : "s"} to Promptreel Cloud.`);
-        for (const summary of syncedWorkspaces) {
-          console.log(`- ${summary}`);
-        }
+        logCloudSyncSummary({
+          outcome: "synced",
+          durationMs: Date.now() - startedAt,
+          workspaces: syncedWorkspaces.length,
+          prompts: syncedPromptCount,
+          blobs: syncedBlobCount,
+        });
       } else {
         runtimeStatus.lastCloudSyncStats = {
           workspaceCount: 0,
           promptCount: 0,
           blobCount: 0,
         };
-        console.log(`[cloud-sync] skip reason=${runResult} duration_ms=${Date.now() - startedAt} workspaces=${workspaceIdsToSync.length}`);
+        logCloudSyncSummary({
+          outcome: "skipped",
+          durationMs: Date.now() - startedAt,
+          reason: runResult,
+          workspaces: workspaceIdsToSync.length,
+        });
       }
     } catch (error) {
       runtimeStatus.lastCloudSyncError = error instanceof Error ? error.message : String(error);
       notifyChange?.();
-      console.error(
-        `[cloud-sync] error duration_ms=${Date.now() - startedAt} dirty_workspaces=${dirtyWorkspaceIds.size} message=${JSON.stringify(runtimeStatus.lastCloudSyncError)}`
-      );
-      console.error(runtimeStatus.lastCloudSyncError);
+      logCloudSyncSummary({
+        outcome: "error",
+        durationMs: Date.now() - startedAt,
+        message: runtimeStatus.lastCloudSyncError,
+        dirtyWorkspaces: dirtyWorkspaceIds.size,
+      });
     } finally {
       syncInFlight = false;
       runtimeStatus.syncInFlight = false;

@@ -1811,27 +1811,10 @@ export class CodexSessionTailer {
 
   private handleDirectoryWatchEvent(dirPath: string, eventType: string, filename: string | Buffer | null): void {
     if (!filename) {
-      this.logDiagnostic(
-        [
-          "watcher=directory",
-          `event=${eventType}`,
-          `dir=${dirPath}`,
-          "path=null",
-          "action=full-rescan",
-        ].join(" ")
-      );
       this.queueFullRescan();
       return;
     }
     const resolvedPath = normalize(join(dirPath, String(filename)));
-    this.logDiagnostic(
-      [
-        "watcher=directory",
-        `event=${eventType}`,
-        `dir=${dirPath}`,
-        `path=${resolvedPath}`,
-      ].join(" ")
-    );
     if (existsSync(resolvedPath)) {
       try {
         const stats = statSync(resolvedPath);
@@ -1863,13 +1846,6 @@ export class CodexSessionTailer {
       return;
     }
     const watcher = watch(normalizedFilePath, (eventType) => {
-      this.logDiagnostic(
-        [
-          "watcher=file",
-          `event=${eventType}`,
-          `path=${normalizedFilePath}`,
-        ].join(" ")
-      );
       this.queueFileReconcile(normalizedFilePath);
     });
     watcher.on("error", () => {
@@ -1927,13 +1903,6 @@ export class CodexSessionTailer {
         continue;
       }
       if (!existsSync(filePath)) {
-        this.logDiagnostic(
-          [
-            "watcher=active-poll",
-            "event=missing",
-            `path=${filePath}`,
-          ].join(" ")
-        );
         this.queueFileReconcile(filePath, "active-file-poll", 0);
         continue;
       }
@@ -1944,21 +1913,12 @@ export class CodexSessionTailer {
         if (match.mtimeMs === currentMtimeMs && match.sizeBytes === currentSizeBytes) {
           continue;
         }
-        this.logDiagnostic(
-          [
-            "watcher=active-poll",
-            "event=change",
-            `path=${filePath}`,
-            `mtime_ms=${Math.trunc(currentMtimeMs)}`,
-            `size_bytes=${currentSizeBytes}`,
-          ].join(" ")
-        );
         this.queueFileReconcile(filePath, "active-file-poll", 0);
       } catch (error) {
         this.logDiagnostic(
           [
-            "watcher=active-poll",
-            "event=error",
+            "trigger=active-file-poll",
+            "action=error",
             `path=${filePath}`,
             `error=${JSON.stringify(error instanceof Error ? error.message : String(error))}`,
           ].join(" ")
@@ -1984,13 +1944,6 @@ export class CodexSessionTailer {
   private queueFileReconcile(filePath: string, trigger = "file-watch", delayMsOverride?: number): void {
     if (filePath !== "__full_rescan__" && this.activeReconcileFilePath === filePath) {
       this.pendingFollowupFiles.add(filePath);
-      this.logDiagnostic(
-        [
-          `trigger=${trigger}`,
-          "action=queue-followup",
-          `file=${filePath === "__full_rescan__" ? "__full_rescan__" : basename(filePath)}`,
-        ].join(" ")
-      );
       return;
     }
     const existing = this.pendingFileTimers.get(filePath);
@@ -1998,14 +1951,6 @@ export class CodexSessionTailer {
       clearTimeout(existing);
     }
     const delayMs = delayMsOverride ?? this.resolveWatchDebounceMs(filePath);
-    this.logDiagnostic(
-      [
-        `trigger=${trigger}`,
-        "action=queue-reconcile",
-        `file=${filePath === "__full_rescan__" ? "__full_rescan__" : basename(filePath)}`,
-        `delay_ms=${delayMs}`,
-      ].join(" ")
-    );
     const timer = setTimeout(() => {
       this.pendingFileTimers.delete(filePath);
       if (filePath === "__full_rescan__") {
@@ -2082,9 +2027,7 @@ export class CodexSessionTailer {
         if (nextTrackedFiles.has(filePath)) {
           continue;
         }
-        this.closeSessionFileWatcher(filePath);
-        this.trackedSessionFiles.delete(filePath);
-        this.sessionTailStates.delete(filePath);
+        this.dropTrackedSessionFile(filePath);
         removedFiles += 1;
         this.statusByWorkspace.set(previousMatch.workspaceId, this.buildWorkspaceStatus(previousMatch.workspaceId));
         changedWorkspaceIds.add(previousMatch.workspaceId);
@@ -2139,12 +2082,8 @@ export class CodexSessionTailer {
       const previous = this.trackedSessionFiles.get(filePath) ?? null;
       if (!existsSync(filePath)) {
         if (previous) {
-          this.closeSessionFileWatcher(filePath);
-          this.trackedSessionFiles.delete(filePath);
-          this.sessionTailStates.delete(filePath);
-          this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, {
-            lastError: null
-          }));
+          this.dropTrackedSessionFile(filePath);
+          this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, { lastError: null }));
         }
         this.refreshAllWorkspaceStatuses();
         this.lastScanAt = nowIso();
@@ -2170,12 +2109,8 @@ export class CodexSessionTailer {
       const match = discoverCodexSessionFile(filePath);
       if (!match) {
         if (previous) {
-          this.closeSessionFileWatcher(filePath);
-          this.trackedSessionFiles.delete(filePath);
-          this.sessionTailStates.delete(filePath);
-          this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, {
-            lastError: null
-          }));
+          this.dropTrackedSessionFile(filePath);
+          this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, { lastError: null }));
           this.refreshAllWorkspaceStatuses();
           this.emitUpdate({
             kind: "ingest",
@@ -2224,14 +2159,7 @@ export class CodexSessionTailer {
             `imported_prompts=${result.importedPrompts}`,
           ].join(" ")
         );
-        this.statusByWorkspace.set(
-          canonicalMatch.workspaceId,
-          this.buildWorkspaceStatus(canonicalMatch.workspaceId, {
-            lastImportAt: nowIso(),
-            lastImportResult: result.byWorkspace[canonicalMatch.workspaceId] ?? { importedFiles: 0, importedPrompts: 0 },
-            lastError: null
-          })
-        );
+        this.recordWorkspaceImportSuccess(canonicalMatch.workspaceId, result.byWorkspace[canonicalMatch.workspaceId]);
       } catch (error) {
         this.sessionTailStates.delete(filePath);
         this.logDiagnostic(
@@ -2244,12 +2172,7 @@ export class CodexSessionTailer {
             `error=${JSON.stringify(error instanceof Error ? error.message : String(error))}`,
           ].join(" ")
         );
-        this.statusByWorkspace.set(
-          match.workspaceId,
-          this.buildWorkspaceStatus(match.workspaceId, {
-            lastError: error instanceof Error ? error.message : String(error)
-          })
-        );
+        this.recordWorkspaceImportError(match.workspaceId, error);
       }
       const currentWorkspaceId = this.trackedSessionFiles.get(filePath)?.workspaceId ?? match.workspaceId;
       if (previous && previous.workspaceId !== currentWorkspaceId) {
@@ -2297,6 +2220,35 @@ export class CodexSessionTailer {
 
   private logDiagnostic(message: string): void {
     this.diagnosticsLogger?.(`[ingest] ${message}`);
+  }
+
+  private dropTrackedSessionFile(filePath: string): void {
+    this.closeSessionFileWatcher(filePath);
+    this.trackedSessionFiles.delete(filePath);
+    this.sessionTailStates.delete(filePath);
+  }
+
+  private recordWorkspaceImportSuccess(
+    workspaceId: string,
+    result: WorkspaceImportCount | undefined
+  ): void {
+    this.statusByWorkspace.set(
+      workspaceId,
+      this.buildWorkspaceStatus(workspaceId, {
+        lastImportAt: nowIso(),
+        lastImportResult: result ?? { importedFiles: 0, importedPrompts: 0 },
+        lastError: null
+      })
+    );
+  }
+
+  private recordWorkspaceImportError(workspaceId: string, error: unknown): void {
+    this.statusByWorkspace.set(
+      workspaceId,
+      this.buildWorkspaceStatus(workspaceId, {
+        lastError: error instanceof Error ? error.message : String(error)
+      })
+    );
   }
 
   private tryImportDelta(
