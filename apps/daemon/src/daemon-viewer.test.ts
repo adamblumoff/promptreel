@@ -96,6 +96,8 @@ describe("daemon viewer helpers", () => {
         lastCloudSyncAt: null,
         lastCloudSyncError: null,
         syncInFlight: false,
+        pendingDirtyWorkspaceCount: 0,
+        nextScheduledSyncAt: null,
         lastCloudSyncStats: null,
       }
     );
@@ -108,6 +110,73 @@ describe("daemon viewer helpers", () => {
         label: "Syncing live",
         detail: "Adam laptop",
         syncState: "active",
+        sync: {
+          phase: "syncing",
+        },
+      },
+    });
+  });
+
+  test("builds local viewer sync snapshot with pending work", async () => {
+    const tailer = {
+      getStatus: () =>
+        createIngestionStatus({
+          workspaceStatuses: [
+            {
+              workspaceId: "workspace_1",
+              folderPath: "C:/repo",
+              mode: "watching",
+              threadCount: 1,
+              openThreadCount: 1,
+              sessionFileCount: 1,
+              recentlyUpdatedSessionCount: 1,
+              lastSessionUpdateAt: new Date().toISOString(),
+              lastImportAt: "2026-04-04T10:00:00.000Z",
+              lastImportResult: {
+                importedFiles: 1,
+                importedPrompts: 1,
+              },
+              lastError: null,
+            },
+          ],
+        }),
+    };
+
+    const status = await buildViewerStatus(
+      null,
+      { getLatestAuthDeviceForUser: async () => null } as never,
+      tailer as never,
+      {
+        lastCloudSyncAt: "2026-04-04T10:02:00.000Z",
+        lastCloudSyncError: null,
+        syncInFlight: false,
+        pendingDirtyWorkspaceCount: 2,
+        nextScheduledSyncAt: "2026-04-04T10:02:05.000Z",
+        lastCloudSyncStats: {
+          workspaceCount: 1,
+          promptCount: 3,
+          blobCount: 4,
+        },
+      }
+    );
+
+    expect(status).toMatchObject({
+      mode: "local",
+      daemon: {
+        connected: true,
+        syncState: "active",
+        sync: {
+          phase: "pending",
+          pendingDirtyWorkspaceCount: 2,
+          summary: "2 workspace changes pending",
+          lastSuccessfulSyncAt: "2026-04-04T10:02:00.000Z",
+          nextScheduledSyncAt: "2026-04-04T10:02:05.000Z",
+          lastSuccessfulSyncStats: {
+            workspaceCount: 1,
+            promptCount: 3,
+            blobCount: 4,
+          },
+        },
       },
     });
   });

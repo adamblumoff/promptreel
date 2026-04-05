@@ -93,6 +93,8 @@ export function buildServer() {
     lastCloudSyncAt: null as string | null,
     lastCloudSyncError: null as string | null,
     syncInFlight: false,
+    pendingDirtyWorkspaceCount: 0,
+    nextScheduledSyncAt: null as string | null,
     lastCloudSyncStats: null as null | {
       workspaceCount: number;
       promptCount: number;

@@ -6,6 +6,33 @@ import type {
 } from "./view-models";
 import { cn } from "@/lib/utils";
 
+const syncRelativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+function formatRelativeTimestamp(timestamp: string | null): string | null {
+  if (!timestamp) {
+    return null;
+  }
+  const deltaMinutes = Math.round((Date.parse(timestamp) - Date.now()) / 60_000);
+  return syncRelativeTimeFormatter.format(deltaMinutes, "minute");
+}
+
+function formatSyncPhaseLabel(phase: "idle" | "pending" | "syncing" | "retrying" | "error" | "unavailable") {
+  switch (phase) {
+    case "pending":
+      return "Pending";
+    case "syncing":
+      return "Syncing";
+    case "retrying":
+      return "Retrying";
+    case "error":
+      return "Error";
+    case "unavailable":
+      return "Unavailable";
+    default:
+      return "Idle";
+  }
+}
+
 function PromptreelMark({ className }: { className?: string }) {
   return (
     <svg
@@ -94,9 +121,21 @@ export function TopBar({
     connected: boolean;
     label: string;
     detail: string | null;
-    syncDetail: string | null;
     syncState: "active" | "idle" | "error" | "disconnected";
     lastSeenLabel: string | null;
+    sync: {
+      phase: "idle" | "pending" | "syncing" | "retrying" | "error" | "unavailable";
+      pendingDirtyWorkspaceCount: number;
+      summary: string | null;
+      lastSuccessfulSyncAt: string | null;
+      lastSuccessfulSyncStats: {
+        workspaceCount: number;
+        promptCount: number;
+        blobCount: number;
+      } | null;
+      nextScheduledSyncAt: string | null;
+      lastErrorMessage: string | null;
+    };
   } | null;
   account: {
     label: string;
@@ -295,34 +334,86 @@ export function TopBar({
             {viewerMode === "cloud" ? "Cloud mode" : "Local mode"}
           </span>
           {daemonStatus && (
-            <div
-              className={cn(
-                "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px]",
-                daemonStatus.syncState === "error"
-                  ? "border-red-200 bg-red-dim text-red"
-                  : daemonStatus.connected
-                  ? "border-green/20 bg-green-dim text-green"
-                  : "border-brd bg-white text-t3"
-              )}
-              title={daemonStatus.detail ?? daemonStatus.label}
-            >
-              <span
+            <div className="group relative">
+              <div
                 className={cn(
-                  "size-1.5 rounded-full",
+                  "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px]",
                   daemonStatus.syncState === "error"
-                    ? "bg-red"
+                    ? "border-red-200 bg-red-dim text-red"
                     : daemonStatus.connected
-                    ? "bg-green"
-                    : "bg-t4"
+                    ? "border-green/20 bg-green-dim text-green"
+                    : "border-brd bg-white text-t3"
                 )}
-              />
-              <span>{daemonStatus.label}</span>
-              {daemonStatus.lastSeenLabel && (
-                <span className="text-t4">· {daemonStatus.lastSeenLabel}</span>
-              )}
-              {daemonStatus.syncDetail && (
-                <span className="text-t4">· {daemonStatus.syncDetail}</span>
-              )}
+                title={daemonStatus.detail ?? daemonStatus.label}
+              >
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    daemonStatus.syncState === "error"
+                      ? "bg-red"
+                      : daemonStatus.connected
+                      ? "bg-green"
+                      : "bg-t4"
+                  )}
+                />
+                <span>{daemonStatus.label}</span>
+                {daemonStatus.sync.summary && (
+                  <span className="text-t4">· {daemonStatus.sync.summary}</span>
+                )}
+              </div>
+              <div className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden min-w-[18rem] rounded-xl border border-brd-strong bg-white p-3 text-[11px] text-t2 shadow-xl shadow-black/8 group-hover:block">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="font-medium text-t1">Sync status</span>
+                    <span className="text-t4">{formatSyncPhaseLabel(daemonStatus.sync.phase)}</span>
+                  </div>
+                  {daemonStatus.detail && (
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-t4">Daemon</span>
+                      <span className="max-w-[12rem] truncate text-right">{daemonStatus.detail}</span>
+                    </div>
+                  )}
+                  {daemonStatus.lastSeenLabel && (
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-t4">Last seen</span>
+                      <span>{daemonStatus.lastSeenLabel}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-t4">Pending workspaces</span>
+                    <span>{daemonStatus.sync.pendingDirtyWorkspaceCount}</span>
+                  </div>
+                  {daemonStatus.sync.lastSuccessfulSyncAt && (
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-t4">Last success</span>
+                      <span>{formatRelativeTimestamp(daemonStatus.sync.lastSuccessfulSyncAt)}</span>
+                    </div>
+                  )}
+                  {daemonStatus.sync.lastSuccessfulSyncStats && (
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-t4">Last payload</span>
+                      <span>
+                        {daemonStatus.sync.lastSuccessfulSyncStats.promptCount} prompt{daemonStatus.sync.lastSuccessfulSyncStats.promptCount === 1 ? "" : "s"}
+                        {" · "}
+                        {daemonStatus.sync.lastSuccessfulSyncStats.blobCount} blob{daemonStatus.sync.lastSuccessfulSyncStats.blobCount === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                  )}
+                  {daemonStatus.sync.nextScheduledSyncAt && (
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-t4">
+                        {daemonStatus.sync.phase === "retrying" ? "Next retry" : "Next sync"}
+                      </span>
+                      <span>{formatRelativeTimestamp(daemonStatus.sync.nextScheduledSyncAt)}</span>
+                    </div>
+                  )}
+                  {daemonStatus.sync.lastErrorMessage && (
+                    <div className="border-t border-brd pt-2 text-red">
+                      {daemonStatus.sync.lastErrorMessage}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
         </div>

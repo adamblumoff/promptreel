@@ -11,6 +11,36 @@ import {
   type DaemonRuntimeStatus,
 } from "./daemon-cloud-sync.js";
 
+function formatSyncSummary(runtimeStatus: DaemonRuntimeStatus): string | null {
+  if (runtimeStatus.lastCloudSyncError) {
+    return runtimeStatus.nextScheduledSyncAt ? "Retrying soon" : "Sync error";
+  }
+  if (runtimeStatus.syncInFlight) {
+    return "Syncing now";
+  }
+  if (runtimeStatus.pendingDirtyWorkspaceCount > 0) {
+    return `${runtimeStatus.pendingDirtyWorkspaceCount} workspace change${runtimeStatus.pendingDirtyWorkspaceCount === 1 ? "" : "s"} pending`;
+  }
+  if (runtimeStatus.lastCloudSyncStats) {
+    const { promptCount } = runtimeStatus.lastCloudSyncStats;
+    return `Last sync: ${promptCount} prompt${promptCount === 1 ? "" : "s"}`;
+  }
+  return null;
+}
+
+function resolveSyncPhase(runtimeStatus: DaemonRuntimeStatus): ViewerStatusResponse["daemon"]["sync"]["phase"] {
+  if (runtimeStatus.lastCloudSyncError) {
+    return runtimeStatus.nextScheduledSyncAt ? "retrying" : "error";
+  }
+  if (runtimeStatus.syncInFlight) {
+    return "syncing";
+  }
+  if (runtimeStatus.pendingDirtyWorkspaceCount > 0) {
+    return "pending";
+  }
+  return "idle";
+}
+
 export function listLocalWorkspaceItems(
   store: PromptreelStore,
   tailer: CodexSessionTailer
@@ -47,9 +77,17 @@ export async function buildViewerStatus(
           ? (isActive ? "Syncing live" : isConnected ? "Daemon connected" : "Daemon offline")
           : "No daemon linked",
         detail: device?.deviceName ?? null,
-        syncDetail: null,
         lastSeenAt: device?.lastSeenAt ?? null,
         syncState: device ? (isActive ? "active" : isConnected ? "idle" : "disconnected") : "disconnected",
+        sync: {
+          phase: device ? (isActive ? "syncing" : isConnected ? "idle" : "unavailable") : "unavailable",
+          pendingDirtyWorkspaceCount: 0,
+          summary: null,
+          lastSuccessfulSyncAt: null,
+          lastSuccessfulSyncStats: null,
+          nextScheduledSyncAt: null,
+          lastErrorMessage: null,
+        },
       },
     };
   }
@@ -64,19 +102,21 @@ export async function buildViewerStatus(
       source: "local",
       label: ingestion.watcher === "running" ? "Local daemon running" : "Local daemon stopped",
       detail: `${ingestion.workspaceStatuses.length} workspace${ingestion.workspaceStatuses.length === 1 ? "" : "s"} watching`,
-      syncDetail: runtimeStatus.lastCloudSyncError
-        ? runtimeStatus.lastCloudSyncError
-        : runtimeStatus.syncInFlight
-        ? "Syncing deltas..."
-        : runtimeStatus.lastCloudSyncStats
-        ? `Last sync: ${runtimeStatus.lastCloudSyncStats.promptCount} prompt${runtimeStatus.lastCloudSyncStats.promptCount === 1 ? "" : "s"}, ${runtimeStatus.lastCloudSyncStats.blobCount} blob${runtimeStatus.lastCloudSyncStats.blobCount === 1 ? "" : "s"}`
-        : null,
       lastSeenAt: ingestion.lastScanAt,
       syncState: runtimeStatus.lastCloudSyncError
         ? "error"
         : hasRecentLocalActivity || runtimeStatus.syncInFlight
         ? "active"
         : "idle",
+      sync: {
+        phase: resolveSyncPhase(runtimeStatus),
+        pendingDirtyWorkspaceCount: runtimeStatus.pendingDirtyWorkspaceCount,
+        summary: formatSyncSummary(runtimeStatus),
+        lastSuccessfulSyncAt: runtimeStatus.lastCloudSyncAt,
+        lastSuccessfulSyncStats: runtimeStatus.lastCloudSyncStats,
+        nextScheduledSyncAt: runtimeStatus.nextScheduledSyncAt,
+        lastErrorMessage: runtimeStatus.lastCloudSyncError,
+      },
     },
   };
 }

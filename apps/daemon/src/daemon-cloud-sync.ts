@@ -72,6 +72,8 @@ export interface DaemonRuntimeStatus {
   lastCloudSyncAt: string | null;
   lastCloudSyncError: string | null;
   syncInFlight: boolean;
+  pendingDirtyWorkspaceCount: number;
+  nextScheduledSyncAt: string | null;
   lastCloudSyncStats: null | {
     workspaceCount: number;
     promptCount: number;
@@ -387,12 +389,17 @@ export function createCloudSyncController({
   const dirtyWorkspaceIds = new Set<string>();
   let pendingSyncRequest: CloudSyncRequest | null = null;
 
+  const syncDirtyWorkspaceCount = () => {
+    runtimeStatus.pendingDirtyWorkspaceCount = dirtyWorkspaceIds.size;
+  };
+
   const markDirtyWorkspaces = (workspaceIds: Iterable<string>) => {
     for (const workspaceId of workspaceIds) {
       if (workspaceId) {
         dirtyWorkspaceIds.add(workspaceId);
       }
     }
+    syncDirtyWorkspaceCount();
   };
 
   const clearScheduledCloudSync = () => {
@@ -401,11 +408,15 @@ export function createCloudSyncController({
     }
     clearTimeout(cloudSyncTimer);
     cloudSyncTimer = null;
+    runtimeStatus.nextScheduledSyncAt = null;
   };
 
   const setSyncInFlight = (value: boolean) => {
     syncInFlight = value;
     runtimeStatus.syncInFlight = value;
+    if (value) {
+      runtimeStatus.nextScheduledSyncAt = null;
+    }
     notifyChange?.();
   };
 
@@ -428,10 +439,13 @@ export function createCloudSyncController({
     const effectiveDelayMs = request.bypassCooldown
       ? delayMs
       : resolveCloudSyncDelay(delayMs, lastCompletedSyncAtMs, Date.now());
+    runtimeStatus.nextScheduledSyncAt = new Date(Date.now() + effectiveDelayMs).toISOString();
     cloudSyncTimer = setTimeout(() => {
       cloudSyncTimer = null;
+      runtimeStatus.nextScheduledSyncAt = null;
       void syncCloudWorkspaces();
     }, effectiveDelayMs);
+    notifyChange?.();
   };
 
   const shouldBypassCooldownForWorkspaces = (workspaceIds: string[]): boolean => {
@@ -496,15 +510,18 @@ export function createCloudSyncController({
           dirtyWorkspaceIds.delete(staleWorkspaceId);
         }
       }
+      syncDirtyWorkspaceCount();
       for (const workspaceId of workspaceIdsToSync) {
         const workspace = workspacesById.get(workspaceId);
         if (!workspace) {
           dirtyWorkspaceIds.delete(workspaceId);
+          syncDirtyWorkspaceCount();
           continue;
         }
         const delta = buildCloudDeltaBundle(store, tailer, workspace.id, syncScope, authState.deviceId);
         if (!delta) {
           dirtyWorkspaceIds.delete(workspace.id);
+          syncDirtyWorkspaceCount();
           continue;
         }
         await postJsonWithToken<CloudBootstrapSyncResponse, CloudBootstrapSyncRequest>(
@@ -517,6 +534,7 @@ export function createCloudSyncController({
         store.upsertSyncRecords(workspace.id, syncScope, CLOUD_SYNC_BLOB_RECORD_TYPE, delta.blobSyncRecords);
         setCloudSyncCursor(store, workspace.id, syncScope, { lastSyncedAt: nowIso() });
         dirtyWorkspaceIds.delete(workspace.id);
+        syncDirtyWorkspaceCount();
         runtimeStatus.lastCloudSyncAt = nowIso();
         runtimeStatus.lastCloudSyncError = null;
         syncedPromptCount += delta.bundle.prompts.length;
@@ -595,6 +613,7 @@ export function createCloudSyncController({
     },
     stop() {
       clearScheduledCloudSync();
+      runtimeStatus.nextScheduledSyncAt = null;
       tailerUnsubscribe?.();
     },
   };

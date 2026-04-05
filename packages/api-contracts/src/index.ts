@@ -127,9 +127,21 @@ export interface ViewerStatusResponse {
     source: "local" | "cloud";
     label: string;
     detail: string | null;
-    syncDetail: string | null;
     lastSeenAt: string | null;
     syncState: "active" | "idle" | "error" | "disconnected";
+    sync: {
+      phase: "idle" | "pending" | "syncing" | "retrying" | "error" | "unavailable";
+      pendingDirtyWorkspaceCount: number;
+      summary: string | null;
+      lastSuccessfulSyncAt: string | null;
+      lastSuccessfulSyncStats: {
+        workspaceCount: number;
+        promptCount: number;
+        blobCount: number;
+      } | null;
+      nextScheduledSyncAt: string | null;
+      lastErrorMessage: string | null;
+    };
   };
 }
 
