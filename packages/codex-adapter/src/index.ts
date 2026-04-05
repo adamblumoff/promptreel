@@ -1163,6 +1163,38 @@ function accumulateWorkspaceResult(
   };
 }
 
+function ensureWorkspaceForSessionFile(
+  store: PromptreelStore,
+  file: CodexSessionFileMatch
+): { resolvedFolderPath: string; workspaceId: string } | null {
+  const resolvedFolderPath = file.normalizedCwd ?? store.resolveWorkspacePathAlias(file.cwd);
+  if (!resolvedFolderPath) {
+    return null;
+  }
+  const workspace = store.ensureWorkspaceGroup(resolvedFolderPath, {
+    gitRootPath: resolvedFolderPath,
+    gitDir: join(resolvedFolderPath, ".git"),
+    source: "auto_discovered"
+  });
+  return {
+    resolvedFolderPath,
+    workspaceId: workspace.id,
+  };
+}
+
+function withCanonicalWorkspaceId(
+  file: CodexSessionFileMatch,
+  workspaceId: string
+): CodexSessionFileMatch {
+  if (file.workspaceId === workspaceId) {
+    return file;
+  }
+  return {
+    ...file,
+    workspaceId,
+  };
+}
+
 function computeNextActivePlanDecisions(
   filePath: string,
   promptIndex: number,
@@ -1482,22 +1514,18 @@ function importSessionFiles(
   };
 
   for (const file of files) {
-    const resolvedFolderPath = file.normalizedCwd ?? store.resolveWorkspacePathAlias(file.cwd);
-    if (!resolvedFolderPath) {
+    const workspaceInfo = ensureWorkspaceForSessionFile(store, file);
+    if (!workspaceInfo) {
       continue;
     }
-    const workspace = store.ensureWorkspaceGroup(resolvedFolderPath, {
-      gitRootPath: resolvedFolderPath,
-      gitDir: join(resolvedFolderPath, ".git"),
-      source: "auto_discovered"
-    });
-    const cursorKey = `codex-session:v6:${file.filePath}`;
-    const cursor = store.getIngestCursor(workspace.id, cursorKey);
+    const canonicalFile = withCanonicalWorkspaceId(file, workspaceInfo.workspaceId);
+    const cursorKey = `codex-session:v6:${canonicalFile.filePath}`;
+    const cursor = store.getIngestCursor(workspaceInfo.workspaceId, cursorKey);
     if (cursor && cursor.cursorValue === String(file.mtimeMs)) {
       continue;
     }
 
-    const lines = readSessionLines(file.filePath);
+    const lines = readSessionLines(canonicalFile.filePath);
     let importedPrompts = 0;
     let currentStart = -1;
     let promptIndex = 0;
@@ -1511,9 +1539,9 @@ function importSessionFiles(
       const nextUserLine = endExclusive < lines.length ? lines[endExclusive]! : null;
       const persisted = persistHistoricalPromptWindow(
         store,
-        file,
-        workspace.id,
-        resolvedFolderPath,
+        canonicalFile,
+        workspaceInfo.workspaceId,
+        workspaceInfo.resolvedFolderPath,
         window,
         promptIndex,
         activePlanDecisions,
@@ -1536,10 +1564,10 @@ function importSessionFiles(
     });
     flushWindow(lines.length);
 
-    store.setIngestCursor(workspace.id, cursorKey, String(file.mtimeMs ?? 0));
+    store.setIngestCursor(workspaceInfo.workspaceId, cursorKey, String(file.mtimeMs ?? 0));
     totals.importedFiles += 1;
     totals.importedPrompts += importedPrompts;
-    accumulateWorkspaceResult(totals.byWorkspace, workspace.id, {
+    accumulateWorkspaceResult(totals.byWorkspace, workspaceInfo.workspaceId, {
       importedFiles: 1,
       importedPrompts
     });
@@ -1760,30 +1788,38 @@ export class CodexSessionTailer {
       for (const match of matches) {
         const normalizedPath = normalize(match.filePath);
         const previous = this.trackedSessionFiles.get(normalizedPath);
-        this.trackedSessionFiles.set(normalizedPath, match);
         if (previous && previous.mtimeMs === match.mtimeMs) {
+          this.trackedSessionFiles.set(normalizedPath, withCanonicalWorkspaceId(match, previous.workspaceId));
           continue;
-        }
-        changedWorkspaceIds.add(match.workspaceId);
-        if (match.threadId ?? match.sessionId) {
-          changedThreadKeys.add(match.threadId ?? match.sessionId ?? "");
         }
         try {
           const result = importSessionFiles(this.store, [match], {
             tailOpenPrompt: true
           });
+          const canonicalWorkspaceId = Object.keys(result.byWorkspace)[0] ?? match.workspaceId;
+          const canonicalMatch = withCanonicalWorkspaceId(match, canonicalWorkspaceId);
+          this.trackedSessionFiles.set(normalizedPath, canonicalMatch);
+          changedWorkspaceIds.add(canonicalMatch.workspaceId);
+          if (canonicalMatch.threadId ?? canonicalMatch.sessionId) {
+            changedThreadKeys.add(canonicalMatch.threadId ?? canonicalMatch.sessionId ?? "");
+          }
           importedFiles += result.importedFiles;
           importedPrompts += result.importedPrompts;
-          this.sessionTailStates.set(normalizedPath, this.buildTailState(match));
+          this.sessionTailStates.set(normalizedPath, this.buildTailState(canonicalMatch));
           this.statusByWorkspace.set(
-            match.workspaceId,
-            this.buildWorkspaceStatus(match.workspaceId, {
+            canonicalMatch.workspaceId,
+            this.buildWorkspaceStatus(canonicalMatch.workspaceId, {
               lastImportAt: nowIso(),
-              lastImportResult: result.byWorkspace[match.workspaceId] ?? { importedFiles: 0, importedPrompts: 0 },
+              lastImportResult: result.byWorkspace[canonicalMatch.workspaceId] ?? { importedFiles: 0, importedPrompts: 0 },
               lastError: null
             })
           );
         } catch (error) {
+          this.trackedSessionFiles.set(normalizedPath, match);
+          changedWorkspaceIds.add(match.workspaceId);
+          if (match.threadId ?? match.sessionId) {
+            changedThreadKeys.add(match.threadId ?? match.sessionId ?? "");
+          }
           errorCount += 1;
           this.sessionTailStates.delete(normalizedPath);
           this.statusByWorkspace.set(
@@ -1912,15 +1948,17 @@ export class CodexSessionTailer {
         this.lastScanAt = nowIso();
         return;
       }
-      this.trackedSessionFiles.set(filePath, match);
       try {
         const deltaResult = this.tryImportDelta(match, previous);
         const result = deltaResult
           ?? importSessionFiles(this.store, [match], {
             tailOpenPrompt: true
           });
+        const canonicalWorkspaceId = Object.keys(result.byWorkspace)[0] ?? match.workspaceId;
+        const canonicalMatch = withCanonicalWorkspaceId(match, canonicalWorkspaceId);
+        this.trackedSessionFiles.set(filePath, canonicalMatch);
         if (!deltaResult) {
-          this.sessionTailStates.set(filePath, this.buildTailState(match));
+          this.sessionTailStates.set(filePath, this.buildTailState(canonicalMatch));
         }
         this.logDiagnostic(
           [
@@ -1928,16 +1966,16 @@ export class CodexSessionTailer {
             `action=${deltaResult ? "append-delta" : "full-import"}`,
             `duration_ms=${Date.now() - startedAt}`,
             `file=${basename(filePath)}`,
-            `workspace=${match.workspaceId}`,
+            `workspace=${canonicalMatch.workspaceId}`,
             `imported_files=${result.importedFiles}`,
             `imported_prompts=${result.importedPrompts}`,
           ].join(" ")
         );
         this.statusByWorkspace.set(
-          match.workspaceId,
-          this.buildWorkspaceStatus(match.workspaceId, {
+          canonicalMatch.workspaceId,
+          this.buildWorkspaceStatus(canonicalMatch.workspaceId, {
             lastImportAt: nowIso(),
-            lastImportResult: result.byWorkspace[match.workspaceId] ?? { importedFiles: 0, importedPrompts: 0 },
+            lastImportResult: result.byWorkspace[canonicalMatch.workspaceId] ?? { importedFiles: 0, importedPrompts: 0 },
             lastError: null
           })
         );
@@ -1960,7 +1998,8 @@ export class CodexSessionTailer {
           })
         );
       }
-      if (previous && previous.workspaceId !== match.workspaceId) {
+      const currentWorkspaceId = this.trackedSessionFiles.get(filePath)?.workspaceId ?? match.workspaceId;
+      if (previous && previous.workspaceId !== currentWorkspaceId) {
         this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId));
       }
       this.refreshAllWorkspaceStatuses();
@@ -1968,7 +2007,7 @@ export class CodexSessionTailer {
       this.emitUpdate({
         kind: "ingest",
         at: this.lastScanAt ?? nowIso(),
-        workspaceIds: [...new Set([match.workspaceId, previous?.workspaceId].filter((value): value is string => Boolean(value)))],
+        workspaceIds: [...new Set([this.trackedSessionFiles.get(filePath)?.workspaceId ?? match.workspaceId, previous?.workspaceId].filter((value): value is string => Boolean(value)))],
         threadKeys: [...new Set([match.threadId ?? match.sessionId, previous?.threadId ?? previous?.sessionId].filter((value): value is string => Boolean(value)))]
       });
     } finally {
@@ -2010,24 +2049,32 @@ export class CodexSessionTailer {
     if (!previous) {
       return null;
     }
-    if (previous.workspaceId !== match.workspaceId || previous.sessionId !== match.sessionId || previous.threadId !== match.threadId) {
+    const workspaceInfo = ensureWorkspaceForSessionFile(this.store, match);
+    if (!workspaceInfo) {
       return null;
     }
-    if (match.sizeBytes <= previous.sizeBytes) {
+    const canonicalMatch = withCanonicalWorkspaceId(match, workspaceInfo.workspaceId);
+    if (
+      previous.workspaceId !== canonicalMatch.workspaceId
+      || previous.sessionId !== canonicalMatch.sessionId
+      || previous.threadId !== canonicalMatch.threadId
+    ) {
       return null;
     }
-    const existingState = this.sessionTailStates.get(normalize(match.filePath));
-    const resolvedFolderPath = match.normalizedCwd ?? this.store.resolveWorkspacePathAlias(match.cwd);
-    if (!existingState || !resolvedFolderPath) {
+    if (canonicalMatch.sizeBytes <= previous.sizeBytes) {
       return null;
     }
-    const delta = importSessionDelta(this.store, match, resolvedFolderPath, existingState);
-    this.sessionTailStates.set(normalize(match.filePath), delta.nextState);
+    const existingState = this.sessionTailStates.get(normalize(canonicalMatch.filePath));
+    if (!existingState) {
+      return null;
+    }
+    const delta = importSessionDelta(this.store, canonicalMatch, workspaceInfo.resolvedFolderPath, existingState);
+    this.sessionTailStates.set(normalize(canonicalMatch.filePath), delta.nextState);
     return {
       importedFiles: 1,
       importedPrompts: delta.importedPrompts,
       byWorkspace: {
-        [match.workspaceId]: {
+        [canonicalMatch.workspaceId]: {
           importedFiles: 1,
           importedPrompts: delta.importedPrompts,
         },

@@ -1,8 +1,9 @@
-import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
+import { workspaceGroupId } from "@promptreel/domain";
 import { SAMPLE_CODEX_SESSION } from "@promptreel/test-fixtures";
 import { PromptreelStore } from "@promptreel/storage";
 import { CodexSessionTailer, importCodexSessions } from "./index";
@@ -940,6 +941,67 @@ index 1111111..2222222 100644
       expect(store.readBlob(workspace.id, detail.artifacts.find((artifact) => artifact.type === "final_output")?.blobId ?? "")).toBe("Done.");
       expect(store.listPrompts(workspace.id)).toHaveLength(1);
     } finally {
+      tailer.stop();
+    }
+  });
+
+  test("emits canonical workspace ids for moved manual workspaces on append updates", async () => {
+    const root = mkdtempSync(join(tmpdir(), "promptreel-tailer-moved-workspace-"));
+    const originalRepoPath = join(root, "repo-original");
+    const movedRepoPath = join(root, "repo-moved");
+    const sessionsRoot = join(root, "sessions", "2026", "03", "29");
+    mkdirSync(originalRepoPath, { recursive: true });
+    mkdirSync(sessionsRoot, { recursive: true });
+    execFileSync("git", ["init"], { cwd: originalRepoPath, stdio: "ignore" });
+
+    const store = new PromptreelStore(join(root, ".pl"));
+    store.addRepo(originalRepoPath);
+    const originalWorkspace = store.listWorkspaces()[0]!;
+    const movedWorkspaceId = workspaceGroupId(movedRepoPath);
+
+    renameSync(originalRepoPath, movedRepoPath);
+    writeCodexSession(
+      sessionsRoot,
+      movedRepoPath,
+      "moved-session.jsonl",
+      [eventMsg("2026-03-29T10:00:01.000Z", "user_message", "First prompt.")]
+    );
+
+    const tailer = new CodexSessionTailer(store, join(root, "sessions"), 0);
+    const updates: Array<{ kind: string; workspaceIds: string[] }> = [];
+    const unsubscribe = tailer.subscribe((update) => {
+      updates.push({
+        kind: update.kind,
+        workspaceIds: [...update.workspaceIds],
+      });
+    });
+
+    try {
+      tailer.start();
+      await waitForCondition(() => store.listWorkspaces()[0]?.folderPath === movedRepoPath);
+      await waitForCondition(() => store.listPrompts(originalWorkspace.id).length === 1);
+
+      expect(store.listWorkspaces()[0]?.id).toBe(originalWorkspace.id);
+      expect(originalWorkspace.id).not.toBe(movedWorkspaceId);
+
+      updates.length = 0;
+      appendFileSync(
+        join(sessionsRoot, "moved-session.jsonl"),
+        [
+          "",
+          agentMessage("2026-03-29T10:00:02.000Z", "final_answer", "First answer."),
+          eventMsg("2026-03-29T10:00:03.000Z", "user_message", "Second prompt."),
+        ].join("\n"),
+        "utf8"
+      );
+
+      await waitForCondition(() => store.listPrompts(originalWorkspace.id).length === 2);
+      await waitForCondition(() => updates.some((update) => update.kind === "ingest"));
+
+      expect(updates.some((update) => update.workspaceIds.includes(originalWorkspace.id))).toBe(true);
+      expect(updates.some((update) => update.workspaceIds.includes(movedWorkspaceId))).toBe(false);
+    } finally {
+      unsubscribe();
       tailer.stop();
     }
   });
