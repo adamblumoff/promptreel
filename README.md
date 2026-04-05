@@ -30,6 +30,7 @@ pnpm dev:web
 - `pl login` opens a browser-based machine-link flow and stores a daemon token in `~/.pl/cloud-auth.json`.
 - The hosted web app expects `apps/web/.env.example` values, especially `VITE_CLERK_PUBLISHABLE_KEY`.
 - The API expects `apps/daemon/.env.example` values, especially `CLERK_SECRET_KEY`, `PROMPTREEL_WEB_URL`, and `DATABASE_URL`.
+- Promptreel now uses explicit runtime modes. The daemon defaults to `cloud`, while the Vite frontend defaults to `local` during dev and `cloud` in production builds. Use `PROMPTREEL_RUNTIME_MODE` and `VITE_VIEWER_MODE` to override either side explicitly.
 - For local development, keep the API on `http://127.0.0.1:4312/api` and the web app on `http://127.0.0.1:4175`.
 
 ## Local Dev Loop
@@ -37,5 +38,8 @@ pnpm dev:web
 - `pnpm dev` runs the daemon and web app together from source.
 - `pnpm dev:cli -- repo list` runs the CLI from source without building first.
 - Keep `pnpm dev` running in one terminal, then use `pnpm dev:cli -- ...` in another terminal for repo add/import/live checks.
+- `pnpm dev:web` is the hot-reload frontend on `http://127.0.0.1:4175`.
+- `pl start` starts the daemon in cloud mode. Pair it with `pnpm dev:web` if you want the live frontend against the local daemon API.
+- The daemon on `http://127.0.0.1:4312` serves the built `apps/web/dist` bundle when present, so use `4175` for frontend HMR.
 - The daemon automatically watches `~/.codex/sessions` for registered repos, so active and resumed Codex conversations should appear in the Prompt Stream without a manual import loop.
 - Check `http://127.0.0.1:4312/api/health` to see watcher status, discovered session files, and open prompt counts.

@@ -38,6 +38,7 @@ import {
   CLOUD_DAEMON_ACTIVE_WINDOW_MS,
   CLOUD_DAEMON_CONNECTED_WINDOW_MS,
   CLOUD_SYNC_ENABLED,
+  DAEMON_RUNTIME_MODE,
   buildWorkspaceListItem,
   createCloudSyncController,
   hasRecentWorkspaceActivity,
@@ -416,7 +417,7 @@ export async function startDaemon() {
     port
   });
   console.log(`Promptreel daemon listening on http://${host}:${port}`);
-  console.log(CLOUD_SYNC_ENABLED ? "Cloud sync enabled." : "Local-only mode.");
+  console.log(DAEMON_RUNTIME_MODE === "cloud" ? "Cloud mode." : "Local mode.");
   tailer.start();
   cloudSyncController.start();
   store.setDaemonState(process.pid);

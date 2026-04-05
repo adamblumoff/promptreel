@@ -6,14 +6,14 @@ import type {
   ViewerStatus,
   Workspace
 } from "./types";
+import { IS_CLOUD_VIEWER_MODE } from "./runtime-mode";
 
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.trim();
 const API_BASE = configuredApiBase
   ? configuredApiBase.replace(/\/+$/, "")
-  : typeof window !== "undefined" && !["127.0.0.1", "localhost"].includes(window.location.hostname)
+  : typeof window !== "undefined" && IS_CLOUD_VIEWER_MODE
     ? `${window.location.origin}/api`
     : "http://127.0.0.1:4312/api";
-const CLOUD_VIEWER_MODE = typeof window !== "undefined" && !["127.0.0.1", "localhost"].includes(window.location.hostname);
 
 let authTokenProvider: (() => Promise<string | null>) | null = null;
 
@@ -38,7 +38,7 @@ async function getJson<T>(path: string, options: RequestOptions = {}): Promise<T
     signal: options.signal,
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(token && CLOUD_VIEWER_MODE ? { "x-promptreel-cloud-viewer": "1" } : {}),
+      ...(token && IS_CLOUD_VIEWER_MODE ? { "x-promptreel-cloud-viewer": "1" } : {}),
     }
   });
   if (!response.ok) {
@@ -54,7 +54,7 @@ async function postJson<T>(path: string, options: RequestOptions = {}): Promise<
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(token && CLOUD_VIEWER_MODE ? { "x-promptreel-cloud-viewer": "1" } : {}),
+      ...(token && IS_CLOUD_VIEWER_MODE ? { "x-promptreel-cloud-viewer": "1" } : {}),
     },
     body: "{}",
     signal: options.signal
@@ -76,7 +76,7 @@ async function postJsonWithBody<T>(
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(token && CLOUD_VIEWER_MODE ? { "x-promptreel-cloud-viewer": "1" } : {}),
+      ...(token && IS_CLOUD_VIEWER_MODE ? { "x-promptreel-cloud-viewer": "1" } : {}),
       ...(options.headers ?? {})
     },
     body: JSON.stringify(body),

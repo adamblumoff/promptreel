@@ -21,7 +21,26 @@ const CLOUD_SYNC_BLOB_RECORD_TYPE = "cloud_blob";
 
 export const CLOUD_DAEMON_ACTIVE_WINDOW_MS = 20_000;
 export const CLOUD_DAEMON_CONNECTED_WINDOW_MS = 120_000;
-export const CLOUD_SYNC_ENABLED = process.env.PROMPTREEL_ENABLE_CLOUD_SYNC === "1";
+
+function resolveDaemonRuntimeMode(): "cloud" | "local" {
+  const explicitMode = process.env.PROMPTREEL_RUNTIME_MODE?.trim().toLowerCase();
+  if (explicitMode === "local") {
+    return "local";
+  }
+  if (explicitMode === "cloud") {
+    return "cloud";
+  }
+  if (process.env.PROMPTREEL_ENABLE_CLOUD_SYNC === "1") {
+    return "cloud";
+  }
+  if (process.env.PROMPTREEL_ENABLE_CLOUD_SYNC === "0") {
+    return "local";
+  }
+  return "cloud";
+}
+
+export const DAEMON_RUNTIME_MODE = resolveDaemonRuntimeMode();
+export const CLOUD_SYNC_ENABLED = DAEMON_RUNTIME_MODE === "cloud";
 
 export function resolveCloudSyncDelay(
   requestedDelayMs: number,

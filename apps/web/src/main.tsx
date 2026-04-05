@@ -3,18 +3,19 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { ClerkApiBridge, CloudViewerGate } from "./auth";
+import { IS_CLOUD_VIEWER_MODE, VIEWER_MODE } from "./runtime-mode";
 import "./styles.css";
 
 const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY?.trim();
 const isHostedViewer =
-  typeof window !== "undefined"
-  && !["127.0.0.1", "localhost"].includes(window.location.hostname)
+  IS_CLOUD_VIEWER_MODE
+  && typeof window !== "undefined"
   && !window.location.pathname.startsWith("/cli-login");
 
 function AppRoot() {
   return (
     <React.StrictMode>
-      <App />
+      <App viewerMode={VIEWER_MODE} />
     </React.StrictMode>
   );
 }
@@ -40,7 +41,7 @@ function AuthenticatedAppRoot() {
 
   return (
     <React.StrictMode>
-      <App viewerMode={isHostedViewer ? "cloud" : "local"} account={account} />
+      <App viewerMode={VIEWER_MODE} account={account} />
     </React.StrictMode>
   );
 }

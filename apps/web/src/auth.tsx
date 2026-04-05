@@ -2,12 +2,10 @@ import type { ReactNode } from "react";
 import { SignInButton, SignedIn, SignedOut, useAuth, useUser } from "@clerk/clerk-react";
 import { useEffect, useMemo, useState } from "react";
 import { completeCliLogin, getApiBaseUrl, setApiAuthTokenProvider } from "./api";
+import { IS_LOCAL_VIEWER_MODE } from "./runtime-mode";
 
 const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY?.trim() ?? "";
-const isLocalHost =
-  typeof window !== "undefined"
-  && ["127.0.0.1", "localhost"].includes(window.location.hostname);
-const cliCommandPrefix = isLocalHost ? "pnpm dev:cli --" : "pl";
+const cliCommandPrefix = IS_LOCAL_VIEWER_MODE ? "pnpm dev:cli --" : "pl";
 
 export function CliLoginPage() {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);

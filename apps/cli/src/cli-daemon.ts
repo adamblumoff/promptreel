@@ -85,7 +85,7 @@ export async function startDaemonProcess(input: {
     stdio: input.detach ? "ignore" : "inherit",
     env: {
       ...process.env,
-      PROMPTREEL_ENABLE_CLOUD_SYNC: "1",
+      PROMPTREEL_RUNTIME_MODE: "cloud",
     },
     cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../daemon"),
   });
