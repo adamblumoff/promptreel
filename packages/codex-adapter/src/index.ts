@@ -1,8 +1,7 @@
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, normalize } from "node:path";
-import chokidar, { type FSWatcher as ChokidarWatcher } from "chokidar";
 import WebSocket from "ws";
 import type {
   ArtifactClassification,
@@ -1644,7 +1643,7 @@ export class CodexSessionTailer {
   private readonly pendingFileTimers = new Map<string, NodeJS.Timeout>();
   private readonly pendingFollowupFiles = new Set<string>();
   private readonly listeners = new Set<(update: CodexSessionTailerUpdate) => void>();
-  private watcher: ChokidarWatcher | null = null;
+  private watcher: FSWatcher | null = null;
   private recoveryTimer: NodeJS.Timeout | null = null;
   private lastScanAt: string | null = null;
   private scanning = false;
@@ -1750,28 +1749,16 @@ export class CodexSessionTailer {
       return;
     }
     try {
-      this.watcher = chokidar.watch(this.sessionsRoot, {
-        ignoreInitial: true,
-        persistent: true,
-      });
-      const handlePath = (event: "add" | "change" | "unlink", filePath: string) => {
-        const resolvedPath = normalize(filePath);
+      this.watcher = watch(this.sessionsRoot, { recursive: true }, (_eventType, filename) => {
+        if (!filename) {
+          this.queueFullRescan();
+          return;
+        }
+        const resolvedPath = normalize(join(this.sessionsRoot, String(filename)));
         if (!resolvedPath.endsWith(".jsonl")) {
           return;
         }
         this.queueFileReconcile(resolvedPath);
-      };
-      this.watcher.on("add", (filePath) => {
-        handlePath("add", filePath);
-      });
-      this.watcher.on("change", (filePath) => {
-        handlePath("change", filePath);
-      });
-      this.watcher.on("unlink", (filePath) => {
-        handlePath("unlink", filePath);
-      });
-      this.watcher.on("ready", () => {
-        this.queueFullRescan("watcher-ready");
       });
       this.watcher.on("error", () => {
         this.queueFullRescan("watcher-error");
@@ -1905,7 +1892,6 @@ export class CodexSessionTailer {
       }
       if (
         trigger !== "recovery-sweep"
-        && trigger !== "watcher-ready"
         || importedFiles > 0
         || importedPrompts > 0
         || removedFiles > 0
