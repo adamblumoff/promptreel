@@ -6,7 +6,12 @@ import { describe, expect, test } from "vitest";
 import { workspaceGroupId } from "@promptreel/domain";
 import { SAMPLE_CODEX_SESSION } from "@promptreel/test-fixtures";
 import { PromptreelStore } from "@promptreel/storage";
-import { CodexSessionTailer, importCodexSessions } from "./index";
+import {
+  ACTIVE_SESSION_WATCH_DEBOUNCE_MS,
+  CodexSessionTailer,
+  importCodexSessions,
+  resolveSessionWatchDebounceMs
+} from "./index";
 
 describe("importCodexSessions", () => {
   test("segments prompt-to-idle windows from Codex session jsonl", () => {
@@ -1004,6 +1009,32 @@ index 1111111..2222222 100644
       unsubscribe();
       tailer.stop();
     }
+  });
+
+  test("uses a shorter watcher debounce for tracked live session files", () => {
+    expect(resolveSessionWatchDebounceMs({
+      isTrackedSessionFile: false,
+      hasOpenPrompt: false,
+      wasRecentlyUpdated: false
+    })).toBe(150);
+
+    expect(resolveSessionWatchDebounceMs({
+      isTrackedSessionFile: true,
+      hasOpenPrompt: true,
+      wasRecentlyUpdated: false
+    })).toBe(ACTIVE_SESSION_WATCH_DEBOUNCE_MS);
+
+    expect(resolveSessionWatchDebounceMs({
+      isTrackedSessionFile: true,
+      hasOpenPrompt: false,
+      wasRecentlyUpdated: true
+    })).toBe(ACTIVE_SESSION_WATCH_DEBOUNCE_MS);
+
+    expect(resolveSessionWatchDebounceMs({
+      isTrackedSessionFile: true,
+      hasOpenPrompt: false,
+      wasRecentlyUpdated: false
+    })).toBe(150);
   });
 });
 

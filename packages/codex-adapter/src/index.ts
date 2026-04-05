@@ -46,6 +46,7 @@ import {
 
 export const LIVE_ACTIVITY_WINDOW_MS = 90_000;
 const SESSION_WATCH_DEBOUNCE_MS = 150;
+export const ACTIVE_SESSION_WATCH_DEBOUNCE_MS = 40;
 const SESSION_RECOVERY_SWEEP_INTERVAL_MS = 300_000;
 const SESSION_META_READ_BYTES = 8_192;
 
@@ -1163,6 +1164,20 @@ function accumulateWorkspaceResult(
   };
 }
 
+export function resolveSessionWatchDebounceMs(options: {
+  isTrackedSessionFile: boolean;
+  hasOpenPrompt: boolean;
+  wasRecentlyUpdated: boolean;
+}): number {
+  if (!options.isTrackedSessionFile) {
+    return SESSION_WATCH_DEBOUNCE_MS;
+  }
+  if (options.hasOpenPrompt || options.wasRecentlyUpdated) {
+    return ACTIVE_SESSION_WATCH_DEBOUNCE_MS;
+  }
+  return SESSION_WATCH_DEBOUNCE_MS;
+}
+
 function ensureWorkspaceForSessionFile(
   store: PromptreelStore,
   file: CodexSessionFileMatch
@@ -1754,6 +1769,20 @@ export class CodexSessionTailer {
     this.queueFileReconcile("__full_rescan__", trigger);
   }
 
+  private resolveWatchDebounceMs(filePath: string): number {
+    if (filePath === "__full_rescan__") {
+      return SESSION_WATCH_DEBOUNCE_MS;
+    }
+    const match = this.trackedSessionFiles.get(filePath);
+    const state = this.sessionTailStates.get(filePath);
+    return resolveSessionWatchDebounceMs({
+      isTrackedSessionFile: Boolean(match),
+      hasOpenPrompt: state?.openPromptIndex != null,
+      wasRecentlyUpdated:
+        typeof match?.mtimeMs === "number" && Date.now() - match.mtimeMs <= LIVE_ACTIVITY_WINDOW_MS
+    });
+  }
+
   private queueFileReconcile(filePath: string, trigger = "file-watch"): void {
     const existing = this.pendingFileTimers.get(filePath);
     if (existing) {
@@ -1766,7 +1795,7 @@ export class CodexSessionTailer {
         return;
       }
       this.reconcileFile(filePath, trigger);
-    }, SESSION_WATCH_DEBOUNCE_MS);
+    }, this.resolveWatchDebounceMs(filePath));
     this.pendingFileTimers.set(filePath, timer);
   }
 
