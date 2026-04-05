@@ -1761,7 +1761,7 @@ export class CodexSessionTailer {
     try {
       this.ensureDirectoryWatcherTree(this.sessionsRoot);
       for (const filePath of this.trackedSessionFiles.keys()) {
-        this.syncSessionFileWatcher(filePath);
+        this.ensureSessionFileWatcher(filePath);
       }
     } catch {
       this.stopWatcherInfrastructure();
@@ -1832,6 +1832,11 @@ export class CodexSessionTailer {
       }
       return;
     }
+    if (existsSync(resolvedPath)) {
+      this.ensureSessionFileWatcher(resolvedPath);
+    } else {
+      this.closeSessionFileWatcher(resolvedPath);
+    }
     this.queueFileReconcile(resolvedPath);
   }
 
@@ -1880,25 +1885,10 @@ export class CodexSessionTailer {
     this.queueFileReconcile("__full_rescan__", trigger);
   }
 
-  private hasOpenThreadForMatch(match: CodexSessionFileMatch): boolean {
-    return this.store.listThreads(match.workspaceId).some((thread) =>
-      thread.status === "open"
-      && (thread.sessionId != null && thread.sessionId === match.sessionId
-        || thread.threadId != null && thread.threadId === match.threadId)
-    );
-  }
-
-  private syncSessionFileWatcher(filePath: string, match?: CodexSessionFileMatch | null): void {
-    const trackedMatch = match ?? this.trackedSessionFiles.get(normalize(filePath));
-    if (!trackedMatch || !this.isActiveSessionFile(trackedMatch)) {
-      this.closeSessionFileWatcher(filePath);
-      return;
-    }
-    this.ensureSessionFileWatcher(filePath);
-  }
-
   private isActiveSessionFile(match: CodexSessionFileMatch): boolean {
-    if (this.hasOpenThreadForMatch(match)) {
+    const normalizedPath = normalize(match.filePath);
+    const state = this.sessionTailStates.get(normalizedPath);
+    if (state?.openPromptIndex != null) {
       return true;
     }
     if (typeof match.mtimeMs !== "number") {
@@ -1989,11 +1979,10 @@ export class CodexSessionTailer {
       const changedThreadKeys = new Set<string>();
       for (const match of matches) {
         const normalizedPath = normalize(match.filePath);
+        this.ensureSessionFileWatcher(normalizedPath);
         const previous = this.trackedSessionFiles.get(normalizedPath);
         if (previous && previous.mtimeMs === match.mtimeMs) {
-          const canonicalMatch = withCanonicalWorkspaceId(match, previous.workspaceId);
-          this.trackedSessionFiles.set(normalizedPath, canonicalMatch);
-          this.syncSessionFileWatcher(normalizedPath, canonicalMatch);
+          this.trackedSessionFiles.set(normalizedPath, withCanonicalWorkspaceId(match, previous.workspaceId));
           continue;
         }
         try {
@@ -2010,7 +1999,6 @@ export class CodexSessionTailer {
           importedFiles += result.importedFiles;
           importedPrompts += result.importedPrompts;
           this.sessionTailStates.set(normalizedPath, this.buildTailState(canonicalMatch));
-          this.syncSessionFileWatcher(normalizedPath, canonicalMatch);
           this.statusByWorkspace.set(
             canonicalMatch.workspaceId,
             this.buildWorkspaceStatus(canonicalMatch.workspaceId, {
@@ -2144,11 +2132,11 @@ export class CodexSessionTailer {
         return;
       }
       if (previous && previous.mtimeMs === match.mtimeMs) {
-        this.syncSessionFileWatcher(filePath, previous);
         this.lastScanAt = nowIso();
         return;
       }
       try {
+        this.ensureSessionFileWatcher(filePath);
         const deltaResult = this.tryImportDelta(match, previous);
         const result = deltaResult
           ?? importSessionFiles(this.store, [match], {
@@ -2159,16 +2147,6 @@ export class CodexSessionTailer {
         this.trackedSessionFiles.set(filePath, canonicalMatch);
         if (!deltaResult) {
           this.sessionTailStates.set(filePath, this.buildTailState(canonicalMatch));
-        }
-        this.syncSessionFileWatcher(filePath, canonicalMatch);
-        const changedWorkspace = previous?.workspaceId !== canonicalMatch.workspaceId;
-        const changedThreadIdentity =
-          previous?.sessionId !== canonicalMatch.sessionId || previous?.threadId !== canonicalMatch.threadId;
-        const importedSomething = result.importedPrompts > 0;
-        const shouldReportChange = importedSomething || changedWorkspace || changedThreadIdentity;
-        if (!shouldReportChange) {
-          this.lastScanAt = nowIso();
-          return;
         }
         this.logDiagnostic(
           [
