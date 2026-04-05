@@ -1787,8 +1787,8 @@ export class CodexSessionTailer {
     if (this.directoryWatchers.has(normalizedDirPath)) {
       return;
     }
-    const watcher = watch(normalizedDirPath, (_eventType, filename) => {
-      this.handleDirectoryWatchEvent(normalizedDirPath, filename);
+    const watcher = watch(normalizedDirPath, (eventType, filename) => {
+      this.handleDirectoryWatchEvent(normalizedDirPath, eventType, filename);
     });
     watcher.on("error", () => {
       this.closeDirectoryWatchersUnder(normalizedDirPath);
@@ -1797,12 +1797,29 @@ export class CodexSessionTailer {
     this.directoryWatchers.set(normalizedDirPath, watcher);
   }
 
-  private handleDirectoryWatchEvent(dirPath: string, filename: string | Buffer | null): void {
+  private handleDirectoryWatchEvent(dirPath: string, eventType: string, filename: string | Buffer | null): void {
     if (!filename) {
+      this.logDiagnostic(
+        [
+          "watcher=directory",
+          `event=${eventType}`,
+          `dir=${dirPath}`,
+          "path=null",
+          "action=full-rescan",
+        ].join(" ")
+      );
       this.queueFullRescan();
       return;
     }
     const resolvedPath = normalize(join(dirPath, String(filename)));
+    this.logDiagnostic(
+      [
+        "watcher=directory",
+        `event=${eventType}`,
+        `dir=${dirPath}`,
+        `path=${resolvedPath}`,
+      ].join(" ")
+    );
     if (existsSync(resolvedPath)) {
       try {
         const stats = statSync(resolvedPath);
@@ -1833,7 +1850,14 @@ export class CodexSessionTailer {
     if (this.sessionFileWatchers.has(normalizedFilePath) || !existsSync(normalizedFilePath)) {
       return;
     }
-    const watcher = watch(normalizedFilePath, () => {
+    const watcher = watch(normalizedFilePath, (eventType) => {
+      this.logDiagnostic(
+        [
+          "watcher=file",
+          `event=${eventType}`,
+          `path=${normalizedFilePath}`,
+        ].join(" ")
+      );
       this.queueFileReconcile(normalizedFilePath);
     });
     watcher.on("error", () => {
@@ -1890,6 +1914,13 @@ export class CodexSessionTailer {
   private queueFileReconcile(filePath: string, trigger = "file-watch", delayMsOverride?: number): void {
     if (filePath !== "__full_rescan__" && this.activeReconcileFilePath === filePath) {
       this.pendingFollowupFiles.add(filePath);
+      this.logDiagnostic(
+        [
+          `trigger=${trigger}`,
+          "action=queue-followup",
+          `file=${filePath === "__full_rescan__" ? "__full_rescan__" : basename(filePath)}`,
+        ].join(" ")
+      );
       return;
     }
     const existing = this.pendingFileTimers.get(filePath);
@@ -1897,6 +1928,14 @@ export class CodexSessionTailer {
       clearTimeout(existing);
     }
     const delayMs = delayMsOverride ?? this.resolveWatchDebounceMs(filePath);
+    this.logDiagnostic(
+      [
+        `trigger=${trigger}`,
+        "action=queue-reconcile",
+        `file=${filePath === "__full_rescan__" ? "__full_rescan__" : basename(filePath)}`,
+        `delay_ms=${delayMs}`,
+      ].join(" ")
+    );
     const timer = setTimeout(() => {
       this.pendingFileTimers.delete(filePath);
       if (filePath === "__full_rescan__") {
