@@ -79,7 +79,9 @@ export function buildServer() {
   });
   const store = new PromptreelStore();
   const cloudStore = createCloudStore();
-  const tailer = new CodexSessionTailer(store);
+  const tailer = new CodexSessionTailer(store, undefined, undefined, (message) => {
+    console.log(message);
+  });
   const webDistDir = resolveWebDistDir();
   const httpError = (statusCode: number, message: string) => {
     const error = new Error(message) as Error & { statusCode?: number };

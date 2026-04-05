@@ -314,6 +314,7 @@ export function createCloudSyncController({
   const dirtyWorkspaceIds = new Set<string>();
   let pendingSyncRequested = false;
   let pendingSyncBypassCooldown = false;
+  let pendingSyncReason = "follow-up";
 
   const markDirtyWorkspaces = (workspaceIds: Iterable<string>) => {
     for (const workspaceId of workspaceIds) {
@@ -323,13 +324,24 @@ export function createCloudSyncController({
     }
   };
 
-  const scheduleCloudSync = (delayMs = 0, options: { bypassCooldown?: boolean } = {}) => {
+  const scheduleCloudSync = (
+    delayMs = 0,
+    options: { bypassCooldown?: boolean; reason?: string } = {}
+  ) => {
+    const reason = options.reason ?? "unspecified";
     if (!CLOUD_SYNC_ENABLED) {
       return;
     }
     if (syncInFlight) {
+      const firstPendingRequest = !pendingSyncRequested;
       pendingSyncRequested = true;
       pendingSyncBypassCooldown = pendingSyncBypassCooldown || Boolean(options.bypassCooldown);
+      pendingSyncReason = options.bypassCooldown ? reason : pendingSyncReason;
+      if (firstPendingRequest) {
+        console.log(
+          `[cloud-sync] deferred reason=in-flight trigger=${reason} dirty_workspaces=${dirtyWorkspaceIds.size}`
+        );
+      }
       return;
     }
     if (cloudSyncTimer) {
@@ -338,7 +350,16 @@ export function createCloudSyncController({
     const effectiveDelayMs = options.bypassCooldown
       ? delayMs
       : resolveCloudSyncDelay(delayMs, lastCompletedSyncAtMs, Date.now());
+    if (!options.bypassCooldown && effectiveDelayMs > delayMs) {
+      console.log(
+        `[cloud-sync] deferred reason=cooldown trigger=${reason} requested_delay_ms=${delayMs} effective_delay_ms=${effectiveDelayMs} dirty_workspaces=${dirtyWorkspaceIds.size}`
+      );
+    }
+    console.log(
+      `[cloud-sync] scheduled trigger=${reason} delay_ms=${effectiveDelayMs} dirty_workspaces=${dirtyWorkspaceIds.size} bypass_cooldown=${options.bypassCooldown ? "true" : "false"}`
+    );
     cloudSyncTimer = setTimeout(() => {
+      cloudSyncTimer = null;
       void syncCloudWorkspaces();
     }, effectiveDelayMs);
   };
@@ -392,6 +413,7 @@ export function createCloudSyncController({
     syncInFlight = true;
     runtimeStatus.syncInFlight = true;
     notifyChange?.();
+    const startedAt = Date.now();
     try {
       reportCloudSyncNotice("Cloud sync authenticated. Watching for local changes...");
       const syncScope = buildCloudSyncScope(authState);
@@ -401,10 +423,16 @@ export function createCloudSyncController({
       const workspaces = store.listWorkspaces();
       const workspacesById = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
       const workspaceIdsToSync = resolveDirtyWorkspaceIds(dirtyWorkspaceIds, workspacesById.keys());
+      console.log(
+        `[cloud-sync] start dirty_workspaces=${workspaceIdsToSync.length} pending_dirty_workspaces=${dirtyWorkspaceIds.size}`
+      );
       for (const staleWorkspaceId of [...dirtyWorkspaceIds]) {
         if (!workspacesById.has(staleWorkspaceId)) {
           dirtyWorkspaceIds.delete(staleWorkspaceId);
         }
+      }
+      if (workspaceIdsToSync.length === 0) {
+        console.log(`[cloud-sync] skip reason=no-dirty-workspaces duration_ms=${Date.now() - startedAt}`);
       }
       for (const workspaceId of workspaceIdsToSync) {
         const workspace = workspacesById.get(workspaceId);
@@ -440,6 +468,9 @@ export function createCloudSyncController({
           promptCount: syncedPromptCount,
           blobCount: syncedBlobCount,
         };
+        console.log(
+          `[cloud-sync] success duration_ms=${Date.now() - startedAt} workspaces=${syncedWorkspaces.length} prompts=${syncedPromptCount} blobs=${syncedBlobCount}`
+        );
         console.log(`Synced ${syncedWorkspaces.length} workspace${syncedWorkspaces.length === 1 ? "" : "s"} to Promptreel Cloud.`);
         for (const summary of syncedWorkspaces) {
           console.log(`- ${summary}`);
@@ -448,6 +479,9 @@ export function createCloudSyncController({
     } catch (error) {
       runtimeStatus.lastCloudSyncError = error instanceof Error ? error.message : String(error);
       notifyChange?.();
+      console.error(
+        `[cloud-sync] error duration_ms=${Date.now() - startedAt} dirty_workspaces=${dirtyWorkspaceIds.size} message=${JSON.stringify(runtimeStatus.lastCloudSyncError)}`
+      );
       console.error(runtimeStatus.lastCloudSyncError);
     } finally {
       syncInFlight = false;
@@ -460,9 +494,11 @@ export function createCloudSyncController({
         const bypassCooldown = pendingSyncBypassCooldown;
         pendingSyncRequested = false;
         pendingSyncBypassCooldown = false;
-        scheduleCloudSync(0, { bypassCooldown });
+        const reason = pendingSyncReason;
+        pendingSyncReason = "follow-up";
+        scheduleCloudSync(0, { bypassCooldown, reason });
       } else if (runtimeStatus.lastCloudSyncError) {
-        scheduleCloudSync(CLOUD_SYNC_RETRY_INTERVAL_MS);
+        scheduleCloudSync(CLOUD_SYNC_RETRY_INTERVAL_MS, { reason: "retry" });
       }
     }
   };
@@ -472,12 +508,16 @@ export function createCloudSyncController({
       if (CLOUD_SYNC_ENABLED) {
         markDirtyWorkspaces(store.listWorkspaces().map((workspace) => workspace.id));
         tailerUnsubscribe = tailer.subscribe((update) => {
+          const trigger = shouldBypassCooldownForWorkspaces(update.workspaceIds)
+            ? "completed-prompt"
+            : "dirty-workspace";
           markDirtyWorkspaces(update.workspaceIds);
           scheduleCloudSync(CLOUD_SYNC_EVENT_DEBOUNCE_MS, {
-            bypassCooldown: shouldBypassCooldownForWorkspaces(update.workspaceIds),
+            bypassCooldown: trigger === "completed-prompt",
+            reason: trigger,
           });
         });
-        scheduleCloudSync();
+        scheduleCloudSync(0, { reason: "startup" });
       }
     },
     stop() {
