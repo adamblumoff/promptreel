@@ -1640,10 +1640,11 @@ export class CodexSessionTailer {
   private readonly recentlyUpdatedSessionIdsByWorkspace = new Map<string, Set<string>>();
   private readonly trackedSessionFiles = new Map<string, CodexSessionFileMatch>();
   private readonly sessionTailStates = new Map<string, SessionTailState>();
+  private readonly directoryWatchers = new Map<string, FSWatcher>();
+  private readonly sessionFileWatchers = new Map<string, FSWatcher>();
   private readonly pendingFileTimers = new Map<string, NodeJS.Timeout>();
   private readonly pendingFollowupFiles = new Set<string>();
   private readonly listeners = new Set<(update: CodexSessionTailerUpdate) => void>();
-  private watcher: FSWatcher | null = null;
   private recoveryTimer: NodeJS.Timeout | null = null;
   private lastScanAt: string | null = null;
   private scanning = false;
@@ -1657,7 +1658,7 @@ export class CodexSessionTailer {
   ) {}
 
   start(): void {
-    if (this.watcher || this.recoveryTimer) {
+    if (this.hasActiveWatchers() || this.recoveryTimer) {
       return;
     }
     this.rescanAll("startup-scan");
@@ -1670,10 +1671,7 @@ export class CodexSessionTailer {
   }
 
   stop(): void {
-    if (this.watcher) {
-      this.watcher.close();
-      this.watcher = null;
-    }
+    this.stopWatcherInfrastructure();
     if (this.recoveryTimer) {
       clearInterval(this.recoveryTimer);
       this.recoveryTimer = null;
@@ -1714,7 +1712,7 @@ export class CodexSessionTailer {
     });
 
     return {
-      watcher: this.watcher || this.recoveryTimer ? "running" : "stopped",
+      watcher: this.hasActiveWatchers() || this.recoveryTimer ? "running" : "stopped",
       pollingIntervalMs: 0,
       sessionsRoot: this.sessionsRoot,
       lastScanAt: this.lastScanAt,
@@ -1749,22 +1747,125 @@ export class CodexSessionTailer {
       return;
     }
     try {
-      this.watcher = watch(this.sessionsRoot, { recursive: true }, (_eventType, filename) => {
-        if (!filename) {
-          this.queueFullRescan();
-          return;
-        }
-        const resolvedPath = normalize(join(this.sessionsRoot, String(filename)));
-        if (!resolvedPath.endsWith(".jsonl")) {
-          return;
-        }
-        this.queueFileReconcile(resolvedPath);
-      });
-      this.watcher.on("error", () => {
-        this.queueFullRescan("watcher-error");
-      });
+      this.ensureDirectoryWatcherTree(this.sessionsRoot);
+      for (const filePath of this.trackedSessionFiles.keys()) {
+        this.ensureSessionFileWatcher(filePath);
+      }
     } catch {
-      this.watcher = null;
+      this.stopWatcherInfrastructure();
+    }
+  }
+
+  private hasActiveWatchers(): boolean {
+    return this.directoryWatchers.size > 0 || this.sessionFileWatchers.size > 0;
+  }
+
+  private stopWatcherInfrastructure(): void {
+    for (const watcher of this.directoryWatchers.values()) {
+      watcher.close();
+    }
+    this.directoryWatchers.clear();
+    for (const watcher of this.sessionFileWatchers.values()) {
+      watcher.close();
+    }
+    this.sessionFileWatchers.clear();
+  }
+
+  private ensureDirectoryWatcherTree(dirPath: string): void {
+    const normalizedDirPath = normalize(dirPath);
+    this.ensureDirectoryWatcher(normalizedDirPath);
+    for (const entry of readdirSync(normalizedDirPath, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      this.ensureDirectoryWatcherTree(join(normalizedDirPath, entry.name));
+    }
+  }
+
+  private ensureDirectoryWatcher(dirPath: string): void {
+    const normalizedDirPath = normalize(dirPath);
+    if (this.directoryWatchers.has(normalizedDirPath)) {
+      return;
+    }
+    const watcher = watch(normalizedDirPath, (_eventType, filename) => {
+      this.handleDirectoryWatchEvent(normalizedDirPath, filename);
+    });
+    watcher.on("error", () => {
+      this.closeDirectoryWatchersUnder(normalizedDirPath);
+      this.queueFullRescan("watcher-error");
+    });
+    this.directoryWatchers.set(normalizedDirPath, watcher);
+  }
+
+  private handleDirectoryWatchEvent(dirPath: string, filename: string | Buffer | null): void {
+    if (!filename) {
+      this.queueFullRescan();
+      return;
+    }
+    const resolvedPath = normalize(join(dirPath, String(filename)));
+    if (existsSync(resolvedPath)) {
+      try {
+        const stats = statSync(resolvedPath);
+        if (stats.isDirectory()) {
+          this.ensureDirectoryWatcherTree(resolvedPath);
+          return;
+        }
+      } catch {
+        // Ignore transient path races and let the next event reconcile the file.
+      }
+    }
+    if (!resolvedPath.endsWith(".jsonl")) {
+      if (!existsSync(resolvedPath)) {
+        this.closeDirectoryWatchersUnder(resolvedPath);
+      }
+      return;
+    }
+    if (existsSync(resolvedPath)) {
+      this.ensureSessionFileWatcher(resolvedPath);
+    } else {
+      this.closeSessionFileWatcher(resolvedPath);
+    }
+    this.queueFileReconcile(resolvedPath);
+  }
+
+  private ensureSessionFileWatcher(filePath: string): void {
+    const normalizedFilePath = normalize(filePath);
+    if (this.sessionFileWatchers.has(normalizedFilePath) || !existsSync(normalizedFilePath)) {
+      return;
+    }
+    const watcher = watch(normalizedFilePath, () => {
+      this.queueFileReconcile(normalizedFilePath);
+    });
+    watcher.on("error", () => {
+      this.closeSessionFileWatcher(normalizedFilePath);
+      this.queueFileReconcile(normalizedFilePath, "watcher-error");
+    });
+    this.sessionFileWatchers.set(normalizedFilePath, watcher);
+  }
+
+  private closeSessionFileWatcher(filePath: string): void {
+    const normalizedFilePath = normalize(filePath);
+    const watcher = this.sessionFileWatchers.get(normalizedFilePath);
+    if (!watcher) {
+      return;
+    }
+    watcher.close();
+    this.sessionFileWatchers.delete(normalizedFilePath);
+  }
+
+  private closeDirectoryWatchersUnder(dirPath: string): void {
+    const normalizedDirPath = normalize(dirPath);
+    const normalizedLower = normalizedDirPath.toLowerCase();
+    for (const [watchedDirPath, watcher] of [...this.directoryWatchers.entries()]) {
+      const watchedLower = watchedDirPath.toLowerCase();
+      if (
+        watchedLower === normalizedLower
+        || watchedLower.startsWith(`${normalizedLower}\\`)
+        || watchedLower.startsWith(`${normalizedLower}/`)
+      ) {
+        watcher.close();
+        this.directoryWatchers.delete(watchedDirPath);
+      }
     }
   }
 
@@ -1824,6 +1925,7 @@ export class CodexSessionTailer {
       const changedThreadKeys = new Set<string>();
       for (const match of matches) {
         const normalizedPath = normalize(match.filePath);
+        this.ensureSessionFileWatcher(normalizedPath);
         const previous = this.trackedSessionFiles.get(normalizedPath);
         if (previous && previous.mtimeMs === match.mtimeMs) {
           this.trackedSessionFiles.set(normalizedPath, withCanonicalWorkspaceId(match, previous.workspaceId));
@@ -1871,6 +1973,7 @@ export class CodexSessionTailer {
         if (nextTrackedFiles.has(filePath)) {
           continue;
         }
+        this.closeSessionFileWatcher(filePath);
         this.trackedSessionFiles.delete(filePath);
         this.sessionTailStates.delete(filePath);
         removedFiles += 1;
@@ -1927,6 +2030,7 @@ export class CodexSessionTailer {
       const previous = this.trackedSessionFiles.get(filePath) ?? null;
       if (!existsSync(filePath)) {
         if (previous) {
+          this.closeSessionFileWatcher(filePath);
           this.trackedSessionFiles.delete(filePath);
           this.sessionTailStates.delete(filePath);
           this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, {
@@ -1957,6 +2061,7 @@ export class CodexSessionTailer {
       const match = discoverCodexSessionFile(filePath);
       if (!match) {
         if (previous) {
+          this.closeSessionFileWatcher(filePath);
           this.trackedSessionFiles.delete(filePath);
           this.sessionTailStates.delete(filePath);
           this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, {
@@ -1987,6 +2092,7 @@ export class CodexSessionTailer {
         return;
       }
       try {
+        this.ensureSessionFileWatcher(filePath);
         const deltaResult = this.tryImportDelta(match, previous);
         const result = deltaResult
           ?? importSessionFiles(this.store, [match], {

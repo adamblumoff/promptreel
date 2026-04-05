@@ -861,6 +861,37 @@ index 1111111..2222222 100644
     }
   });
 
+  test("watches session files created under a new day directory after startup", async () => {
+    const { root, repoPath } = createImportHarness("promptreel-tailer-watch-new-day-");
+    const sessionsBaseRoot = join(root, "sessions");
+    const nextDaySessionsRoot = join(sessionsBaseRoot, "2026", "03", "30");
+    const store = new PromptreelStore(join(root, ".pl"));
+    const tailer = new CodexSessionTailer(store, sessionsBaseRoot, 0);
+
+    try {
+      tailer.start();
+      mkdirSync(nextDaySessionsRoot, { recursive: true });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      writeCodexSession(
+        nextDaySessionsRoot,
+        repoPath,
+        "next-day-session.jsonl",
+        [
+          eventMsg("2026-03-30T07:00:01.000Z", "user_message", "Catch the next day session."),
+          agentMessage("2026-03-30T07:00:02.000Z", "commentary", "Watching the new day folder.")
+        ]
+      );
+
+      await waitForCondition(() => store.listWorkspaces().length === 1);
+      const workspace = store.listWorkspaces()[0]!;
+      await waitForCondition(() => store.listPrompts(workspace.id).length === 1);
+
+      expect(store.listPrompts(workspace.id)[0]?.status).toBe("in_progress");
+    } finally {
+      tailer.stop();
+    }
+  });
+
   test("re-imports an active session file when Codex appends more events", async () => {
     const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-tailer-watch-append-");
     writeCodexSession(
