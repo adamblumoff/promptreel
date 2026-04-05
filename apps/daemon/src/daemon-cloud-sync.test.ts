@@ -3,6 +3,7 @@ import {
   CLOUD_SYNC_MIN_INTERVAL_MS,
   CLOUD_SYNC_REQUEST_TIMEOUT_MS,
   isCloudSyncTimeoutError,
+  resolveDirtyWorkspaceIds,
   resolveCloudSyncDelay,
   shouldBypassCloudSyncCooldownForPrompt,
 } from "./daemon-cloud-sync.js";
@@ -40,5 +41,9 @@ describe("cloud sync cooldown", () => {
     abortError.name = "AbortError";
     expect(isCloudSyncTimeoutError(abortError)).toBe(true);
     expect(isCloudSyncTimeoutError(new Error("other"))).toBe(false);
+  });
+
+  test("only syncs dirty workspaces that still exist", () => {
+    expect(resolveDirtyWorkspaceIds(["ws-a", "ws-b", "ws-a"], ["ws-b", "ws-c"])).toEqual(["ws-b"]);
   });
 });
