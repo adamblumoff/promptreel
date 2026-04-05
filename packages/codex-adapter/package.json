@@ -13,6 +13,7 @@
     "@promptreel/domain": "workspace:*",
     "@promptreel/git-integration": "workspace:*",
     "@promptreel/storage": "workspace:*",
+    "chokidar": "^5.0.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {
