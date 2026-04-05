@@ -55,6 +55,19 @@ export function resolveDirtyWorkspaceIds(
   return [...new Set(dirtyWorkspaceIds)].filter((workspaceId) => available.has(workspaceId));
 }
 
+export function resolveCloudSyncRunResult(
+  requestedWorkspaceCount: number,
+  syncedWorkspaceCount: number
+): "no-dirty-workspaces" | "no-deltas" | "synced" {
+  if (requestedWorkspaceCount === 0) {
+    return "no-dirty-workspaces";
+  }
+  if (syncedWorkspaceCount === 0) {
+    return "no-deltas";
+  }
+  return "synced";
+}
+
 export interface DaemonRuntimeStatus {
   lastCloudSyncAt: string | null;
   lastCloudSyncError: string | null;
@@ -431,9 +444,6 @@ export function createCloudSyncController({
           dirtyWorkspaceIds.delete(staleWorkspaceId);
         }
       }
-      if (workspaceIdsToSync.length === 0) {
-        console.log(`[cloud-sync] skip reason=no-dirty-workspaces duration_ms=${Date.now() - startedAt}`);
-      }
       for (const workspaceId of workspaceIdsToSync) {
         const workspace = workspacesById.get(workspaceId);
         if (!workspace) {
@@ -462,7 +472,8 @@ export function createCloudSyncController({
         syncedWorkspaces.push(`${workspace.slug} (${delta.bundle.prompts.length} prompts)`);
       }
       notifyChange?.();
-      if (syncedWorkspaces.length > 0) {
+      const runResult = resolveCloudSyncRunResult(workspaceIdsToSync.length, syncedWorkspaces.length);
+      if (runResult === "synced") {
         runtimeStatus.lastCloudSyncStats = {
           workspaceCount: syncedWorkspaces.length,
           promptCount: syncedPromptCount,
@@ -475,6 +486,13 @@ export function createCloudSyncController({
         for (const summary of syncedWorkspaces) {
           console.log(`- ${summary}`);
         }
+      } else {
+        runtimeStatus.lastCloudSyncStats = {
+          workspaceCount: 0,
+          promptCount: 0,
+          blobCount: 0,
+        };
+        console.log(`[cloud-sync] skip reason=${runResult} duration_ms=${Date.now() - startedAt} workspaces=${workspaceIdsToSync.length}`);
       }
     } catch (error) {
       runtimeStatus.lastCloudSyncError = error instanceof Error ? error.message : String(error);

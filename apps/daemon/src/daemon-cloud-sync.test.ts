@@ -3,6 +3,7 @@ import {
   CLOUD_SYNC_MIN_INTERVAL_MS,
   CLOUD_SYNC_REQUEST_TIMEOUT_MS,
   isCloudSyncTimeoutError,
+  resolveCloudSyncRunResult,
   resolveDirtyWorkspaceIds,
   resolveCloudSyncDelay,
   shouldBypassCloudSyncCooldownForPrompt,
@@ -45,5 +46,11 @@ describe("cloud sync cooldown", () => {
 
   test("only syncs dirty workspaces that still exist", () => {
     expect(resolveDirtyWorkspaceIds(["ws-a", "ws-b", "ws-a"], ["ws-b", "ws-c"])).toEqual(["ws-b"]);
+  });
+
+  test("distinguishes empty dirty sets from dirty workspaces with no deltas", () => {
+    expect(resolveCloudSyncRunResult(0, 0)).toBe("no-dirty-workspaces");
+    expect(resolveCloudSyncRunResult(3, 0)).toBe("no-deltas");
+    expect(resolveCloudSyncRunResult(3, 1)).toBe("synced");
   });
 });
