@@ -100,6 +100,11 @@ type CloudSyncSummary =
     dirtyWorkspaces: number;
   };
 
+type CloudSyncRequest = {
+  reason: string;
+  bypassCooldown: boolean;
+};
+
 function logCloudSyncSummary(summary: CloudSyncSummary): void {
   if (summary.outcome === "synced") {
     console.log(
@@ -116,6 +121,22 @@ function logCloudSyncSummary(summary: CloudSyncSummary): void {
   console.error(
     `[cloud-sync] error duration_ms=${summary.durationMs} dirty_workspaces=${summary.dirtyWorkspaces} message=${JSON.stringify(summary.message)}`
   );
+}
+
+function mergePendingCloudSyncRequest(
+  current: CloudSyncRequest | null,
+  next: CloudSyncRequest
+): CloudSyncRequest {
+  if (!current) {
+    return next;
+  }
+  if (next.bypassCooldown) {
+    return next;
+  }
+  return {
+    reason: current.reason,
+    bypassCooldown: current.bypassCooldown || next.bypassCooldown,
+  };
 }
 
 export function hasRecentWorkspaceActivity(
@@ -364,9 +385,7 @@ export function createCloudSyncController({
   let lastCloudSyncNotice: string | null = null;
   let lastCompletedSyncAtMs: number | null = null;
   const dirtyWorkspaceIds = new Set<string>();
-  let pendingSyncRequested = false;
-  let pendingSyncBypassCooldown = false;
-  let pendingSyncReason = "follow-up";
+  let pendingSyncRequest: CloudSyncRequest | null = null;
 
   const markDirtyWorkspaces = (workspaceIds: Iterable<string>) => {
     for (const workspaceId of workspaceIds) {
@@ -376,25 +395,37 @@ export function createCloudSyncController({
     }
   };
 
+  const clearScheduledCloudSync = () => {
+    if (!cloudSyncTimer) {
+      return;
+    }
+    clearTimeout(cloudSyncTimer);
+    cloudSyncTimer = null;
+  };
+
+  const setSyncInFlight = (value: boolean) => {
+    syncInFlight = value;
+    runtimeStatus.syncInFlight = value;
+    notifyChange?.();
+  };
+
   const scheduleCloudSync = (
     delayMs = 0,
     options: { bypassCooldown?: boolean; reason?: string } = {}
   ) => {
+    const request: CloudSyncRequest = {
+      reason: options.reason ?? "unspecified",
+      bypassCooldown: Boolean(options.bypassCooldown),
+    };
     if (!CLOUD_SYNC_ENABLED) {
       return;
     }
     if (syncInFlight) {
-      pendingSyncRequested = true;
-      pendingSyncBypassCooldown = pendingSyncBypassCooldown || Boolean(options.bypassCooldown);
-      if (options.reason) {
-        pendingSyncReason = options.bypassCooldown ? options.reason : pendingSyncReason;
-      }
+      pendingSyncRequest = mergePendingCloudSyncRequest(pendingSyncRequest, request);
       return;
     }
-    if (cloudSyncTimer) {
-      clearTimeout(cloudSyncTimer);
-    }
-    const effectiveDelayMs = options.bypassCooldown
+    clearScheduledCloudSync();
+    const effectiveDelayMs = request.bypassCooldown
       ? delayMs
       : resolveCloudSyncDelay(delayMs, lastCompletedSyncAtMs, Date.now());
     cloudSyncTimer = setTimeout(() => {
@@ -449,9 +480,7 @@ export function createCloudSyncController({
       return;
     }
 
-    syncInFlight = true;
-    runtimeStatus.syncInFlight = true;
-    notifyChange?.();
+    setSyncInFlight(true);
     const startedAt = Date.now();
     try {
       reportCloudSyncNotice("Cloud sync authenticated. Watching for local changes...");
@@ -532,20 +561,16 @@ export function createCloudSyncController({
         dirtyWorkspaces: dirtyWorkspaceIds.size,
       });
     } finally {
-      syncInFlight = false;
-      runtimeStatus.syncInFlight = false;
-      if (!runtimeStatus.lastCloudSyncError) {
+      setSyncInFlight(false);
+      const completedWithoutError = !runtimeStatus.lastCloudSyncError;
+      if (completedWithoutError) {
         lastCompletedSyncAtMs = Date.now();
       }
-      notifyChange?.();
-      if (pendingSyncRequested) {
-        const bypassCooldown = pendingSyncBypassCooldown;
-        pendingSyncRequested = false;
-        pendingSyncBypassCooldown = false;
-        const reason = pendingSyncReason;
-        pendingSyncReason = "follow-up";
-        scheduleCloudSync(0, { bypassCooldown, reason });
-      } else if (runtimeStatus.lastCloudSyncError) {
+      const nextPendingRequest = pendingSyncRequest;
+      pendingSyncRequest = null;
+      if (nextPendingRequest) {
+        scheduleCloudSync(0, nextPendingRequest);
+      } else if (!completedWithoutError) {
         scheduleCloudSync(CLOUD_SYNC_RETRY_INTERVAL_MS, { reason: "retry" });
       }
     }
@@ -569,9 +594,7 @@ export function createCloudSyncController({
       }
     },
     stop() {
-      if (cloudSyncTimer) {
-        clearTimeout(cloudSyncTimer);
-      }
+      clearScheduledCloudSync();
       tailerUnsubscribe?.();
     },
   };
