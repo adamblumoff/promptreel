@@ -35,6 +35,13 @@ export function resolveCloudSyncDelay(
   return Math.max(requestedDelayMs, cooldownRemainingMs);
 }
 
+export function shouldBypassCloudSyncCooldownForPrompt(prompt: {
+  status: string;
+  endedAt: string | null;
+}): boolean {
+  return prompt.status !== "in_progress" && Boolean(prompt.endedAt);
+}
+
 export interface DaemonRuntimeStatus {
   lastCloudSyncAt: string | null;
   lastCloudSyncError: string | null;
@@ -122,6 +129,7 @@ function buildCloudDeltaBundle(
   bundle: CloudBootstrapSyncRequest;
   promptSyncRecords: Array<{ recordId: string; recordHash: string }>;
   blobSyncRecords: Array<{ recordId: string; recordHash: string }>;
+  hasCompletedPrompts: boolean;
 } | null {
   const workspace = buildWorkspaceListItem(store, tailer, workspaceId);
   if (!workspace) {
@@ -236,6 +244,7 @@ function buildCloudDeltaBundle(
     },
     promptSyncRecords,
     blobSyncRecords,
+    hasCompletedPrompts: promptsUpsert.some((prompt) => shouldBypassCloudSyncCooldownForPrompt(prompt)),
   };
 }
 
@@ -276,22 +285,41 @@ export function createCloudSyncController({
   let lastCloudSyncNotice: string | null = null;
   let lastCompletedSyncAtMs: number | null = null;
   let pendingSyncRequested = false;
+  let pendingSyncBypassCooldown = false;
 
-  const scheduleCloudSync = (delayMs = 0) => {
+  const scheduleCloudSync = (delayMs = 0, options: { bypassCooldown?: boolean } = {}) => {
     if (!CLOUD_SYNC_ENABLED) {
       return;
     }
     if (syncInFlight) {
       pendingSyncRequested = true;
+      pendingSyncBypassCooldown = pendingSyncBypassCooldown || Boolean(options.bypassCooldown);
       return;
     }
     if (cloudSyncTimer) {
       clearTimeout(cloudSyncTimer);
     }
-    const effectiveDelayMs = resolveCloudSyncDelay(delayMs, lastCompletedSyncAtMs, Date.now());
+    const effectiveDelayMs = options.bypassCooldown
+      ? delayMs
+      : resolveCloudSyncDelay(delayMs, lastCompletedSyncAtMs, Date.now());
     cloudSyncTimer = setTimeout(() => {
       void syncCloudWorkspaces();
     }, effectiveDelayMs);
+  };
+
+  const shouldBypassCooldownForWorkspaces = (workspaceIds: string[]): boolean => {
+    const authState = store.getCloudAuthState();
+    if (!authState?.daemonToken || workspaceIds.length === 0) {
+      return false;
+    }
+    const syncScope = buildCloudSyncScope(authState);
+    for (const workspaceId of workspaceIds) {
+      const delta = buildCloudDeltaBundle(store, tailer, workspaceId, syncScope, authState.deviceId);
+      if (delta?.hasCompletedPrompts) {
+        return true;
+      }
+    }
+    return false;
   };
 
   const reportCloudSyncNotice = (message: string, tone: "info" | "warn" = "info") => {
@@ -379,8 +407,10 @@ export function createCloudSyncController({
       }
       notifyChange?.();
       if (pendingSyncRequested) {
+        const bypassCooldown = pendingSyncBypassCooldown;
         pendingSyncRequested = false;
-        scheduleCloudSync();
+        pendingSyncBypassCooldown = false;
+        scheduleCloudSync(0, { bypassCooldown });
       } else if (runtimeStatus.lastCloudSyncError) {
         scheduleCloudSync(CLOUD_SYNC_RETRY_INTERVAL_MS);
       }
@@ -390,8 +420,10 @@ export function createCloudSyncController({
   return {
     start() {
       if (CLOUD_SYNC_ENABLED) {
-        tailerUnsubscribe = tailer.subscribe(() => {
-          scheduleCloudSync(CLOUD_SYNC_EVENT_DEBOUNCE_MS);
+        tailerUnsubscribe = tailer.subscribe((update) => {
+          scheduleCloudSync(CLOUD_SYNC_EVENT_DEBOUNCE_MS, {
+            bypassCooldown: shouldBypassCooldownForWorkspaces(update.workspaceIds),
+          });
         });
         scheduleCloudSync();
       }

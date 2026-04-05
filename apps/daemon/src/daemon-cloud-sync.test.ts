@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { CLOUD_SYNC_MIN_INTERVAL_MS, resolveCloudSyncDelay } from "./daemon-cloud-sync.js";
+import {
+  CLOUD_SYNC_MIN_INTERVAL_MS,
+  resolveCloudSyncDelay,
+  shouldBypassCloudSyncCooldownForPrompt,
+} from "./daemon-cloud-sync.js";
 
 describe("cloud sync cooldown", () => {
   test("does not delay the first sync when nothing has completed yet", () => {
@@ -16,5 +20,16 @@ describe("cloud sync cooldown", () => {
 
   test("allows immediate sync again once the cooldown window passes", () => {
     expect(resolveCloudSyncDelay(0, 10_000, 10_000 + CLOUD_SYNC_MIN_INTERVAL_MS + 50)).toBe(0);
+  });
+
+  test("treats completed prompts as urgent sync candidates", () => {
+    expect(shouldBypassCloudSyncCooldownForPrompt({
+      status: "imported",
+      endedAt: "2026-04-05T00:00:00.000Z",
+    })).toBe(true);
+    expect(shouldBypassCloudSyncCooldownForPrompt({
+      status: "in_progress",
+      endedAt: null,
+    })).toBe(false);
   });
 });
