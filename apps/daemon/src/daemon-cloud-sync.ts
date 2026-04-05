@@ -13,6 +13,7 @@ import { nowIso, type WorkspaceListItem } from "@promptreel/domain";
 import { PromptreelStore } from "@promptreel/storage";
 
 const CLOUD_SYNC_EVENT_DEBOUNCE_MS = 500;
+export const CLOUD_SYNC_MIN_INTERVAL_MS = 3_000;
 const CLOUD_SYNC_RETRY_INTERVAL_MS = 4_000;
 const CLOUD_SYNC_PROMPT_RECORD_TYPE = "cloud_prompt";
 const CLOUD_SYNC_BLOB_RECORD_TYPE = "cloud_blob";
@@ -20,6 +21,19 @@ const CLOUD_SYNC_BLOB_RECORD_TYPE = "cloud_blob";
 export const CLOUD_DAEMON_ACTIVE_WINDOW_MS = 20_000;
 export const CLOUD_DAEMON_CONNECTED_WINDOW_MS = 120_000;
 export const CLOUD_SYNC_ENABLED = process.env.PROMPTREEL_ENABLE_CLOUD_SYNC === "1";
+
+export function resolveCloudSyncDelay(
+  requestedDelayMs: number,
+  lastCompletedAtMs: number | null,
+  nowMs: number,
+  minIntervalMs = CLOUD_SYNC_MIN_INTERVAL_MS
+): number {
+  if (lastCompletedAtMs == null) {
+    return requestedDelayMs;
+  }
+  const cooldownRemainingMs = Math.max(0, minIntervalMs - (nowMs - lastCompletedAtMs));
+  return Math.max(requestedDelayMs, cooldownRemainingMs);
+}
 
 export interface DaemonRuntimeStatus {
   lastCloudSyncAt: string | null;
@@ -260,6 +274,7 @@ export function createCloudSyncController({
   let cloudSyncTimer: NodeJS.Timeout | null = null;
   let tailerUnsubscribe: (() => void) | null = null;
   let lastCloudSyncNotice: string | null = null;
+  let lastCompletedSyncAtMs: number | null = null;
   let pendingSyncRequested = false;
 
   const scheduleCloudSync = (delayMs = 0) => {
@@ -273,9 +288,10 @@ export function createCloudSyncController({
     if (cloudSyncTimer) {
       clearTimeout(cloudSyncTimer);
     }
+    const effectiveDelayMs = resolveCloudSyncDelay(delayMs, lastCompletedSyncAtMs, Date.now());
     cloudSyncTimer = setTimeout(() => {
       void syncCloudWorkspaces();
-    }, delayMs);
+    }, effectiveDelayMs);
   };
 
   const reportCloudSyncNotice = (message: string, tone: "info" | "warn" = "info") => {
@@ -358,6 +374,9 @@ export function createCloudSyncController({
     } finally {
       syncInFlight = false;
       runtimeStatus.syncInFlight = false;
+      if (!runtimeStatus.lastCloudSyncError) {
+        lastCompletedSyncAtMs = Date.now();
+      }
       notifyChange?.();
       if (pendingSyncRequested) {
         pendingSyncRequested = false;
