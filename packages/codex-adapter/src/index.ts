@@ -48,6 +48,7 @@ export const LIVE_ACTIVITY_WINDOW_MS = 90_000;
 const SESSION_WATCH_DEBOUNCE_MS = 150;
 export const ACTIVE_SESSION_WATCH_DEBOUNCE_MS = 40;
 const SESSION_FOLLOWUP_RECONCILE_MS = 120;
+const ACTIVE_SESSION_POLL_INTERVAL_MS = 500;
 const SESSION_RECOVERY_SWEEP_INTERVAL_MS = 300_000;
 const SESSION_META_READ_BYTES = 8_192;
 
@@ -1646,6 +1647,7 @@ export class CodexSessionTailer {
   private readonly pendingFollowupFiles = new Set<string>();
   private readonly listeners = new Set<(update: CodexSessionTailerUpdate) => void>();
   private recoveryTimer: NodeJS.Timeout | null = null;
+  private activeSessionPollTimer: NodeJS.Timeout | null = null;
   private lastScanAt: string | null = null;
   private scanning = false;
   private activeReconcileFilePath: string | null = null;
@@ -1654,7 +1656,8 @@ export class CodexSessionTailer {
     private readonly store: PromptreelStore,
     private readonly sessionsRoot = join(homedir(), ".codex", "sessions"),
     private readonly recoverySweepIntervalMs = SESSION_RECOVERY_SWEEP_INTERVAL_MS,
-    private readonly diagnosticsLogger: CodexSessionTailerDiagnosticsLogger | null = null
+    private readonly diagnosticsLogger: CodexSessionTailerDiagnosticsLogger | null = null,
+    private readonly activeSessionPollIntervalMs = ACTIVE_SESSION_POLL_INTERVAL_MS
   ) {}
 
   start(): void {
@@ -1663,6 +1666,11 @@ export class CodexSessionTailer {
     }
     this.rescanAll("startup-scan");
     this.startWatcher();
+    if (this.activeSessionPollIntervalMs > 0) {
+      this.activeSessionPollTimer = setInterval(() => {
+        this.pollActiveSessionFiles();
+      }, this.activeSessionPollIntervalMs);
+    }
     if (this.recoverySweepIntervalMs > 0) {
       this.recoveryTimer = setInterval(() => {
         this.rescanAll("recovery-sweep");
@@ -1672,6 +1680,10 @@ export class CodexSessionTailer {
 
   stop(): void {
     this.stopWatcherInfrastructure();
+    if (this.activeSessionPollTimer) {
+      clearInterval(this.activeSessionPollTimer);
+      this.activeSessionPollTimer = null;
+    }
     if (this.recoveryTimer) {
       clearInterval(this.recoveryTimer);
       this.recoveryTimer = null;
@@ -1895,6 +1907,64 @@ export class CodexSessionTailer {
 
   private queueFullRescan(trigger = "watcher-full-rescan"): void {
     this.queueFileReconcile("__full_rescan__", trigger);
+  }
+
+  private isActiveSessionFile(match: CodexSessionFileMatch): boolean {
+    const normalizedPath = normalize(match.filePath);
+    const state = this.sessionTailStates.get(normalizedPath);
+    if (state?.openPromptIndex != null) {
+      return true;
+    }
+    if (typeof match.mtimeMs !== "number") {
+      return false;
+    }
+    return Date.now() - match.mtimeMs <= LIVE_ACTIVITY_WINDOW_MS;
+  }
+
+  private pollActiveSessionFiles(): void {
+    for (const [filePath, match] of this.trackedSessionFiles.entries()) {
+      if (!this.isActiveSessionFile(match)) {
+        continue;
+      }
+      if (!existsSync(filePath)) {
+        this.logDiagnostic(
+          [
+            "watcher=active-poll",
+            "event=missing",
+            `path=${filePath}`,
+          ].join(" ")
+        );
+        this.queueFileReconcile(filePath, "active-file-poll", 0);
+        continue;
+      }
+      try {
+        const stats = statSync(filePath);
+        const currentMtimeMs = stats.mtimeMs;
+        const currentSizeBytes = stats.size;
+        if (match.mtimeMs === currentMtimeMs && match.sizeBytes === currentSizeBytes) {
+          continue;
+        }
+        this.logDiagnostic(
+          [
+            "watcher=active-poll",
+            "event=change",
+            `path=${filePath}`,
+            `mtime_ms=${Math.trunc(currentMtimeMs)}`,
+            `size_bytes=${currentSizeBytes}`,
+          ].join(" ")
+        );
+        this.queueFileReconcile(filePath, "active-file-poll", 0);
+      } catch (error) {
+        this.logDiagnostic(
+          [
+            "watcher=active-poll",
+            "event=error",
+            `path=${filePath}`,
+            `error=${JSON.stringify(error instanceof Error ? error.message : String(error))}`,
+          ].join(" ")
+        );
+      }
+    }
   }
 
   private resolveWatchDebounceMs(filePath: string): number {

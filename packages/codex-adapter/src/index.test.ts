@@ -935,6 +935,46 @@ index 1111111..2222222 100644
     }
   });
 
+  test("polls active session files when a file watcher misses an append", async () => {
+    const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-tailer-active-poll-");
+    writeCodexSession(
+      sessionsRoot,
+      repoPath,
+      "polled-session.jsonl",
+      [eventMsg("2026-03-29T08:10:01.000Z", "user_message", "First prompt.")]
+    );
+    const store = new PromptreelStore(join(root, ".pl"));
+    const tailer = new CodexSessionTailer(store, join(root, "sessions"), 0, null, 50);
+
+    try {
+      tailer.start();
+      await waitForCondition(() => store.listWorkspaces().length === 1);
+      const workspace = store.listWorkspaces()[0]!;
+      await waitForCondition(() => store.listPrompts(workspace.id).length === 1);
+
+      const watcherMap = (tailer as unknown as { sessionFileWatchers: Map<string, { close(): void }> }).sessionFileWatchers;
+      const watchedPath = join(sessionsRoot, "polled-session.jsonl");
+      watcherMap.get(watchedPath)?.close();
+      watcherMap.delete(watchedPath);
+
+      appendFileSync(
+        watchedPath,
+        [
+          "",
+          agentMessage("2026-03-29T08:10:02.000Z", "final_answer", "First answer."),
+          eventMsg("2026-03-29T08:10:03.000Z", "user_message", "Second prompt.")
+        ].join("\n"),
+        "utf8"
+      );
+
+      await waitForCondition(() => store.listPrompts(workspace.id).length === 2, 4_000);
+      const prompts = store.listPrompts(workspace.id);
+      expect(prompts.some((prompt) => prompt.promptSummary === "Second prompt.")).toBe(true);
+    } finally {
+      tailer.stop();
+    }
+  });
+
   test("buffers partial appended jsonl lines until the event completes", async () => {
     const { root, repoPath, sessionsRoot } = createImportHarness("promptreel-tailer-watch-partial-");
     writeCodexSession(
