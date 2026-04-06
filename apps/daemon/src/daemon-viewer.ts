@@ -83,7 +83,7 @@ export async function buildViewerStatus(
           phase: device ? (isActive ? "syncing" : isConnected ? "idle" : "unavailable") : "unavailable",
           pendingDirtyWorkspaceCount: 0,
           summary: null,
-          lastSuccessfulSyncAt: null,
+          lastSuccessfulSyncAt: device?.lastSeenAt ?? null,
           lastSuccessfulSyncStats: null,
           nextScheduledSyncAt: null,
           lastErrorMessage: null,
