@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, renameSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -318,6 +318,91 @@ describe("PromptreelStore", () => {
       "user:First prompt.",
       "assistant:First answer."
     ]);
+  });
+
+  test("stores raw events without writing duplicate jsonl logs", () => {
+    const root = mkdtempSync(join(tmpdir(), "promptreel-store-raw-events-"));
+    const repoPath = join(root, "repo");
+    mkdirSync(repoPath, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repoPath, stdio: "ignore" });
+
+    const store = new PromptreelStore(join(root, ".pl"));
+    const repo = store.addRepo(repoPath);
+    const baseline = store.createSnapshot(repo.id, {
+      repoPath,
+      headSha: null,
+      branchName: null,
+      gitStatusSummary: "baseline",
+      dirtyFileHashes: {},
+      files: []
+    });
+    const ending = store.createSnapshot(repo.id, {
+      repoPath,
+      headSha: null,
+      branchName: null,
+      gitStatusSummary: "end",
+      dirtyFileHashes: {},
+      files: []
+    });
+
+    store.persistPromptBundle(repo.id, {
+      prompt: {
+        id: "prompt_raw_events",
+        workspaceId: repo.id,
+        executionPath: repoPath,
+        sessionId: "session-raw-events",
+        threadId: "thread-raw-events",
+        parentPromptEventId: null,
+        startedAt: "2026-03-29T00:00:00.000Z",
+        endedAt: "2026-03-29T00:00:01.000Z",
+        boundaryReason: "turn_completed",
+        status: "imported",
+        mode: "default",
+        promptText: "Hello",
+        promptSummary: "Hello",
+        primaryArtifactId: null,
+        baselineSnapshotId: baseline.id,
+        endSnapshotId: ending.id
+      },
+      snapshots: [baseline, ending],
+      artifacts: [],
+      artifactLinks: [],
+      gitLinks: [],
+      rawEvents: [
+        {
+          record: {
+            id: "raw_event_1",
+            workspaceId: repo.id,
+            source: "codex-session",
+            sessionId: "session-raw-events",
+            threadId: "thread-raw-events",
+            eventType: "event_msg:user_message",
+            occurredAt: "2026-03-29T00:00:00.000Z",
+            ingestPath: "session.jsonl",
+            payloadBlobId: ""
+          },
+          payload: {
+            type: "event_msg",
+            payload: {
+              type: "user_message",
+              message: "Hello"
+            }
+          }
+        }
+      ]
+    });
+
+    const detail = store.getPromptDetail(repo.id, "prompt_raw_events");
+    const rawEventLogPath = join(store.repoDir(repo.id), "raw-events", "events.jsonl");
+
+    expect(detail?.transcript).toMatchObject([
+      {
+        kind: "message",
+        role: "user",
+        text: "Hello"
+      }
+    ]);
+    expect(existsSync(rawEventLogPath)).toBe(false);
   });
 
   test("backfills web searches into transcript activity rows from raw web search calls", () => {

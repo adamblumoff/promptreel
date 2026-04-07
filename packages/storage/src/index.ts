@@ -1,7 +1,6 @@
 import { brotliCompressSync, brotliDecompressSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
   renameSync,
@@ -409,7 +408,6 @@ export class PromptreelStore {
            (id, repo_id, source, session_id, thread_id, event_type, occurred_at, payload_blob_id, ingest_path)
            VALUES (:id, :workspaceId, :source, :sessionId, :threadId, :eventType, :occurredAt, :payloadBlobId, :ingestPath)`
         ).run(asSqlParams({ ...raw.record, payloadBlobId }));
-        this.appendRawEventLog(workspaceId, { ...raw.record, payloadBlobId });
       }
 
       for (const snapshot of bundle.snapshots) {
@@ -1387,11 +1385,6 @@ export class PromptreelStore {
   private openWorkspace(workspaceId: string): DatabaseSync {
     this.ensureWorkspaceLayout(workspaceId);
     return this.openDatabase(this.workspaceDbPath(workspaceId));
-  }
-
-  private appendRawEventLog(workspaceId: string, event: RawEventRecord): void {
-    const filePath = join(this.workspaceDir(workspaceId), "raw-events", "events.jsonl");
-    appendFileSync(filePath, `${JSON.stringify(event)}\n`);
   }
 
   private getArtifactsByPrompt(db: DatabaseSync): Map<string, ArtifactRecord[]> {
