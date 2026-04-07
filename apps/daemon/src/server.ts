@@ -108,15 +108,34 @@ export function buildServer() {
     workspaceIds?: string[];
     threadKeys?: string[];
   };
-  const streamSubscribers = new Set<(payload: DaemonEventPayload) => void>();
-  const broadcastDaemonEvent = (payload: DaemonEventPayload) => {
-    for (const subscriber of streamSubscribers) {
+  const localStreamSubscribers = new Set<(payload: DaemonEventPayload) => void>();
+  const cloudStreamSubscribersByUserId = new Map<string, Set<(payload: DaemonEventPayload) => void>>();
+  const broadcastLocalDaemonEvent = (payload: DaemonEventPayload) => {
+    for (const subscriber of localStreamSubscribers) {
+      subscriber(payload);
+    }
+  };
+  const broadcastCloudViewerEvent = (userId: string, payload: DaemonEventPayload) => {
+    const subscribers = cloudStreamSubscribersByUserId.get(userId);
+    if (!subscribers) {
+      return;
+    }
+    for (const subscriber of subscribers) {
       subscriber(payload);
     }
   };
   tailer.subscribe((update) => {
-    broadcastDaemonEvent(update);
+    broadcastLocalDaemonEvent(update);
   });
+
+  const resolveRequestCloudViewerUser = async (headers: Record<string, unknown>) => {
+    const cloudViewerRequested = headers["x-promptreel-cloud-viewer"] === "1";
+    const cloudUser = await resolveCloudViewerUser(headers, cloudStore);
+    if (cloudViewerRequested && !cloudUser) {
+      throw httpError(401, "Unable to verify cloud viewer");
+    }
+    return cloudUser;
+  };
 
   app.register(cors, {
     origin: true
@@ -130,11 +149,12 @@ export function buildServer() {
   }));
 
   app.get("/api/viewer-status", async (request): Promise<ViewerStatusResponse> => {
-    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
+    const cloudUser = await resolveRequestCloudViewerUser(request.headers as Record<string, unknown>);
     return buildViewerStatus(cloudUser, cloudStore, tailer, runtimeStatus);
   });
 
   app.get("/api/events", async (request, reply) => {
+    const cloudUser = await resolveRequestCloudViewerUser(request.headers as Record<string, unknown>);
     reply.hijack();
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -150,7 +170,13 @@ export function buildServer() {
     const subscriber = (payload: DaemonEventPayload) => {
       writeEvent("update", payload);
     };
-    streamSubscribers.add(subscriber);
+    if (cloudUser) {
+      const existing = cloudStreamSubscribersByUserId.get(cloudUser.id) ?? new Set<(payload: DaemonEventPayload) => void>();
+      existing.add(subscriber);
+      cloudStreamSubscribersByUserId.set(cloudUser.id, existing);
+    } else {
+      localStreamSubscribers.add(subscriber);
+    }
     const keepAlive = setInterval(() => {
       writeEvent("ping", { at: new Date().toISOString() });
     }, 25_000);
@@ -161,7 +187,15 @@ export function buildServer() {
       }
       closed = true;
       clearInterval(keepAlive);
-      streamSubscribers.delete(subscriber);
+      if (cloudUser) {
+        const subscribers = cloudStreamSubscribersByUserId.get(cloudUser.id);
+        subscribers?.delete(subscriber);
+        if (subscribers && subscribers.size === 0) {
+          cloudStreamSubscribersByUserId.delete(cloudUser.id);
+        }
+      } else {
+        localStreamSubscribers.delete(subscriber);
+      }
       reply.raw.end();
     };
     request.raw.on("close", cleanup);
@@ -169,7 +203,7 @@ export function buildServer() {
   });
 
   app.get("/api/workspaces", async (request): Promise<WorkspaceListResponse> => {
-    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
+    const cloudUser = await resolveRequestCloudViewerUser(request.headers as Record<string, unknown>);
     return {
       workspaces: cloudUser ? await cloudStore.listCloudWorkspaces(cloudUser.id) : listLocalWorkspaceItems(store, tailer)
     };
@@ -193,7 +227,7 @@ export function buildServer() {
   }));
 
   app.get<{ Querystring: { workspaceId: string } }>("/api/threads", async (request): Promise<ThreadListResponse> => {
-    const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
+    const cloudUser = await resolveRequestCloudViewerUser(request.headers as Record<string, unknown>);
     if (cloudUser) {
       return {
         threads: await cloudStore.listCloudThreads(cloudUser.id, request.query.workspaceId)
@@ -212,7 +246,7 @@ export function buildServer() {
     "/api/prompt-events",
     async (request): Promise<PromptEventListResponse> => {
       const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
-      const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
+      const cloudUser = await resolveRequestCloudViewerUser(request.headers as Record<string, unknown>);
       return {
         prompts: cloudUser
           ? await cloudStore.listCloudPrompts(cloudUser.id, workspaceId, request.query.threadId ?? null)
@@ -225,7 +259,7 @@ export function buildServer() {
     "/api/prompt-events/:id",
     async (request): Promise<PromptEventResponse> => {
       const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
-      const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
+      const cloudUser = await resolveRequestCloudViewerUser(request.headers as Record<string, unknown>);
       const prompt = cloudUser
         ? await cloudStore.getCloudPromptDetail(cloudUser.id, workspaceId, request.params.id)
         : store.getPromptDetail(workspaceId, request.params.id);
@@ -265,7 +299,7 @@ export function buildServer() {
     async (request, reply): Promise<BlobResponse> => {
       const workspaceId = request.query.workspaceId ?? request.query.repoId ?? "";
       try {
-        const cloudUser = await resolveCloudViewerUser(request.headers as Record<string, unknown>, cloudStore);
+        const cloudUser = await resolveRequestCloudViewerUser(request.headers as Record<string, unknown>);
         const content = cloudUser
           ? await cloudStore.readCloudBlob(cloudUser.id, workspaceId, request.params.blobId)
           : store.readBlob(workspaceId, request.params.blobId);
@@ -286,6 +320,11 @@ export function buildServer() {
       throw httpError(401, "Invalid daemon token");
     }
     const result = await cloudStore.upsertCloudWorkspaceBundle(auth.user.id, request.body);
+    broadcastCloudViewerEvent(auth.user.id, {
+      kind: "cloud",
+      at: new Date().toISOString(),
+      workspaceIds: [result.workspaceId],
+    });
     return {
       ok: true,
       workspaceId: result.workspaceId,
@@ -395,11 +434,11 @@ export function buildServer() {
     });
   }
 
-  return { app, store, tailer, cloudStore, runtimeStatus, broadcastDaemonEvent };
+  return { app, store, tailer, cloudStore, runtimeStatus, broadcastLocalDaemonEvent };
 }
 
 export async function startDaemon() {
-  const { app, store, tailer, cloudStore, runtimeStatus, broadcastDaemonEvent } = buildServer();
+  const { app, store, tailer, cloudStore, runtimeStatus, broadcastLocalDaemonEvent } = buildServer();
   const port = Number(process.env.PORT ?? process.env.PROMPTREEL_PORT ?? "4312");
   const host = process.env.PROMPTREEL_HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
   const cloudSyncController = createCloudSyncController({
@@ -407,7 +446,7 @@ export async function startDaemon() {
     tailer,
     runtimeStatus,
     notifyChange: () => {
-      broadcastDaemonEvent({ kind: "cloud", at: new Date().toISOString() });
+      broadcastLocalDaemonEvent({ kind: "cloud", at: new Date().toISOString() });
     },
   });
 

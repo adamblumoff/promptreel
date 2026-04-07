@@ -8,7 +8,7 @@ import {
   fetchWorkspaces,
   rescanSessions,
   type LocalViewerEvent,
-  subscribeToLocalViewerEvents,
+  subscribeToViewerEvents,
 } from "./api";
 import { CliLoginPage } from "./auth";
 import type {
@@ -65,7 +65,6 @@ async function warmDiffViewer() {
   await import("./diff-viewer");
 }
 
-const VIEWER_STATUS_POLL_MS = 5_000;
 const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
 function formatLastSeenLabel(timestamp: string | null): string | null {
@@ -133,18 +132,18 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   const [blobCache, setBlobCache] = useState<Record<string, string>>({});
   const [blobLoadingById, setBlobLoadingById] = useState<Record<string, boolean>>({});
   const [viewerStatus, setViewerStatus] = useState<ViewerStatus | null>(null);
-  const [localRefreshTick, setLocalRefreshTick] = useState(0);
-  const [localRefreshEvent, setLocalRefreshEvent] = useState<LocalViewerEvent | null>(null);
+  const [viewerRefreshTick, setViewerRefreshTick] = useState(0);
+  const [viewerRefreshEvent, setViewerRefreshEvent] = useState<LocalViewerEvent | null>(null);
   const detailControllers = useRef<Record<string, AbortController | undefined>>({});
   const previousPromptStatusesRef = useRef<Partial<Record<string, PromptListItem["status"]>>>({});
   const promptRevisionsRef = useRef<Record<string, string>>({});
   const localThreadRefreshRef = useRef<Record<string, number>>({});
   const localPromptRefreshRef = useRef<Record<string, number>>({});
   const localDetailRefreshRef = useRef<Record<string, number>>({});
-  const hostedPromptRefreshRef = useRef<Record<string, string>>({});
-  const hostedDetailRefreshRef = useRef<Record<string, string>>({});
+  const hostedPromptRefreshRef = useRef<Record<string, number>>({});
+  const hostedDetailRefreshRef = useRef<Record<string, number>>({});
   const isHostedViewer = viewerMode === "cloud";
-  const hostedSyncKey = isHostedViewer ? viewerStatus?.daemon.sync.lastSuccessfulSyncAt ?? "" : "";
+  const hostedRefreshTick = isHostedViewer ? viewerRefreshTick : 0;
 
   /* visibility */
   useEffect(() => {
@@ -160,13 +159,10 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   useEffect(() => persist(KEYS.transcriptOrder, transcriptOrder), [transcriptOrder]);
 
   useEffect(() => {
-    if (isHostedViewer) {
-      return;
-    }
-    return subscribeToLocalViewerEvents((event) => {
+    return subscribeToViewerEvents((event) => {
       startTransition(() => {
-        setLocalRefreshEvent(event);
-        setLocalRefreshTick((current) => current + 1);
+        setViewerRefreshEvent(event);
+        setViewerRefreshTick((current) => current + 1);
       });
     });
   }, [isHostedViewer]);
@@ -195,19 +191,11 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     };
 
     void go();
-    if (!isHostedViewer) {
-      return () => {
-        live = false;
-        ctrl?.abort();
-      };
-    }
-    const id = setInterval(() => void go(), VIEWER_STATUS_POLL_MS);
     return () => {
       live = false;
       ctrl?.abort();
-      clearInterval(id);
     };
-  }, [isHostedViewer, localRefreshTick, visible]);
+  }, [isHostedViewer, viewerRefreshTick, visible]);
 
   /* ── fetch workspaces ─────────────────────────────────────────────────── */
 
@@ -235,7 +223,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
 
     void go();
     return () => { live = false; ctrl?.abort(); };
-  }, [hostedSyncKey, isHostedViewer, localRefreshTick, visible]);
+  }, [hostedRefreshTick, isHostedViewer, viewerRefreshTick, visible]);
 
   /* ── fetch threads ────────────────────────────────────────────────────── */
 
@@ -243,8 +231,8 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   const localEventTouchesSelectedWorkspace = Boolean(
     !isHostedViewer
     && selectedWorkspaceId
-    && localRefreshEvent?.kind === "ingest"
-    && localRefreshEvent.workspaceIds?.includes(selectedWorkspaceId)
+    && viewerRefreshEvent?.kind === "ingest"
+    && viewerRefreshEvent.workspaceIds?.includes(selectedWorkspaceId)
   );
 
   useEffect(() => {
@@ -274,13 +262,13 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     }
 
     const previousTick = localThreadRefreshRef.current[selectedWorkspaceId] ?? -1;
-    const shouldRefresh = !hasCached || (previousTick !== localRefreshTick && localEventTouchesSelectedWorkspace);
+    const shouldRefresh = !hasCached || (previousTick !== viewerRefreshTick && localEventTouchesSelectedWorkspace);
     if (shouldRefresh) {
-      localThreadRefreshRef.current[selectedWorkspaceId] = localRefreshTick;
+      localThreadRefreshRef.current[selectedWorkspaceId] = viewerRefreshTick;
       void go();
     }
     return () => { live = false; ctrl?.abort(); };
-  }, [hostedSyncKey, isHostedViewer, localEventTouchesSelectedWorkspace, localRefreshTick, visible, selectedWorkspaceId]);
+  }, [hostedRefreshTick, isHostedViewer, localEventTouchesSelectedWorkspace, viewerRefreshTick, visible, selectedWorkspaceId]);
 
   /* ── fetch prompts ────────────────────────────────────────────────────── */
 
@@ -291,10 +279,10 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   const localEventTouchesSelectedThread = Boolean(
     !isHostedViewer
     && selThreadKey
-    && localRefreshEvent?.kind === "ingest"
+    && viewerRefreshEvent?.kind === "ingest"
     && (
-      localRefreshEvent.threadKeys?.includes(selThreadKey)
-      || localRefreshEvent.workspaceIds?.includes(selectedWorkspaceId)
+      viewerRefreshEvent.threadKeys?.includes(selThreadKey)
+      || viewerRefreshEvent.workspaceIds?.includes(selectedWorkspaceId)
     )
   );
   const pKey = selectedWorkspaceId && selectedThreadId
@@ -329,18 +317,18 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
 
     const previousRevision = promptRevisionsRef.current[ck];
     const previousLocalTick = localPromptRefreshRef.current[ck] ?? -1;
-    const previousHostedSyncKey = hostedPromptRefreshRef.current[ck] ?? "";
+    const previousHostedRefreshTick = hostedPromptRefreshRef.current[ck] ?? -1;
     const shouldRefresh = !hasCached
       || previousRevision !== selThreadRevision
       || (isHostedViewer
-        ? previousHostedSyncKey !== hostedSyncKey
-        : previousLocalTick !== localRefreshTick && localEventTouchesSelectedThread);
+        ? previousHostedRefreshTick !== hostedRefreshTick
+        : previousLocalTick !== viewerRefreshTick && localEventTouchesSelectedThread);
     if (shouldRefresh) {
       promptRevisionsRef.current[ck] = selThreadRevision;
       if (isHostedViewer) {
-        hostedPromptRefreshRef.current[ck] = hostedSyncKey;
+        hostedPromptRefreshRef.current[ck] = hostedRefreshTick;
       } else {
-        localPromptRefreshRef.current[ck] = localRefreshTick;
+        localPromptRefreshRef.current[ck] = viewerRefreshTick;
       }
       void go();
     }
@@ -348,7 +336,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
       live = false;
       ctrl?.abort();
     };
-  }, [cachedPrompts, hostedSyncKey, isHostedViewer, localEventTouchesSelectedThread, localRefreshTick, visible, selThreadRevision, selectedThreadId, selThreadKey, selectedWorkspaceId]);
+  }, [cachedPrompts, hostedRefreshTick, isHostedViewer, localEventTouchesSelectedThread, viewerRefreshTick, visible, selThreadRevision, selectedThreadId, selThreadKey, selectedWorkspaceId]);
 
   const prompts = pKey ? (promptsByKey[pKey] ?? []) : [];
 
@@ -402,19 +390,19 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
     if (!ep) { setExpandedPromptId(null); return; }
     if (!detailsById[expandedPromptId]) void loadDetail(selectedWorkspaceId, expandedPromptId);
     if (isHostedViewer) {
-      const previousHostedSyncKey = hostedDetailRefreshRef.current[expandedPromptId] ?? "";
-      if (detailsById[expandedPromptId] && previousHostedSyncKey !== hostedSyncKey) {
-        hostedDetailRefreshRef.current[expandedPromptId] = hostedSyncKey;
+      const previousHostedRefreshTick = hostedDetailRefreshRef.current[expandedPromptId] ?? -1;
+      if (detailsById[expandedPromptId] && previousHostedRefreshTick !== hostedRefreshTick) {
+        hostedDetailRefreshRef.current[expandedPromptId] = hostedRefreshTick;
         void loadDetail(selectedWorkspaceId, expandedPromptId, true);
       }
       return;
     }
     const previousTick = localDetailRefreshRef.current[expandedPromptId] ?? -1;
-    if (previousTick !== localRefreshTick && detailsById[expandedPromptId] && localEventTouchesSelectedThread) {
-      localDetailRefreshRef.current[expandedPromptId] = localRefreshTick;
+    if (previousTick !== viewerRefreshTick && detailsById[expandedPromptId] && localEventTouchesSelectedThread) {
+      localDetailRefreshRef.current[expandedPromptId] = viewerRefreshTick;
       void loadDetail(selectedWorkspaceId, expandedPromptId, true);
     }
-  }, [detailsById, expandedPromptId, hostedSyncKey, isHostedViewer, localEventTouchesSelectedThread, localRefreshTick, prompts, selectedWorkspaceId, visible]);
+  }, [detailsById, expandedPromptId, hostedRefreshTick, isHostedViewer, localEventTouchesSelectedThread, viewerRefreshTick, prompts, selectedWorkspaceId, visible]);
 
   useEffect(() => {
     if (!selectedWorkspaceId || !expandedPromptId) return;
