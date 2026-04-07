@@ -10,6 +10,7 @@ import {
   ACTIVE_SESSION_WATCH_DEBOUNCE_MS,
   CodexSessionTailer,
   importCodexSessions,
+  resolveActiveSessionPollIntervalMs,
   resolveSessionWatchDebounceMs
 } from "./index";
 
@@ -1106,6 +1107,33 @@ index 1111111..2222222 100644
       hasOpenPrompt: false,
       wasRecentlyUpdated: false
     })).toBe(150);
+  });
+
+  test("uses adaptive polling tiers for active session files", () => {
+    expect(resolveActiveSessionPollIntervalMs({
+      hasOpenPrompt: false,
+      msSinceLastUpdate: null
+    })).toBe(2_000);
+
+    expect(resolveActiveSessionPollIntervalMs({
+      hasOpenPrompt: false,
+      msSinceLastUpdate: 3_000
+    })).toBe(2_000);
+
+    expect(resolveActiveSessionPollIntervalMs({
+      hasOpenPrompt: true,
+      msSinceLastUpdate: 12_000
+    })).toBe(2_000);
+
+    expect(resolveActiveSessionPollIntervalMs({
+      hasOpenPrompt: false,
+      msSinceLastUpdate: 12_000
+    })).toBe(2_000);
+
+    expect(resolveActiveSessionPollIntervalMs({
+      hasOpenPrompt: false,
+      msSinceLastUpdate: 45_000
+    })).toBe(5_000);
   });
 
   test("marks a same-file watcher event for follow-up when reconcile is already in flight", () => {

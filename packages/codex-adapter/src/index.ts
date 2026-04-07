@@ -48,7 +48,11 @@ export const LIVE_ACTIVITY_WINDOW_MS = 90_000;
 const SESSION_WATCH_DEBOUNCE_MS = 150;
 export const ACTIVE_SESSION_WATCH_DEBOUNCE_MS = 40;
 const SESSION_FOLLOWUP_RECONCILE_MS = 120;
-const ACTIVE_SESSION_POLL_INTERVAL_MS = 500;
+const ACTIVE_SESSION_POLL_INTERVAL_MS = 2_000;
+const ACTIVE_SESSION_POLL_HOT_WINDOW_MS = 5_000;
+const ACTIVE_SESSION_POLL_WARM_WINDOW_MS = 20_000;
+const ACTIVE_SESSION_POLL_WARM_INTERVAL_MS = 2_000;
+const ACTIVE_SESSION_POLL_QUIET_INTERVAL_MS = 5_000;
 const SESSION_RECOVERY_SWEEP_INTERVAL_MS = 300_000;
 const SESSION_META_READ_BYTES = 8_192;
 
@@ -1180,6 +1184,19 @@ export function resolveSessionWatchDebounceMs(options: {
   return SESSION_WATCH_DEBOUNCE_MS;
 }
 
+export function resolveActiveSessionPollIntervalMs(options: {
+  hasOpenPrompt: boolean;
+  msSinceLastUpdate: number | null;
+}): number {
+  if (options.msSinceLastUpdate == null || options.msSinceLastUpdate <= ACTIVE_SESSION_POLL_HOT_WINDOW_MS) {
+    return ACTIVE_SESSION_POLL_INTERVAL_MS;
+  }
+  if (options.hasOpenPrompt || options.msSinceLastUpdate <= ACTIVE_SESSION_POLL_WARM_WINDOW_MS) {
+    return ACTIVE_SESSION_POLL_WARM_INTERVAL_MS;
+  }
+  return ACTIVE_SESSION_POLL_QUIET_INTERVAL_MS;
+}
+
 function ensureWorkspaceForSessionFile(
   store: PromptreelStore,
   file: CodexSessionFileMatch
@@ -1643,6 +1660,7 @@ export class CodexSessionTailer {
   private readonly sessionTailStates = new Map<string, SessionTailState>();
   private readonly directoryWatchers = new Map<string, FSWatcher>();
   private readonly sessionFileWatchers = new Map<string, FSWatcher>();
+  private readonly nextActivePollAtByFile = new Map<string, number>();
   private readonly pendingFileTimers = new Map<string, NodeJS.Timeout>();
   private readonly pendingFollowupFiles = new Set<string>();
   private readonly listeners = new Set<(update: CodexSessionTailerUpdate) => void>();
@@ -1693,6 +1711,7 @@ export class CodexSessionTailer {
     }
     this.pendingFileTimers.clear();
     this.sessionTailStates.clear();
+    this.nextActivePollAtByFile.clear();
   }
 
   scanNow(): IngestionStatus {
@@ -1898,10 +1917,17 @@ export class CodexSessionTailer {
   }
 
   private pollActiveSessionFiles(): void {
+    const now = Date.now();
     for (const [filePath, match] of this.trackedSessionFiles.entries()) {
       if (!this.isActiveSessionFile(match)) {
+        this.nextActivePollAtByFile.delete(filePath);
         continue;
       }
+      const nextPollAt = this.nextActivePollAtByFile.get(filePath) ?? 0;
+      if (nextPollAt > now) {
+        continue;
+      }
+      this.nextActivePollAtByFile.set(filePath, now + this.resolveActiveSessionPollIntervalMs(filePath, match));
       if (!existsSync(filePath)) {
         this.queueFileReconcile(filePath, "active-file-poll", 0);
         continue;
@@ -1925,6 +1951,15 @@ export class CodexSessionTailer {
         );
       }
     }
+  }
+
+  private resolveActiveSessionPollIntervalMs(filePath: string, match: CodexSessionFileMatch): number {
+    const state = this.sessionTailStates.get(filePath);
+    const msSinceLastUpdate = typeof match.mtimeMs === "number" ? Math.max(0, Date.now() - match.mtimeMs) : null;
+    return resolveActiveSessionPollIntervalMs({
+      hasOpenPrompt: state?.openPromptIndex != null,
+      msSinceLastUpdate
+    });
   }
 
   private resolveWatchDebounceMs(filePath: string): number {
@@ -2148,6 +2183,10 @@ export class CodexSessionTailer {
         if (!deltaResult) {
           this.sessionTailStates.set(filePath, this.buildTailState(canonicalMatch));
         }
+        this.nextActivePollAtByFile.set(
+          filePath,
+          Date.now() + this.resolveActiveSessionPollIntervalMs(filePath, canonicalMatch)
+        );
         this.logDiagnostic(
           [
             `trigger=${trigger}`,
@@ -2226,6 +2265,7 @@ export class CodexSessionTailer {
     this.closeSessionFileWatcher(filePath);
     this.trackedSessionFiles.delete(filePath);
     this.sessionTailStates.delete(filePath);
+    this.nextActivePollAtByFile.delete(filePath);
   }
 
   private recordWorkspaceImportSuccess(
