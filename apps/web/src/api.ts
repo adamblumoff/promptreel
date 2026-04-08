@@ -2,6 +2,7 @@ import type {
   Health,
   PromptDetail,
   PromptListItem,
+  PromptSearchItem,
   ThreadSummary,
   ViewerStatus,
   Workspace
@@ -121,6 +122,47 @@ export async function fetchPrompts(
     options
   );
   return data.prompts;
+}
+
+export async function fetchPromptSearchIndex(options: RequestOptions = {}): Promise<PromptSearchItem[]> {
+  try {
+    const data = await getJson<{ prompts: PromptSearchItem[] }>("/prompt-search", options);
+    return data.prompts;
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("404")) {
+      throw error;
+    }
+  }
+
+  const workspaces = await fetchWorkspaces(options);
+  const promptGroups = await Promise.all(
+    workspaces.map(async (workspace) => {
+      const threads = await fetchThreads(workspace.id, options);
+      const promptsByThread = await Promise.all(
+        threads.map(async (thread) => {
+          const lookupKey = thread.threadId ?? thread.sessionId;
+          if (!lookupKey) {
+            return [] as PromptSearchItem[];
+          }
+          const prompts = await fetchPrompts(workspace.id, lookupKey, options);
+          return prompts.map((prompt) => ({
+            promptId: prompt.id,
+            workspaceId: workspace.id,
+            threadId: thread.id,
+            workspaceSlug: workspace.slug,
+            threadTitle: thread.lastPromptSummary || prompt.promptSummary || "Untitled thread",
+            promptSummary: prompt.promptSummary,
+            startedAt: prompt.startedAt,
+          }));
+        })
+      );
+      return promptsByThread.flat();
+    })
+  );
+
+  return promptGroups
+    .flat()
+    .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
 }
 
 export async function fetchPromptDetail(

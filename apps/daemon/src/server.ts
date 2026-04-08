@@ -20,6 +20,7 @@ import type {
   PlanTraceResponse,
   PromptEventListResponse,
   PromptEventResponse,
+  PromptSearchResponse,
   RepoCreateRequest,
   RepoCreateResponse,
   RepoListResponse,
@@ -32,7 +33,7 @@ import type {
 } from "@promptreel/api-contracts";
 import { CodexSessionTailer } from "@promptreel/codex-adapter";
 import { PromptreelStore } from "@promptreel/storage";
-import type { AuthUserProfile, WorkspaceListItem } from "@promptreel/domain";
+import { threadSummaryId, type PromptEventListItem, type ThreadSummary, type WorkspaceListItem } from "@promptreel/domain";
 import { createCloudStore } from "./cloud-store.js";
 import {
   CLOUD_DAEMON_ACTIVE_WINDOW_MS,
@@ -135,6 +136,67 @@ export function buildServer() {
       throw httpError(401, "Unable to verify cloud viewer");
     }
     return cloudUser;
+  };
+
+  const toPromptSearchLookupKey = (prompt: Pick<PromptEventListItem, "id" | "threadId" | "sessionId">): string =>
+    prompt.threadId ?? prompt.sessionId ?? `prompt:${prompt.id}`;
+
+  const toThreadLookup = (threads: ThreadSummary[]): Map<string, ThreadSummary> => {
+    const lookup = new Map<string, ThreadSummary>();
+    for (const thread of threads) {
+      const key = thread.threadId ?? thread.sessionId;
+      if (key) {
+        lookup.set(key, thread);
+      }
+    }
+    return lookup;
+  };
+
+  const toPromptSearchItem = (
+    workspace: WorkspaceListItem,
+    prompt: PromptEventListItem,
+    threadLookup: Map<string, ThreadSummary>
+  ): PromptSearchResponse["prompts"][number] => {
+    const lookupKey = toPromptSearchLookupKey(prompt);
+    const matchedThread = threadLookup.get(prompt.threadId ?? prompt.sessionId ?? "");
+    return {
+      promptId: prompt.id,
+      workspaceId: workspace.id,
+      threadId: matchedThread?.id ?? threadSummaryId(workspace.id, lookupKey),
+      workspaceSlug: workspace.slug,
+      threadTitle: matchedThread?.lastPromptSummary || prompt.promptSummary || "Untitled thread",
+      promptSummary: prompt.promptSummary,
+      startedAt: prompt.startedAt,
+    };
+  };
+
+  const listLocalPromptSearchItems = (): PromptSearchResponse["prompts"] => {
+    const workspaces = listLocalWorkspaceItems(store, tailer);
+    return workspaces
+      .flatMap((workspace) => {
+        const threadLookup = toThreadLookup(store.listThreads(workspace.id));
+        return store
+          .listPrompts(workspace.id)
+          .map((prompt) => toPromptSearchItem(workspace, prompt, threadLookup));
+      })
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+  };
+
+  const listCloudPromptSearchItems = async (userId: string): Promise<PromptSearchResponse["prompts"]> => {
+    const workspaces = await cloudStore.listCloudWorkspaces(userId);
+    const resultGroups = await Promise.all(
+      workspaces.map(async (workspace) => {
+        const [threads, prompts] = await Promise.all([
+          cloudStore.listCloudThreads(userId, workspace.id),
+          cloudStore.listCloudPrompts(userId, workspace.id),
+        ]);
+        const threadLookup = toThreadLookup(threads);
+        return prompts.map((prompt) => toPromptSearchItem(workspace, prompt, threadLookup));
+      })
+    );
+    return resultGroups
+      .flat()
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
   };
 
   app.register(cors, {
@@ -254,6 +316,15 @@ export function buildServer() {
       };
     }
   );
+
+  app.get("/api/prompt-search", async (request): Promise<PromptSearchResponse> => {
+    const cloudUser = await resolveRequestCloudViewerUser(request.headers as Record<string, unknown>);
+    return {
+      prompts: cloudUser
+        ? await listCloudPromptSearchItems(cloudUser.id)
+        : listLocalPromptSearchItems(),
+    };
+  });
 
   app.get<{ Querystring: { workspaceId?: string; repoId?: string }; Params: { id: string } }>(
     "/api/prompt-events/:id",

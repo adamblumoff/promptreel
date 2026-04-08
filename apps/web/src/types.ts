@@ -107,6 +107,16 @@ export type PromptListItem = {
   isLiveDerived: boolean;
 };
 
+export type PromptSearchItem = {
+  promptId: string;
+  workspaceId: string;
+  threadId: string;
+  workspaceSlug: string;
+  threadTitle: string;
+  promptSummary: string;
+  startedAt: string;
+};
+
 export type Artifact = {
   id: string;
   promptEventId: string;

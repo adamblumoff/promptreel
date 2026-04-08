@@ -51,6 +51,20 @@ export interface PromptEventListResponse {
   prompts: PromptEventListItem[];
 }
 
+export interface PromptSearchItem {
+  promptId: string;
+  workspaceId: string;
+  threadId: string;
+  workspaceSlug: string;
+  threadTitle: string;
+  promptSummary: string;
+  startedAt: string;
+}
+
+export interface PromptSearchResponse {
+  prompts: PromptSearchItem[];
+}
+
 export interface PromptEventResponse {
   prompt: PromptEventDetail;
 }

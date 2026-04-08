@@ -1,9 +1,10 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchBlob,
   fetchViewerStatus,
   fetchPromptDetail,
   fetchPrompts,
+  fetchPromptSearchIndex,
   fetchThreads,
   fetchWorkspaces,
   rescanSessions,
@@ -14,6 +15,7 @@ import { CliLoginPage } from "./auth";
 import type {
   PromptDetail,
   PromptListItem,
+  PromptSearchItem,
   ThreadSummary,
   ViewerStatus,
   Workspace,
@@ -29,13 +31,13 @@ import {
   sortWorkspacesByActivity,
   toPromptDetailViewModel,
   toPromptRowViewModel,
-  toThreadRowViewModel,
   type PromptDetailViewModel,
 } from "./view-models";
 import {
   getPromptIdsNeedingDetailRefresh,
   mapPromptStatuses,
 } from "./prompt-detail-state";
+import { filterPromptSearchItems } from "./prompt-search";
 
 /* ─── Storage helpers ───────────────────────────────────────────────────── */
 
@@ -116,6 +118,9 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   const [promptsByKey, setPromptsByKey] = useState<Record<string, PromptListItem[]>>({});
   const [expandedPromptId, setExpandedPromptId] = useState<string | null>(null);
   const [detailsById, setDetailsById] = useState<Record<string, PromptDetail>>({});
+  const [promptSearchItems, setPromptSearchItems] = useState<PromptSearchItem[]>([]);
+  const [promptSearchLoading, setPromptSearchLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const [detailLoadingById, setDetailLoadingById] = useState<Record<string, boolean>>({});
   const [detailErrorById, setDetailErrorById] = useState<Record<string, string | null>>({});
   const [isRescanning, setIsRescanning] = useState(false);
@@ -134,6 +139,11 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   const [viewerStatus, setViewerStatus] = useState<ViewerStatus | null>(null);
   const [viewerRefreshTick, setViewerRefreshTick] = useState(0);
   const [viewerRefreshEvent, setViewerRefreshEvent] = useState<LocalViewerEvent | null>(null);
+  const [pendingSearchSelection, setPendingSearchSelection] = useState<{
+    workspaceId: string;
+    threadId: string;
+    promptId: string;
+  } | null>(null);
   const detailControllers = useRef<Record<string, AbortController | undefined>>({});
   const previousPromptStatusesRef = useRef<Partial<Record<string, PromptListItem["status"]>>>({});
   const promptRevisionsRef = useRef<Record<string, string>>({});
@@ -196,6 +206,41 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
       ctrl?.abort();
     };
   }, [isHostedViewer, viewerRefreshTick, visible]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    let live = true;
+    let ctrl: AbortController | null = null;
+    const go = async () => {
+      ctrl?.abort();
+      ctrl = new AbortController();
+      setPromptSearchLoading(true);
+      try {
+        const prompts = await fetchPromptSearchIndex({ signal: ctrl.signal });
+        if (!live) {
+          return;
+        }
+        setPromptSearchItems(prompts);
+      } catch (error) {
+        if (!live || isAbort(error)) {
+          return;
+        }
+      } finally {
+        if (live) {
+          setPromptSearchLoading(false);
+        }
+      }
+    };
+
+    void go();
+    return () => {
+      live = false;
+      ctrl?.abort();
+    };
+  }, [hostedRefreshTick, isHostedViewer, viewerRefreshTick, visible]);
 
   /* ── fetch workspaces ─────────────────────────────────────────────────── */
 
@@ -339,6 +384,7 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   }, [cachedPrompts, hostedRefreshTick, isHostedViewer, localEventTouchesSelectedThread, viewerRefreshTick, visible, selThreadRevision, selectedThreadId, selThreadKey, selectedWorkspaceId]);
 
   const prompts = pKey ? (promptsByKey[pKey] ?? []) : [];
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
   useEffect(() => {
     previousPromptStatusesRef.current = {};
@@ -383,6 +429,29 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
       setBlobLoadingById((c) => ({ ...c, [blobId]: false }));
     }
   }
+
+  useEffect(() => {
+    if (!pendingSearchSelection) {
+      return;
+    }
+    if (
+      pendingSearchSelection.workspaceId !== selectedWorkspaceId
+      || pendingSearchSelection.threadId !== selectedThreadId
+    ) {
+      return;
+    }
+    if (prompts.length === 0) {
+      return;
+    }
+    const matchingPrompt = prompts.find((prompt) => prompt.id === pendingSearchSelection.promptId);
+    if (!matchingPrompt) {
+      setPendingSearchSelection(null);
+      return;
+    }
+    setExpandedPromptId(matchingPrompt.id);
+    void loadDetail(selectedWorkspaceId, matchingPrompt.id);
+    setPendingSearchSelection(null);
+  }, [pendingSearchSelection, prompts, selectedThreadId, selectedWorkspaceId]);
 
   useEffect(() => {
     if (!selectedWorkspaceId || !expandedPromptId || !visible) return;
@@ -448,15 +517,6 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   /* ── derived view models ──────────────────────────────────────────────── */
 
   const wsSidebarItems = buildWorkspaceSidebarItems(workspaces, selectedWorkspaceId);
-  const threadRows = useMemo(
-    () =>
-      [...threads]
-        .sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt))
-        .map(toThreadRowViewModel),
-    [threads]
-  );
-  const selThreadRow = threadRows.find((t) => t.id === selectedThreadId) ?? null;
-
   const promptRows = useMemo(
     () =>
       [...prompts.map(toPromptRowViewModel)]
@@ -474,6 +534,10 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
         Object.entries(detailsById).map(([id, p]) => [id, toPromptDetailViewModel(p)])
       ) as Record<string, PromptDetailViewModel>,
     [detailsById]
+  );
+  const promptSearchResults = useMemo(
+    () => filterPromptSearchItems(promptSearchItems, deferredSearchQuery),
+    [deferredSearchQuery, promptSearchItems]
   );
 
   useEffect(() => {
@@ -499,24 +563,33 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
   const handleSelectWorkspace = (id: string) => {
     const next = threadsByWs[id] ?? [];
       startTransition(() => {
+        setPendingSearchSelection(null);
         setSelectedWorkspaceId(id);
         setSelectedThreadId(resolveSelectedThreadId(next, ""));
         setExpandedPromptId(null);
       });
   };
 
-  const handleSelectThread = (id: string) => {
-    startTransition(() => {
-      setSelectedThreadId(id);
-      setExpandedPromptId(null);
-    });
-  };
-
   const handleTogglePrompt = (id: string) => {
     if (!selectedWorkspaceId) return;
     if (expandedPromptId === id) { setExpandedPromptId(null); return; }
+    setPendingSearchSelection(null);
     setExpandedPromptId(id);
     void loadDetail(selectedWorkspaceId, id);
+  };
+
+  const handleSelectPromptSearchResult = (result: PromptSearchItem) => {
+    startTransition(() => {
+      setSearchQuery("");
+      setPendingSearchSelection({
+        workspaceId: result.workspaceId,
+        threadId: result.threadId,
+        promptId: result.promptId,
+      });
+      setSelectedWorkspaceId(result.workspaceId);
+      setSelectedThreadId(result.threadId);
+      setExpandedPromptId(null);
+    });
   };
 
   const handleRescan = async () => {
@@ -563,10 +636,6 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
         isWorkspacesLoading={workspacesLoading}
         selectedWorkspaceId={selectedWorkspaceId}
         onSelectWorkspace={handleSelectWorkspace}
-        threads={threadRows}
-        selectedThreadId={selectedThreadId}
-        onSelectThread={handleSelectThread}
-        isThreadsLoading={threadsLoading}
         isRescanning={isRescanning}
         onRescan={() => void handleRescan()}
         viewerMode={viewerMode}
@@ -579,6 +648,11 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
           sync: viewerStatus.daemon.sync,
         } : null}
         account={account}
+        searchQuery={searchQuery}
+        onSearchQueryChange={setSearchQuery}
+        searchResults={promptSearchResults}
+        isSearchLoading={promptSearchLoading}
+        onSelectSearchResult={handleSelectPromptSearchResult}
       />
 
       <main className="w-full px-5 py-6">

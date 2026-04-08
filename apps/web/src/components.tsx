@@ -1,4 +1,4 @@
-import type { ThreadRowViewModel, WorkspaceSidebarItemViewModel, WorkspaceStatusViewModel } from "./view-models";
+import type { WorkspaceSidebarItemViewModel, WorkspaceStatusViewModel } from "./view-models";
 import type { Workspace } from "./types";
 import { cn } from "@/lib/utils";
 export { PromptFeed } from "./prompt-feed";

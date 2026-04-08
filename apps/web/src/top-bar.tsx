@@ -1,12 +1,18 @@
-import { useState } from "react";
-import { ChevronDown, LogOut, RefreshCw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronDown, LogOut, RefreshCw, Search } from "lucide-react";
 import type {
-  ThreadRowViewModel,
   WorkspaceSidebarItemViewModel,
 } from "./view-models";
+import type { PromptSearchItem } from "./types";
 import { cn } from "@/lib/utils";
 
 const syncRelativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+const searchTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
 
 function formatRelativeTimestamp(timestamp: string | null): string | null {
   if (!timestamp) {
@@ -31,6 +37,10 @@ function formatSyncPhaseLabel(phase: "idle" | "pending" | "syncing" | "retrying"
     default:
       return "Idle";
   }
+}
+
+function formatSearchTimestamp(timestamp: string): string {
+  return searchTimestampFormatter.format(new Date(timestamp));
 }
 
 function PromptreelMark({ className }: { className?: string }) {
@@ -96,24 +106,21 @@ export function TopBar({
   isWorkspacesLoading,
   selectedWorkspaceId,
   onSelectWorkspace,
-  threads,
-  selectedThreadId,
-  onSelectThread,
-  isThreadsLoading,
   isRescanning,
   onRescan,
   viewerMode,
   daemonStatus,
   account,
+  searchQuery,
+  onSearchQueryChange,
+  searchResults,
+  isSearchLoading,
+  onSelectSearchResult,
 }: {
   workspaces: WorkspaceSidebarItemViewModel[];
   isWorkspacesLoading: boolean;
   selectedWorkspaceId: string;
   onSelectWorkspace: (id: string) => void;
-  threads: ThreadRowViewModel[];
-  selectedThreadId: string;
-  onSelectThread: (id: string) => void;
-  isThreadsLoading: boolean;
   isRescanning: boolean;
   onRescan: () => void;
   viewerMode: "local" | "cloud";
@@ -144,19 +151,35 @@ export function TopBar({
     canSignOut: boolean;
     onSignOut?: () => void;
   } | null;
+  searchQuery: string;
+  onSearchQueryChange: (value: string) => void;
+  searchResults: PromptSearchItem[];
+  isSearchLoading: boolean;
+  onSelectSearchResult: (result: PromptSearchItem) => void;
 }) {
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
-  const [threadDropdownOpen, setThreadDropdownOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchRef = useRef<HTMLDivElement | null>(null);
   const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId);
-  const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
-  const showGeneratingBadge = Boolean(
+  const selectedWorkspaceGenerating = Boolean(
     selectedWorkspace?.isGenerating
     && (viewerMode === "local" || daemonStatus?.syncState === "active")
   );
+  const showSearchDropdown = searchOpen && (searchQuery.trim().length > 0 || isSearchLoading);
+
+  useEffect(() => {
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!searchRef.current?.contains(event.target as Node)) {
+        setSearchOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, []);
 
   return (
-    <header className="sticky top-0 z-50 h-13 flex items-center justify-between px-5 bg-white/80 backdrop-blur-xl border-b border-brd">
-      <div className="flex items-center gap-4">
+    <header className="sticky top-0 z-50 flex flex-wrap items-center justify-between gap-3 border-b border-brd bg-white/80 px-5 py-3 backdrop-blur-xl md:h-13 md:flex-nowrap">
+      <div className="flex min-w-0 items-center gap-4">
         <div className="flex items-center gap-2.5">
           <div className="size-7 shrink-0">
             <PromptreelMark className="size-7" />
@@ -170,8 +193,8 @@ export function TopBar({
           <button
             type="button"
             onClick={() => {
+              setSearchOpen(false);
               setWorkspaceDropdownOpen((open) => !open);
-              setThreadDropdownOpen(false);
             }}
             className="flex items-center gap-2 h-8 px-3 rounded-lg border border-brd bg-white text-t2 text-sm cursor-pointer hover:bg-gz-1 hover:text-t1 hoverlift-sm transition-colors"
           >
@@ -236,193 +259,188 @@ export function TopBar({
             </>
           )}
         </div>
+      </div>
 
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => {
-              if (threads.length === 0 && !isThreadsLoading) return;
-              setThreadDropdownOpen((open) => !open);
+      <div
+        ref={searchRef}
+        className="order-3 w-full basis-full md:pointer-events-none md:absolute md:left-1/2 md:top-1/2 md:order-2 md:w-[min(28rem,calc(100%-30rem))] md:-translate-x-1/2 md:-translate-y-1/2"
+      >
+        <div className="relative md:pointer-events-auto">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-t4" />
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => {
+              onSearchQueryChange(event.target.value);
+              setSearchOpen(true);
               setWorkspaceDropdownOpen(false);
             }}
-            className={cn(
-              "flex items-center gap-2 h-8 px-3 rounded-lg border border-brd bg-white text-t2 text-sm cursor-pointer transition-colors",
-              threads.length === 0 && !isThreadsLoading
-                ? "opacity-60"
-                : "hover:bg-gz-1 hover:text-t1 hoverlift-sm"
-            )}
-          >
-            <span
-              className={cn(
-                "size-2 shrink-0 rounded-full",
-                selectedThread?.isGenerating ? "bg-green breathe" : "bg-amber"
-              )}
-            />
-            <span className="max-w-[240px] truncate">
-              {selectedThread?.title ?? (isThreadsLoading ? "Loading threads..." : "No threads")}
-            </span>
-            {selectedThread?.isGenerating && selectedThread.openPromptCount > 0 && (
-              <span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-green-dim text-[9px] font-bold text-green">
-                {selectedThread.openPromptCount}
-              </span>
-            )}
-            <ChevronDown className={cn("size-3 opacity-40 transition-transform duration-200", threadDropdownOpen && "rotate-180")} />
-          </button>
+            onFocus={() => {
+              setSearchOpen(true);
+              setWorkspaceDropdownOpen(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setSearchOpen(false);
+                return;
+              }
+              if (event.key === "Enter" && searchResults.length > 0) {
+                event.preventDefault();
+                onSelectSearchResult(searchResults[0]!);
+                setSearchOpen(false);
+              }
+            }}
+            placeholder="Search prompts..."
+            aria-label="Search prompts"
+            className="h-10 w-full rounded-full border border-brd bg-white pl-10 pr-4 text-[13px] text-t1 outline-none transition-colors placeholder:text-t4 focus:border-brd-strong focus:ring-2 focus:ring-black/5"
+          />
 
-          {threadDropdownOpen && (
-            <>
-              <button
-                type="button"
-                className="fixed inset-0 z-40 bg-transparent border-0 cursor-default"
-                onClick={() => setThreadDropdownOpen(false)}
-              />
-              <div className="absolute left-0 top-full mt-1 z-50 w-[28rem] max-h-80 overflow-y-auto rounded-xl border border-brd-strong bg-white shadow-xl shadow-black/8 popout">
-                <div className="p-1.5">
-                  {threads.map((thread, i) => {
-                    const active = thread.id === selectedThreadId;
-                    return (
-                      <button
-                        key={thread.id}
-                        type="button"
-                        onClick={() => {
-                          onSelectThread(thread.id);
-                          setThreadDropdownOpen(false);
-                        }}
-                        style={{ animationDelay: `${i * 30}ms` }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-3 py-2 rounded-lg border-0 cursor-pointer text-left transition-colors fadein pressable",
-                          active
-                            ? "bg-gz-1 text-t1"
-                            : "bg-transparent text-t2 hover:bg-gz-1 hover:text-t1"
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "mt-0.5 size-2 shrink-0 rounded-full",
-                            thread.isGenerating ? "bg-green breathe" : "bg-amber"
-                          )}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-[13px] font-medium">{thread.title}</p>
-                          <p className="text-[11px] text-t3">
-                            {thread.promptCountLabel} · {thread.activityLabel}
-                          </p>
-                        </div>
-                        {thread.isGenerating && thread.openPromptCount > 0 && (
-                          <span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-green-dim text-[9px] font-bold text-green">
-                            {thread.openPromptCount}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                  {threads.length === 0 && (
-                    <p className="py-6 text-center text-[13px] text-t3">
-                      {isThreadsLoading ? "Loading threads..." : "No threads yet."}
-                    </p>
-                  )}
-                </div>
+          {showSearchDropdown && (
+            <div className="absolute left-0 top-full z-50 mt-2 w-full overflow-hidden rounded-2xl border border-brd-strong bg-white shadow-xl shadow-black/8">
+              <div className="flex items-center justify-between gap-3 border-b border-brd px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-t4">
+                  {isSearchLoading ? "Searching" : `${searchResults.length} result${searchResults.length === 1 ? "" : "s"}`}
+                </p>
+                {searchQuery.trim().length > 0 && !isSearchLoading && (
+                  <p className="text-[11px] text-t4">Newest first</p>
+                )}
               </div>
-            </>
+
+              {isSearchLoading ? (
+                <div className="px-4 py-5 text-[13px] text-t3">Loading prompt index...</div>
+              ) : searchResults.length > 0 ? (
+                <div className="max-h-96 overflow-y-auto p-1.5">
+                  {searchResults.map((result) => (
+                    <button
+                      key={result.promptId}
+                      type="button"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        onSelectSearchResult(result);
+                        setSearchOpen(false);
+                      }}
+                      className="w-full rounded-xl border-0 bg-transparent px-3 py-3 text-left transition-colors hover:bg-gz-1 hover:text-t1"
+                    >
+                      <p className="truncate text-[13px] font-medium text-t1">{result.promptSummary}</p>
+                      <p className="mt-1 truncate text-[11px] text-t3">
+                        {result.workspaceSlug} · {result.threadTitle} · {formatSearchTimestamp(result.startedAt)}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="px-4 py-5 text-[13px] text-t3">No matching prompts.</div>
+              )}
+            </div>
           )}
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 md:ml-auto">
         <div className="hidden items-center gap-2 md:flex">
-          <span className="inline-flex items-center rounded-full border border-brd bg-white px-2.5 py-1 text-[11px] font-medium text-t2">
-            {viewerMode === "cloud" ? "Cloud mode" : "Local mode"}
-          </span>
-          {daemonStatus && (
-            <div className="group relative">
-              <div
+          <div className="group relative">
+            <div
+              className={cn(
+                "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-medium",
+                daemonStatus?.syncState === "error"
+                  ? "border-red-200 bg-red-dim text-red"
+                  : daemonStatus?.connected
+                  ? "border-green/20 bg-green-dim text-green"
+                  : "border-brd bg-white text-t2"
+              )}
+              title={daemonStatus?.detail ?? daemonStatus?.label ?? "Viewer status"}
+            >
+              <span
                 className={cn(
-                  "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px]",
-                  daemonStatus.syncState === "error"
-                    ? "border-red-200 bg-red-dim text-red"
-                    : daemonStatus.connected
-                    ? "border-green/20 bg-green-dim text-green"
-                    : "border-brd bg-white text-t3"
+                  "size-1.5 rounded-full",
+                  daemonStatus?.syncState === "error"
+                    ? "bg-red"
+                    : daemonStatus?.connected
+                    ? "bg-green"
+                    : "bg-t4"
                 )}
-                title={daemonStatus.detail ?? daemonStatus.label}
-              >
-                <span
-                  className={cn(
-                    "size-1.5 rounded-full",
-                    daemonStatus.syncState === "error"
-                      ? "bg-red"
-                      : daemonStatus.connected
-                      ? "bg-green"
-                      : "bg-t4"
-                  )}
-                />
-                <span>{daemonStatus.label}</span>
-                {daemonStatus.sync.summary && (
-                  <span className="text-t4">· {daemonStatus.sync.summary}</span>
-                )}
-              </div>
-              <div className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden min-w-[18rem] rounded-xl border border-brd-strong bg-white p-3 text-[11px] text-t2 shadow-xl shadow-black/8 group-hover:block">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-4">
-                    <span className="font-medium text-t1">Sync status</span>
-                    <span className="text-t4">{formatSyncPhaseLabel(daemonStatus.sync.phase)}</span>
-                  </div>
-                  {daemonStatus.detail && (
+              />
+              <span>Status</span>
+              {selectedWorkspaceGenerating && (
+                <span className="text-[10px] text-current/80">Generating</span>
+              )}
+            </div>
+            <div className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden min-w-[18rem] rounded-xl border border-brd-strong bg-white p-3 text-[11px] text-t2 shadow-xl shadow-black/8 group-hover:block">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="font-medium text-t1">Viewer</span>
+                  <span className="text-t4">{viewerMode === "cloud" ? "Cloud mode" : "Local mode"}</span>
+                </div>
+                {daemonStatus && (
+                  <>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="font-medium text-t1">Sync status</span>
+                      <span className="text-t4">{formatSyncPhaseLabel(daemonStatus.sync.phase)}</span>
+                    </div>
                     <div className="flex items-center justify-between gap-4">
                       <span className="text-t4">Daemon</span>
-                      <span className="max-w-[12rem] truncate text-right">{daemonStatus.detail}</span>
+                      <span className="max-w-[12rem] truncate text-right">{daemonStatus.label}</span>
                     </div>
-                  )}
-                  {daemonStatus.lastSeenLabel && (
+                    {daemonStatus.detail && (
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-t4">Detail</span>
+                        <span className="max-w-[12rem] truncate text-right">{daemonStatus.detail}</span>
+                      </div>
+                    )}
+                    {daemonStatus.lastSeenLabel && (
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-t4">Last seen</span>
+                        <span>{daemonStatus.lastSeenLabel}</span>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between gap-4">
-                      <span className="text-t4">Last seen</span>
-                      <span>{daemonStatus.lastSeenLabel}</span>
+                      <span className="text-t4">Pending workspaces</span>
+                      <span>{daemonStatus.sync.pendingDirtyWorkspaceCount}</span>
                     </div>
-                  )}
+                    {daemonStatus.sync.lastSuccessfulSyncAt && (
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-t4">Last success</span>
+                        <span>{formatRelativeTimestamp(daemonStatus.sync.lastSuccessfulSyncAt)}</span>
+                      </div>
+                    )}
+                    {daemonStatus.sync.lastSuccessfulSyncStats && (
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-t4">Last payload</span>
+                        <span>
+                          {daemonStatus.sync.lastSuccessfulSyncStats.promptCount} prompt{daemonStatus.sync.lastSuccessfulSyncStats.promptCount === 1 ? "" : "s"}
+                          {" · "}
+                          {daemonStatus.sync.lastSuccessfulSyncStats.blobCount} blob{daemonStatus.sync.lastSuccessfulSyncStats.blobCount === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                    )}
+                    {daemonStatus.sync.nextScheduledSyncAt && (
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-t4">
+                          {daemonStatus.sync.phase === "retrying" ? "Next retry" : "Next sync"}
+                        </span>
+                        <span>{formatRelativeTimestamp(daemonStatus.sync.nextScheduledSyncAt)}</span>
+                      </div>
+                    )}
+                    {daemonStatus.sync.lastErrorMessage && (
+                      <div className="border-t border-brd pt-2 text-red">
+                        {daemonStatus.sync.lastErrorMessage}
+                      </div>
+                    )}
+                  </>
+                )}
+                {!daemonStatus && (
+                  <div className="text-t4">Waiting for daemon status...</div>
+                )}
+                {selectedWorkspaceGenerating && (
                   <div className="flex items-center justify-between gap-4">
-                    <span className="text-t4">Pending workspaces</span>
-                    <span>{daemonStatus.sync.pendingDirtyWorkspaceCount}</span>
+                    <span className="text-t4">Current workspace</span>
+                    <span className="text-green">Generating</span>
                   </div>
-                  {daemonStatus.sync.lastSuccessfulSyncAt && (
-                    <div className="flex items-center justify-between gap-4">
-                      <span className="text-t4">Last success</span>
-                      <span>{formatRelativeTimestamp(daemonStatus.sync.lastSuccessfulSyncAt)}</span>
-                    </div>
-                  )}
-                  {daemonStatus.sync.lastSuccessfulSyncStats && (
-                    <div className="flex items-center justify-between gap-4">
-                      <span className="text-t4">Last payload</span>
-                      <span>
-                        {daemonStatus.sync.lastSuccessfulSyncStats.promptCount} prompt{daemonStatus.sync.lastSuccessfulSyncStats.promptCount === 1 ? "" : "s"}
-                        {" · "}
-                        {daemonStatus.sync.lastSuccessfulSyncStats.blobCount} blob{daemonStatus.sync.lastSuccessfulSyncStats.blobCount === 1 ? "" : "s"}
-                      </span>
-                    </div>
-                  )}
-                  {daemonStatus.sync.nextScheduledSyncAt && (
-                    <div className="flex items-center justify-between gap-4">
-                      <span className="text-t4">
-                        {daemonStatus.sync.phase === "retrying" ? "Next retry" : "Next sync"}
-                      </span>
-                      <span>{formatRelativeTimestamp(daemonStatus.sync.nextScheduledSyncAt)}</span>
-                    </div>
-                  )}
-                  {daemonStatus.sync.lastErrorMessage && (
-                    <div className="border-t border-brd pt-2 text-red">
-                      {daemonStatus.sync.lastErrorMessage}
-                    </div>
-                  )}
-                </div>
+                )}
               </div>
             </div>
-          )}
+          </div>
         </div>
-        {showGeneratingBadge && (
-          <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-green">
-            <span className="size-1.5 rounded-full bg-green breathe" />
-            Generating
-          </span>
-        )}
         <button
           type="button"
           onClick={onRescan}
