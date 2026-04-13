@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, LogOut, RefreshCw, Search } from "lucide-react";
+import { ChevronDown, LogOut, RefreshCw, Search, X } from "lucide-react";
 import type {
   WorkspaceSidebarItemViewModel,
 } from "./view-models";
@@ -171,6 +171,9 @@ export function TopBar({
     && (viewerMode === "local" || daemonStatus?.syncState === "active")
   );
   const showSearchDropdown = searchOpen && (searchQuery.trim().length > 0 || isSearchLoading);
+  const searchShortcutHint = typeof navigator !== "undefined" && /(Mac|iPhone|iPad)/i.test(navigator.platform)
+    ? "⌘K"
+    : "Ctrl K";
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -313,7 +316,7 @@ export function TopBar({
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-t4" />
           <input
             ref={searchInputRef}
-            type="search"
+            type="text"
             value={searchQuery}
             onChange={(event) => {
               onSearchQueryChange(event.target.value);
@@ -391,10 +394,34 @@ export function TopBar({
             }}
             placeholder="Search prompts..."
             aria-label="Search prompts"
-            className="h-10 w-full rounded-full border border-brd bg-white pl-10 pr-4 text-[13px] text-t1 outline-none transition-colors placeholder:text-t4 focus:border-brd-strong focus:ring-2 focus:ring-black/5"
+            className="h-10 w-full rounded-full border border-brd bg-white pl-10 pr-18 text-[13px] text-t1 outline-none transition-colors placeholder:text-t4 focus:border-brd-strong focus:ring-2 focus:ring-black/5"
             aria-expanded={showSearchDropdown}
             aria-haspopup="listbox"
           />
+          {searchQuery.trim().length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                onSearchQueryChange("");
+                setSearchOpen(false);
+                setActiveSearchIndex(-1);
+                setSearchInteractionMode("keyboard");
+                searchInputRef.current?.focus();
+              }}
+              aria-label="Clear search"
+              className="absolute right-3 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full border-0 bg-transparent text-t4 transition-colors hover:text-red focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/5"
+            >
+              <X className="size-3.5" strokeWidth={2.2} />
+            </button>
+          )}
+          {searchQuery.trim().length === 0 && (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 items-center rounded-md border border-brd bg-gz-1 px-2 py-1 text-[10px] font-medium tracking-[0.04em] text-t4 md:inline-flex"
+            >
+              {searchShortcutHint}
+            </span>
+          )}
 
           {showSearchDropdown && (
             <div className="absolute left-0 top-full z-50 mt-2 w-full overflow-hidden rounded-2xl border border-brd-strong bg-white shadow-xl shadow-black/8">
