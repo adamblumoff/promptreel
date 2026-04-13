@@ -401,18 +401,20 @@ export class PromptreelStore {
     const db = this.openWorkspace(workspaceId);
     db.exec("BEGIN");
     try {
+      // Raw events are immutable by id, so live prompt rewrites only need to add new rows.
       for (const raw of bundle.rawEvents) {
-        const payloadBlobId = this.writeBlob(workspaceId, JSON.stringify(raw.payload, null, 2));
+        const payloadBlobId = this.writeBlob(workspaceId, JSON.stringify(raw.payload));
         db.prepare(
-          `INSERT OR REPLACE INTO raw_events
+          `INSERT OR IGNORE INTO raw_events
            (id, repo_id, source, session_id, thread_id, event_type, occurred_at, payload_blob_id, ingest_path)
            VALUES (:id, :workspaceId, :source, :sessionId, :threadId, :eventType, :occurredAt, :payloadBlobId, :ingestPath)`
         ).run(asSqlParams({ ...raw.record, payloadBlobId }));
       }
 
+      // Snapshot ids are immutable too, so repeated in-progress prompt rewrites should not churn these rows.
       for (const snapshot of bundle.snapshots) {
         db.prepare(
-          `INSERT OR REPLACE INTO workspace_snapshots
+          `INSERT OR IGNORE INTO workspace_snapshots
            (id, repo_id, captured_at, head_sha, branch_name, dirty_file_hashes_json, git_status_summary, blob_id)
            VALUES (:id, :workspaceId, :capturedAt, :headSha, :branchName, :dirtyFileHashesJson, :gitStatusSummary, :blobId)`
         ).run(asSqlParams({

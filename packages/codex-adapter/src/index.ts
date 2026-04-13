@@ -2116,11 +2116,13 @@ export class CodexSessionTailer {
     try {
       const previous = this.trackedSessionFiles.get(filePath) ?? null;
       if (!existsSync(filePath)) {
+        const workspaceIdsToRefresh = new Set<string>(this.getTimeSensitiveWorkspaceIds());
         if (previous) {
           this.dropTrackedSessionFile(filePath);
+          workspaceIdsToRefresh.add(previous.workspaceId);
           this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, { lastError: null }));
         }
-        this.refreshAllWorkspaceStatuses();
+        this.refreshWorkspaceStatuses(workspaceIdsToRefresh);
         this.lastScanAt = nowIso();
         this.emitUpdate({
           kind: "ingest",
@@ -2143,10 +2145,12 @@ export class CodexSessionTailer {
       }
       const match = discoverCodexSessionFile(filePath);
       if (!match) {
+        const workspaceIdsToRefresh = new Set<string>(this.getTimeSensitiveWorkspaceIds());
         if (previous) {
           this.dropTrackedSessionFile(filePath);
+          workspaceIdsToRefresh.add(previous.workspaceId);
           this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId, { lastError: null }));
-          this.refreshAllWorkspaceStatuses();
+          this.refreshWorkspaceStatuses(workspaceIdsToRefresh);
           this.emitUpdate({
             kind: "ingest",
             at: nowIso(),
@@ -2170,6 +2174,7 @@ export class CodexSessionTailer {
         this.lastScanAt = nowIso();
         return;
       }
+      const workspaceIdsToRefresh = new Set<string>(this.getTimeSensitiveWorkspaceIds());
       try {
         this.ensureSessionFileWatcher(filePath);
         const deltaResult = this.tryImportDelta(match, previous);
@@ -2198,6 +2203,7 @@ export class CodexSessionTailer {
             `imported_prompts=${result.importedPrompts}`,
           ].join(" ")
         );
+        workspaceIdsToRefresh.add(canonicalMatch.workspaceId);
         this.recordWorkspaceImportSuccess(canonicalMatch.workspaceId, result.byWorkspace[canonicalMatch.workspaceId]);
       } catch (error) {
         this.sessionTailStates.delete(filePath);
@@ -2211,13 +2217,16 @@ export class CodexSessionTailer {
             `error=${JSON.stringify(error instanceof Error ? error.message : String(error))}`,
           ].join(" ")
         );
+        workspaceIdsToRefresh.add(match.workspaceId);
         this.recordWorkspaceImportError(match.workspaceId, error);
       }
       const currentWorkspaceId = this.trackedSessionFiles.get(filePath)?.workspaceId ?? match.workspaceId;
       if (previous && previous.workspaceId !== currentWorkspaceId) {
+        workspaceIdsToRefresh.add(previous.workspaceId);
         this.statusByWorkspace.set(previous.workspaceId, this.buildWorkspaceStatus(previous.workspaceId));
       }
-      this.refreshAllWorkspaceStatuses();
+      workspaceIdsToRefresh.add(currentWorkspaceId);
+      this.refreshWorkspaceStatuses(workspaceIdsToRefresh);
       this.lastScanAt = nowIso();
       this.emitUpdate({
         kind: "ingest",
@@ -2240,9 +2249,23 @@ export class CodexSessionTailer {
       ...this.statusByWorkspace.keys(),
       ...[...this.trackedSessionFiles.values()].map((match) => match.workspaceId)
     ]);
-    for (const workspaceId of workspaceIds) {
+    this.refreshWorkspaceStatuses(workspaceIds);
+  }
+
+  private refreshWorkspaceStatuses(workspaceIds: Iterable<string>): void {
+    for (const workspaceId of new Set([...workspaceIds].filter(Boolean))) {
       this.statusByWorkspace.set(workspaceId, this.buildWorkspaceStatus(workspaceId));
     }
+  }
+
+  private getTimeSensitiveWorkspaceIds(): string[] {
+    const recentCutoff = Date.now() - LIVE_ACTIVITY_WINDOW_MS;
+    return [...this.statusByWorkspace.values()]
+      .filter((status) =>
+        status.recentlyUpdatedSessionCount > 0
+        || Boolean(status.lastSessionUpdateAt && Date.parse(status.lastSessionUpdateAt) >= recentCutoff)
+      )
+      .map((status) => status.workspaceId);
   }
 
   private emitUpdate(update: CodexSessionTailerUpdate): void {
