@@ -13,6 +13,7 @@ const searchTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
   minute: "2-digit",
 });
+const HELD_ARROW_REPEAT_INTERVAL_MS = 90;
 
 function formatRelativeTimestamp(timestamp: string | null): string | null {
   if (!timestamp) {
@@ -159,7 +160,11 @@ export function TopBar({
 }) {
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
+  const [searchInteractionMode, setSearchInteractionMode] = useState<"keyboard" | "pointer">("keyboard");
   const searchRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const lastArrowNavigationAtRef = useRef(0);
   const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId);
   const selectedWorkspaceGenerating = Boolean(
     selectedWorkspace?.isGenerating
@@ -171,11 +176,50 @@ export function TopBar({
     const handlePointerDown = (event: MouseEvent) => {
       if (!searchRef.current?.contains(event.target as Node)) {
         setSearchOpen(false);
+        setActiveSearchIndex(-1);
+        setSearchInteractionMode("keyboard");
       }
     };
     document.addEventListener("mousedown", handlePointerDown);
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSearchOpen(true);
+        setWorkspaceDropdownOpen(false);
+        setSearchInteractionMode("keyboard");
+        setActiveSearchIndex(searchResults.length > 0 ? 0 : -1);
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [searchResults.length]);
+
+  useEffect(() => {
+    if (!showSearchDropdown || searchResults.length === 0) {
+      setActiveSearchIndex(-1);
+      return;
+    }
+    setActiveSearchIndex((current) => {
+      if (current >= 0 && current < searchResults.length) {
+        return current;
+      }
+      return 0;
+    });
+  }, [searchResults.length, showSearchDropdown]);
+
+  useEffect(() => {
+    if (!showSearchDropdown || activeSearchIndex < 0 || searchInteractionMode !== "keyboard") {
+      return;
+    }
+    const nextActive = searchRef.current?.querySelector<HTMLElement>(`[data-search-result-index="${activeSearchIndex}"]`);
+    nextActive?.scrollIntoView({ block: "nearest" });
+  }, [activeSearchIndex, searchInteractionMode, showSearchDropdown]);
 
   return (
     <header className="sticky top-0 z-50 flex flex-wrap items-center justify-between gap-3 border-b border-brd bg-white/80 px-5 py-3 backdrop-blur-xl md:h-13 md:flex-nowrap">
@@ -268,31 +312,88 @@ export function TopBar({
         <div className="relative md:pointer-events-auto">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-t4" />
           <input
+            ref={searchInputRef}
             type="search"
             value={searchQuery}
             onChange={(event) => {
               onSearchQueryChange(event.target.value);
               setSearchOpen(true);
               setWorkspaceDropdownOpen(false);
+              setSearchInteractionMode("keyboard");
+              setActiveSearchIndex(0);
             }}
             onFocus={() => {
               setSearchOpen(true);
               setWorkspaceDropdownOpen(false);
             }}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                setSearchOpen(false);
+              if (event.key === "ArrowDown" && showSearchDropdown && searchResults.length > 0) {
+                event.preventDefault();
+                const now = performance.now();
+                if (event.repeat && now - lastArrowNavigationAtRef.current < HELD_ARROW_REPEAT_INTERVAL_MS) {
+                  return;
+                }
+                lastArrowNavigationAtRef.current = now;
+                setSearchOpen(true);
+                setSearchInteractionMode("keyboard");
+                setActiveSearchIndex((current) => {
+                  if (current < 0) {
+                    return 0;
+                  }
+                  return Math.min(current + 1, searchResults.length - 1);
+                });
                 return;
               }
-              if (event.key === "Enter" && searchResults.length > 0) {
+              if (event.key === "ArrowUp" && showSearchDropdown && searchResults.length > 0) {
                 event.preventDefault();
-                onSelectSearchResult(searchResults[0]!);
+                const now = performance.now();
+                if (event.repeat && now - lastArrowNavigationAtRef.current < HELD_ARROW_REPEAT_INTERVAL_MS) {
+                  return;
+                }
+                lastArrowNavigationAtRef.current = now;
+                setSearchOpen(true);
+                setSearchInteractionMode("keyboard");
+                setActiveSearchIndex((current) => {
+                  if (current <= 0) {
+                    return 0;
+                  }
+                  return current - 1;
+                });
+                return;
+              }
+              if (event.key === "Home" && showSearchDropdown && searchResults.length > 0) {
+                event.preventDefault();
+                setSearchInteractionMode("keyboard");
+                setActiveSearchIndex(0);
+                return;
+              }
+              if (event.key === "End" && showSearchDropdown && searchResults.length > 0) {
+                event.preventDefault();
+                setSearchInteractionMode("keyboard");
+                setActiveSearchIndex(searchResults.length - 1);
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
                 setSearchOpen(false);
+                setActiveSearchIndex(-1);
+                setSearchInteractionMode("keyboard");
+                searchInputRef.current?.blur();
+                return;
+              }
+              if (event.key === "Enter" && showSearchDropdown && searchResults.length > 0) {
+                event.preventDefault();
+                onSelectSearchResult(searchResults[Math.max(activeSearchIndex, 0)]!);
+                setSearchOpen(false);
+                setActiveSearchIndex(-1);
+                setSearchInteractionMode("keyboard");
               }
             }}
             placeholder="Search prompts..."
             aria-label="Search prompts"
             className="h-10 w-full rounded-full border border-brd bg-white pl-10 pr-4 text-[13px] text-t1 outline-none transition-colors placeholder:text-t4 focus:border-brd-strong focus:ring-2 focus:ring-black/5"
+            aria-expanded={showSearchDropdown}
+            aria-haspopup="listbox"
           />
 
           {showSearchDropdown && (
@@ -309,17 +410,33 @@ export function TopBar({
               {isSearchLoading ? (
                 <div className="px-4 py-5 text-[13px] text-t3">Loading prompt index...</div>
               ) : searchResults.length > 0 ? (
-                <div className="max-h-96 overflow-y-auto p-1.5">
-                  {searchResults.map((result) => (
+                <div className="max-h-96 overflow-y-auto p-1.5" role="listbox" aria-label="Prompt search results">
+                  {searchResults.map((result, index) => (
                     <button
                       key={result.promptId}
                       type="button"
+                      data-search-result-index={index}
+                      onPointerMove={() => {
+                        if (searchInteractionMode === "keyboard" || activeSearchIndex !== index) {
+                          setSearchInteractionMode("pointer");
+                          setActiveSearchIndex(index);
+                        }
+                      }}
                       onMouseDown={(event) => {
                         event.preventDefault();
                         onSelectSearchResult(result);
                         setSearchOpen(false);
+                        setActiveSearchIndex(-1);
+                        setSearchInteractionMode("keyboard");
                       }}
-                      className="w-full rounded-xl border-0 bg-transparent px-3 py-3 text-left transition-colors hover:bg-gz-1 hover:text-t1"
+                      className={cn(
+                        "w-full rounded-xl border px-3 py-3 text-left transition-[background-color,border-color,color,box-shadow] duration-120 ease-out motion-reduce:transition-none",
+                        activeSearchIndex === index
+                          ? "border-brd-strong bg-gz-1 text-t1 shadow-[inset_0_0_0_1px_rgba(17,24,39,0.08)]"
+                          : "border-transparent bg-transparent hover:border-brd hover:bg-black/[0.025] hover:text-t1"
+                      )}
+                      role="option"
+                      aria-selected={activeSearchIndex === index}
                     >
                       <p className="truncate text-[13px] font-medium text-t1">{result.promptSummary}</p>
                       <p className="mt-1 truncate text-[11px] text-t3">
