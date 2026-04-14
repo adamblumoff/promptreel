@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +44,59 @@ function isRecordedDaemonAlive(pid: number | null): boolean {
   }
 }
 
+function startDetachedWindowsProcess(input: {
+  command: string;
+  args: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): number {
+  const launcher = spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      [
+        "$argList = $env:PROMPTREEL_DAEMON_ARGS_JSON | ConvertFrom-Json;",
+        "$proc = Start-Process",
+        "-FilePath $env:PROMPTREEL_DAEMON_COMMAND",
+        "-ArgumentList $argList",
+        "-WorkingDirectory $env:PROMPTREEL_DAEMON_CWD",
+        "-WindowStyle Hidden",
+        "-PassThru;",
+        "[Console]::Out.Write($proc.Id)",
+      ].join(" "),
+    ],
+    {
+      cwd: input.cwd,
+      env: {
+        ...input.env,
+        PROMPTREEL_DAEMON_COMMAND: input.command,
+        PROMPTREEL_DAEMON_ARGS_JSON: JSON.stringify(input.args),
+        PROMPTREEL_DAEMON_CWD: input.cwd,
+      },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    }
+  );
+
+  if (launcher.status !== 0) {
+    throw new Error(
+      `Failed to start hidden daemon on Windows.${launcher.stderr ? ` ${launcher.stderr.trim()}` : ""}`
+    );
+  }
+
+  const pid = Number.parseInt((launcher.stdout ?? "").trim(), 10);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    throw new Error("Failed to determine daemon pid for hidden Windows process.");
+  }
+
+  return pid;
+}
+
 export async function startDaemonProcess(input: {
   store: PromptreelStore;
   detach: boolean;
@@ -63,7 +116,7 @@ export async function startDaemonProcess(input: {
     printBlock([
       "Daemon is already recorded as running.",
       `PID: ${current.pid}`,
-      "Stop it with: pnpm dev:cli -- stop",
+      "Stop it with: pnpm dev:cli stop",
     ]);
     return;
   }
@@ -74,20 +127,38 @@ export async function startDaemonProcess(input: {
   const daemonEntry = resolveDaemonEntry();
   let command = process.execPath;
   let args = [daemonEntry];
+  const daemonCwd = resolve(dirname(fileURLToPath(import.meta.url)), "../../daemon");
   if (devDaemon) {
     command = devDaemon.command;
     args = devDaemon.args;
   } else if (!existsSync(daemonEntry)) {
     throw new Error(`Build the daemon first: missing ${daemonEntry}`);
   }
+  const childEnv = {
+    ...process.env,
+    PROMPTREEL_RUNTIME_MODE: "cloud",
+  };
+  if (input.detach && process.platform === "win32") {
+    const pid = startDetachedWindowsProcess({
+      command,
+      args,
+      cwd: daemonCwd,
+      env: childEnv,
+    });
+    input.store.setDaemonState(pid);
+    printBlock([
+      "Daemon started in background.",
+      `PID: ${pid}`,
+      "Stop it with: pnpm dev:cli stop",
+    ]);
+    return;
+  }
   const child = spawn(command, args, {
     detached: input.detach,
     stdio: input.detach ? "ignore" : "inherit",
-    env: {
-      ...process.env,
-      PROMPTREEL_RUNTIME_MODE: "cloud",
-    },
-    cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../daemon"),
+    windowsHide: input.detach,
+    env: childEnv,
+    cwd: daemonCwd,
   });
   if (!child.pid) {
     throw new Error("Failed to start daemon.");
@@ -98,7 +169,7 @@ export async function startDaemonProcess(input: {
     printBlock([
       "Daemon started in background.",
       `PID: ${child.pid}`,
-      "Stop it with: pnpm dev:cli -- stop",
+      "Stop it with: pnpm dev:cli stop",
     ]);
     return;
   }
@@ -107,7 +178,7 @@ export async function startDaemonProcess(input: {
     "Daemon started in foreground.",
     `PID: ${child.pid}`,
     "Press Ctrl+C to stop.",
-    "If you later run it in background, stop it with: pnpm dev:cli -- stop",
+    "If you later run it in background, stop it with: pnpm dev:cli stop",
   ]);
 
   await new Promise<void>((resolve, reject) => {

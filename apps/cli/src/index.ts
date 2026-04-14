@@ -119,11 +119,12 @@ program.name("pl").description("Promptreel CLI");
 program
   .command("start")
   .description("Start the Promptreel Cloud sync daemon")
-  .option("--detach", "Run the daemon in the background")
-  .action(async (options: { detach?: boolean }) => {
+  .option("--bg", "Run the daemon in the background")
+  .option("--detach", "Alias for --bg")
+  .action(async (options: { bg?: boolean; detach?: boolean }) => {
     await startDaemonProcess({
       store,
-      detach: Boolean(options.detach),
+      detach: Boolean(options.bg || options.detach),
       resolveAuthenticatedCloudUser,
     });
   });
@@ -167,11 +168,12 @@ program
   .addCommand(
     new Command("start")
       .description("Start the Promptreel Cloud sync daemon")
-      .option("--detach", "Run the daemon in the background")
-      .action(async (options: { detach?: boolean }) => {
+      .option("--bg", "Run the daemon in the background")
+      .option("--detach", "Alias for --bg")
+      .action(async (options: { bg?: boolean; detach?: boolean }) => {
       await startDaemonProcess({
         store,
-        detach: Boolean(options.detach),
+        detach: Boolean(options.bg || options.detach),
         resolveAuthenticatedCloudUser,
       });
       })
