@@ -97,6 +97,7 @@ export function ExpandedDetail({
           <DiffSection
             promptEventId={detail.id}
             blobIds={detail.diffBlobIds}
+            fileStats={detail.diffFileStats}
             onLoadBlob={onLoadBlob}
             blobCache={blobCache ?? {}}
             blobLoadingById={blobLoadingById ?? {}}
@@ -638,6 +639,7 @@ function formatDecisionTimestamp(timestamp: string): string {
 function DiffSection({
   promptEventId,
   blobIds,
+  fileStats,
   onLoadBlob,
   blobCache,
   blobLoadingById,
@@ -645,6 +647,7 @@ function DiffSection({
 }: {
   promptEventId: string;
   blobIds: string[];
+  fileStats: PromptDetailViewModel["diffFileStats"];
   onLoadBlob: (blobId: string) => void;
   blobCache: Record<string, string>;
   blobLoadingById: Record<string, boolean>;
@@ -695,7 +698,7 @@ function DiffSection({
             )}
             {combinedPatch && (
               <Suspense fallback={<ContentRendererFallback text="Rendering diff..." />}>
-                <LazyDiffViewer patch={combinedPatch} mode="focused" />
+                <LazyDiffViewer patch={combinedPatch} mode="focused" fileStats={fileStats} />
               </Suspense>
             )}
             {!isLoading && !combinedPatch && hasCodeDiffArtifacts && blobIds.length === 0 && (

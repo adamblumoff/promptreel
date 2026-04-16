@@ -133,12 +133,18 @@ export type PromptDetailViewModel = {
   planTraceSteps: string[];
   artifactSummaries: PromptDetailArtifactViewModel[];
   diffBlobIds: string[];
+  diffFileStats: DiffFileStat[];
   hasCodeDiffArtifacts: boolean;
   gitSummaries: PromptDetailGitLinkViewModel[];
 };
 
-type FileStat = {
+export type DiffFileStat = {
   path: string;
+  additions?: number;
+  deletions?: number;
+  hunkCount?: number;
+  oldPath?: string;
+  newPath?: string;
 };
 
 const formatters = {
@@ -393,6 +399,9 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
     diffBlobIds: prompt.artifacts
       .filter((a) => a.type === "code_diff" && a.blobId)
       .map((a) => a.blobId!),
+    diffFileStats: prompt.artifacts
+      .filter((artifact) => artifact.type === "code_diff")
+      .flatMap((artifact) => parseArtifactFiles(artifact)),
     hasCodeDiffArtifacts: prompt.artifacts.some((a) => a.type === "code_diff"),
     gitSummaries: prompt.gitLinks.map((gitLink) => ({
       id: gitLink.id,
@@ -416,13 +425,13 @@ function collectTouchedFiles(artifacts: Artifact[]): string[] {
   return [...files];
 }
 
-function parseArtifactFiles(artifact: Artifact): FileStat[] {
+function parseArtifactFiles(artifact: Artifact): DiffFileStat[] {
   if (!artifact.fileStatsJson) {
     return [];
   }
   try {
-    const parsed = JSON.parse(artifact.fileStatsJson) as FileStat[];
-    return Array.isArray(parsed) ? parsed.filter((file): file is FileStat => typeof file?.path === "string") : [];
+    const parsed = JSON.parse(artifact.fileStatsJson) as DiffFileStat[];
+    return Array.isArray(parsed) ? parsed.filter((file): file is DiffFileStat => typeof file?.path === "string") : [];
   } catch {
     return [];
   }

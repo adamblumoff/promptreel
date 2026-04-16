@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Diff, Hunk, isDelete, isInsert, parseDiff, type DiffType, type FileData, type HunkData } from "react-diff-view";
 import "react-diff-view/style/index.css";
 import { cn } from "@/lib/utils";
+import type { DiffFileStat } from "./view-models";
 
 type DiffLineType = "hunk" | "add" | "del" | "context";
 
@@ -13,6 +14,7 @@ type DiffLine = {
 };
 
 type CodexDiffFile = {
+  id: string;
   kind: "codex";
   fromPath: string;
   toPath: string;
@@ -22,9 +24,11 @@ type CodexDiffFile = {
   deletions: number;
   isNew: boolean;
   isDeleted: boolean;
+  isReplacement: boolean;
 };
 
 type UnifiedDiffFile = {
+  id: string;
   kind: "unified";
   file: FileData;
   displayPath: string;
@@ -41,6 +45,7 @@ function parseCodexPatch(raw: string): CodexDiffFile[] {
   const lines = raw.split("\n");
   let current: CodexDiffFile | null = null;
   let lineNum = 0;
+  let fileIndex = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -53,8 +58,21 @@ function parseCodexPatch(raw: string): CodexDiffFile[] {
     const addMatch = line.match(/^\*\*\* Add File:\s*(.+)/);
     if (addMatch) {
       const path = normalizeLegacyPath(addMatch[1].trim());
-      current = { kind: "codex", fromPath: "/dev/null", toPath: path, displayPath: path, lines: [], additions: 0, deletions: 0, isNew: true, isDeleted: false };
+      current = {
+        id: createDiffFileId("codex", "/dev/null", path, "add", fileIndex),
+        kind: "codex",
+        fromPath: "/dev/null",
+        toPath: path,
+        displayPath: path,
+        lines: [],
+        additions: 0,
+        deletions: 0,
+        isNew: true,
+        isDeleted: false,
+        isReplacement: false
+      };
       files.push(current);
+      fileIndex += 1;
       lineNum = 0;
       continue;
     }
@@ -69,8 +87,21 @@ function parseCodexPatch(raw: string): CodexDiffFile[] {
           continue;
         }
       }
-      current = { kind: "codex", fromPath: path, toPath: "/dev/null", displayPath: path, lines: [], additions: 0, deletions: 0, isNew: false, isDeleted: true };
+      current = {
+        id: createDiffFileId("codex", path, "/dev/null", "delete", fileIndex),
+        kind: "codex",
+        fromPath: path,
+        toPath: "/dev/null",
+        displayPath: path,
+        lines: [],
+        additions: 0,
+        deletions: 0,
+        isNew: false,
+        isDeleted: true,
+        isReplacement: false
+      };
       files.push(current);
+      fileIndex += 1;
       lineNum = 0;
       continue;
     }
@@ -78,8 +109,21 @@ function parseCodexPatch(raw: string): CodexDiffFile[] {
     const updateMatch = line.match(/^\*\*\* Update File:\s*(.+)/);
     if (updateMatch) {
       const path = normalizeLegacyPath(updateMatch[1].trim());
-      current = { kind: "codex", fromPath: path, toPath: path, displayPath: path, lines: [], additions: 0, deletions: 0, isNew: false, isDeleted: false };
+      current = {
+        id: createDiffFileId("codex", path, path, "modify", fileIndex),
+        kind: "codex",
+        fromPath: path,
+        toPath: path,
+        displayPath: path,
+        lines: [],
+        additions: 0,
+        deletions: 0,
+        isNew: false,
+        isDeleted: false,
+        isReplacement: false
+      };
       files.push(current);
+      fileIndex += 1;
       lineNum = 0;
       continue;
     }
@@ -110,24 +154,91 @@ function parseCodexPatch(raw: string): CodexDiffFile[] {
     }
   }
 
-  return mergeCodexFiles(files);
+  return files;
 }
 
-function mergeCodexFiles(files: CodexDiffFile[]): CodexDiffFile[] {
-  const merged = new Map<string, CodexDiffFile>();
+function normalizeCodexFiles(files: CodexDiffFile[], fileStats: DiffFileStat[] = []): CodexDiffFile[] {
+  const statsByPath = buildDiffStatLookup(fileStats);
+  const grouped = new Map<string, CodexDiffFile[]>();
+
   for (const file of files) {
-    const existing = merged.get(file.displayPath);
-    if (existing) {
-      existing.lines.push(...file.lines);
-      existing.additions += file.additions;
-      existing.deletions += file.deletions;
-      if (file.isNew) existing.isNew = false;
-      if (file.isDeleted) existing.isDeleted = false;
-    } else {
-      merged.set(file.displayPath, { ...file });
+    const key = file.displayPath;
+    grouped.set(key, [...(grouped.get(key) ?? []), file]);
+  }
+
+  return [...grouped.entries()].flatMap(([path, entries]) => {
+    const stats = statsByPath.get(path);
+    const hasDeleted = entries.some((file) => file.isDeleted);
+    const hasNonDeleted = entries.some((file) => !file.isDeleted);
+    const hasNew = entries.some((file) => file.isNew);
+    const hasMeaningfulDelete =
+      entries.some((file) => file.isDeleted && file.lines.length > 0)
+      || (typeof stats?.deletions === "number" && stats.deletions > 0);
+    const isReplacement = hasDeleted && hasNonDeleted && hasMeaningfulDelete;
+    const candidates = entries.filter((file) => {
+      if (isReplacement) {
+        return !file.isDeleted;
+      }
+      return !file.isDeleted || file.lines.length > 0;
+    });
+    const representative = (candidates.length > 0 ? candidates : entries)
+      .slice()
+      .sort((left, right) => scoreCodexFile(right) - scoreCodexFile(left))[0];
+
+    if (!representative) {
+      return [];
+    }
+
+    const fromPath = stats?.oldPath ? normalizeLegacyPath(stats.oldPath) : representative.fromPath;
+    const toPath = stats?.newPath ? normalizeLegacyPath(stats.newPath) : representative.toPath;
+    const resolvedIsDeleted = !isReplacement && (toPath === "/dev/null" || (hasDeleted && !hasNonDeleted));
+    const resolvedIsNew = !isReplacement && !resolvedIsDeleted && (fromPath === "/dev/null" || hasNew);
+
+    return [{
+      ...representative,
+      additions: stats?.additions ?? representative.additions,
+      deletions: stats?.deletions ?? representative.deletions,
+      fromPath,
+      toPath,
+      isNew: resolvedIsNew,
+      isDeleted: resolvedIsDeleted,
+      isReplacement,
+    }];
+  });
+}
+
+function buildDiffStatLookup(fileStats: DiffFileStat[]): Map<string, DiffFileStat> {
+  const lookup = new Map<string, DiffFileStat>();
+  for (const stat of fileStats) {
+    const rawCandidates = [stat.path, stat.oldPath, stat.newPath].filter((value): value is string => typeof value === "string");
+    for (const rawPath of rawCandidates) {
+      for (const alias of getPathAliases(rawPath)) {
+        if (!lookup.has(alias)) {
+          lookup.set(alias, stat);
+        }
+      }
     }
   }
-  return [...merged.values()];
+  return lookup;
+}
+
+function getPathAliases(path: string): string[] {
+  const normalized = normalizeLegacyPath(path);
+  const aliases = new Set<string>([normalized]);
+  const knownPrefixes = ["desktop/", "backend/", "host/", "apps/"];
+
+  for (const prefix of knownPrefixes) {
+    if (normalized.startsWith(prefix) && normalized.length > prefix.length) {
+      aliases.add(normalized.slice(prefix.length));
+    }
+  }
+
+  const segments = normalized.split("/");
+  if (segments.length > 2) {
+    aliases.add(segments.slice(1).join("/"));
+  }
+
+  return [...aliases];
 }
 
 function sanitizeUnifiedDiffText(raw: string): string | null {
@@ -225,7 +336,7 @@ function parseUnifiedGitDiff(raw: string): UnifiedDiffFile[] {
     if (!sanitized) {
       return [];
     }
-    return parseDiff(sanitized, { nearbySequences: "zip" }).map((file) => {
+    return parseDiff(sanitized, { nearbySequences: "zip" }).map((file, index) => {
       const additions = file.hunks.reduce(
         (sum, hunk) => sum + hunk.changes.filter((change) => isInsert(change)).length,
         0
@@ -235,6 +346,7 @@ function parseUnifiedGitDiff(raw: string): UnifiedDiffFile[] {
         0
       );
       return {
+        id: createDiffFileId("unified", file.oldPath, file.newPath, file.type, index),
         kind: "unified",
         file,
         displayPath: file.newPath === "/dev/null" ? file.oldPath : file.newPath,
@@ -256,12 +368,20 @@ function parseDiffInput(raw: string): ParsedDiff {
 
 export function DiffViewer({
   patch,
+  fileStats = [],
   mode = "stacked"
 }: {
   patch: string;
+  fileStats?: DiffFileStat[];
   mode?: "stacked" | "focused";
 }) {
-  const parsed = useMemo(() => parseDiffInput(patch), [patch]);
+  const parsed = useMemo(() => {
+    const next = parseDiffInput(patch);
+    if (next.kind === "codex") {
+      return { kind: "codex" as const, files: normalizeCodexFiles(next.files, fileStats) };
+    }
+    return next;
+  }, [fileStats, patch]);
 
   if (parsed.files.length === 0) {
     return (
@@ -294,15 +414,15 @@ function FocusedUnifiedDiffViewer({
   totalAdd: number;
   totalDel: number;
 }) {
-  const [activePath, setActivePath] = useState(files[0]?.displayPath ?? "");
+  const [activeId, setActiveId] = useState(files[0]?.id ?? "");
 
   useEffect(() => {
-    if (!files.some((file) => file.displayPath === activePath)) {
-      setActivePath(files[0]?.displayPath ?? "");
+    if (!files.some((file) => file.id === activeId)) {
+      setActiveId(files[0]?.id ?? "");
     }
-  }, [activePath, files]);
+  }, [activeId, files]);
 
-  const activeFile = files.find((file) => file.displayPath === activePath) ?? files[0];
+  const activeFile = files.find((file) => file.id === activeId) ?? files[0];
   if (!activeFile) {
     return null;
   }
@@ -327,20 +447,20 @@ function FocusedUnifiedDiffViewer({
         <div className="border-b border-brd bg-white lg:border-b-0 lg:border-r">
           <div className="max-h-[280px] overflow-y-auto p-1.5">
             {files.map((file) => {
-              const isActive = file.displayPath === activeFile.displayPath;
+              const isActive = file.id === activeFile.id;
               return (
                 <button
-                  key={file.displayPath}
+                  key={file.id}
                   type="button"
-                  onClick={() => setActivePath(file.displayPath)}
+                  onClick={() => setActiveId(file.id)}
                   className={cn(
                     "w-full rounded-lg border px-2.5 py-2 text-left transition-colors",
                     isActive ? "border-brd-strong bg-gz-1" : "border-transparent bg-transparent hover:bg-gz-1"
                   )}
                 >
                   <div className="flex items-center gap-2 mb-1">
-                    <code className="min-w-0 flex-1 truncate text-[11px] font-mono text-t2">
-                      {file.displayPath}
+                    <code className="min-w-0 flex-1 truncate text-[11px] font-mono text-t2" title={formatUnifiedFileLabel(file)}>
+                      {formatUnifiedFileLabel(file)}
                     </code>
                     {file.file.type === "add" && (
                       <span className="text-[9px] font-semibold uppercase tracking-wider text-green bg-green-dim px-1.5 py-px rounded">
@@ -358,6 +478,7 @@ function FocusedUnifiedDiffViewer({
                     {file.deletions > 0 && <span className="font-mono text-red">-{file.deletions}</span>}
                     <DiffBar additions={file.additions} deletions={file.deletions} />
                   </div>
+                  {renderUnifiedFileMeta(file)}
                 </button>
               );
             })}
@@ -366,8 +487,8 @@ function FocusedUnifiedDiffViewer({
 
         <div className="min-w-0">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-brd bg-white">
-            <code className="min-w-0 flex-1 truncate text-[11px] font-mono font-medium text-t1">
-              {activeFile.displayPath}
+            <code className="min-w-0 flex-1 truncate text-[11px] font-mono font-medium text-t1" title={formatUnifiedFileLabel(activeFile)}>
+              {formatUnifiedFileLabel(activeFile)}
             </code>
             {activeFile.additions > 0 && <span className="text-[10px] font-mono text-green">+{activeFile.additions}</span>}
             {activeFile.deletions > 0 && <span className="text-[10px] font-mono text-red">-{activeFile.deletions}</span>}
@@ -473,15 +594,15 @@ function FocusedCodexDiffViewer({
   totalAdd: number;
   totalDel: number;
 }) {
-  const [activePath, setActivePath] = useState(files[0]?.displayPath ?? "");
+  const [activeId, setActiveId] = useState(files[0]?.id ?? "");
 
   useEffect(() => {
-    if (!files.some((file) => file.displayPath === activePath)) {
-      setActivePath(files[0]?.displayPath ?? "");
+    if (!files.some((file) => file.id === activeId)) {
+      setActiveId(files[0]?.id ?? "");
     }
-  }, [activePath, files]);
+  }, [activeId, files]);
 
-  const activeFile = files.find((file) => file.displayPath === activePath) ?? files[0];
+  const activeFile = files.find((file) => file.id === activeId) ?? files[0];
   if (!activeFile) {
     return null;
   }
@@ -506,27 +627,32 @@ function FocusedCodexDiffViewer({
         <div className="border-b border-brd bg-white lg:border-b-0 lg:border-r">
           <div className="max-h-[280px] overflow-y-auto p-1.5">
             {files.map((file) => {
-              const isActive = file.displayPath === activeFile.displayPath;
+              const isActive = file.id === activeFile.id;
               return (
                 <button
-                  key={file.displayPath}
+                  key={file.id}
                   type="button"
-                  onClick={() => setActivePath(file.displayPath)}
+                  onClick={() => setActiveId(file.id)}
                   className={cn(
                     "w-full rounded-lg border px-2.5 py-2 text-left transition-colors",
                     isActive ? "border-brd-strong bg-gz-1" : "border-transparent bg-transparent hover:bg-gz-1"
                   )}
                 >
                   <div className="flex items-center gap-2 mb-1">
-                    <code className="min-w-0 flex-1 truncate text-[11px] font-mono text-t2">
-                      {file.displayPath}
+                    <code className="min-w-0 flex-1 truncate text-[11px] font-mono text-t2" title={formatCodexFileLabel(file)}>
+                      {formatCodexFileLabel(file)}
                     </code>
-                    {file.isNew && (
+                    {file.isReplacement && (
+                      <span className="text-[9px] font-semibold uppercase tracking-wider text-amber-700 bg-amber-100 px-1.5 py-px rounded">
+                        replaced
+                      </span>
+                    )}
+                    {!file.isReplacement && file.isNew && (
                       <span className="text-[9px] font-semibold uppercase tracking-wider text-green bg-green-dim px-1.5 py-px rounded">
                         new
                       </span>
                     )}
-                    {file.isDeleted && (
+                    {!file.isReplacement && file.isDeleted && (
                       <span className="text-[9px] font-semibold uppercase tracking-wider text-red bg-red-dim px-1.5 py-px rounded">
                         deleted
                       </span>
@@ -537,6 +663,7 @@ function FocusedCodexDiffViewer({
                     {file.deletions > 0 && <span className="font-mono text-red">-{file.deletions}</span>}
                     <DiffBar additions={file.additions} deletions={file.deletions} />
                   </div>
+                  {renderCodexFileMeta(file)}
                 </button>
               );
             })}
@@ -545,8 +672,8 @@ function FocusedCodexDiffViewer({
 
         <div className="min-w-0">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-brd bg-white">
-            <code className="min-w-0 flex-1 truncate text-[11px] font-mono font-medium text-t1">
-              {activeFile.displayPath}
+            <code className="min-w-0 flex-1 truncate text-[11px] font-mono font-medium text-t1" title={formatCodexFileLabel(activeFile)}>
+              {formatCodexFileLabel(activeFile)}
             </code>
             {activeFile.additions > 0 && <span className="text-[10px] font-mono text-green">+{activeFile.additions}</span>}
             {activeFile.deletions > 0 && <span className="text-[10px] font-mono text-red">-{activeFile.deletions}</span>}
@@ -605,8 +732,9 @@ function CodexFileDiff({ file, defaultOpen, index }: { file: CodexDiffFile; defa
         <code className="text-[12px] font-mono text-t1 font-medium truncate flex-1">{file.displayPath}</code>
 
         <div className="flex items-center gap-2 shrink-0">
-          {file.isNew && <span className="text-[9px] font-semibold uppercase tracking-wider text-green bg-green-dim px-1.5 py-px rounded">new</span>}
-          {file.isDeleted && <span className="text-[9px] font-semibold uppercase tracking-wider text-red bg-red-dim px-1.5 py-px rounded">deleted</span>}
+          {file.isReplacement && <span className="text-[9px] font-semibold uppercase tracking-wider text-amber-700 bg-amber-100 px-1.5 py-px rounded">replaced</span>}
+          {!file.isReplacement && file.isNew && <span className="text-[9px] font-semibold uppercase tracking-wider text-green bg-green-dim px-1.5 py-px rounded">new</span>}
+          {!file.isReplacement && file.isDeleted && <span className="text-[9px] font-semibold uppercase tracking-wider text-red bg-red-dim px-1.5 py-px rounded">deleted</span>}
           {file.additions > 0 && <span className="text-[10px] font-mono text-green">+{file.additions}</span>}
           {file.deletions > 0 && <span className="text-[10px] font-mono text-red">-{file.deletions}</span>}
           <DiffBar additions={file.additions} deletions={file.deletions} />
@@ -629,6 +757,18 @@ function CodexDiffTable({
   maxHeightClass: string;
   className?: string;
 }) {
+  if (file.lines.length === 0) {
+    return (
+      <div className={cn("bg-white", maxHeightClass, className)}>
+        <div className="px-4 py-6 text-[12px] text-t3">
+          {file.isDeleted
+            ? "Deleted file content was not captured in this patch."
+            : "No line-level diff content is available for this file."}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={cn("overflow-x-auto", maxHeightClass, className)}>
       <table className="w-full border-collapse text-[11px] leading-[18px] font-mono">
@@ -698,6 +838,76 @@ function normalizeLegacyPath(path: string): string {
     return parts.slice(-3).join("/");
   }
   return path.replace(/\\/g, "/");
+}
+
+function createDiffFileId(
+  kind: "codex" | "unified",
+  oldPath: string,
+  newPath: string,
+  changeType: string,
+  index: number
+): string {
+  return `${kind}:${changeType}:${oldPath}->${newPath}:${index}`;
+}
+
+function scoreCodexFile(file: CodexDiffFile): number {
+  return (
+    (file.lines.length > 0 ? 100 : 0)
+    + (!file.isDeleted ? 20 : 0)
+    + (file.isNew ? 5 : 0)
+    + file.lines.length
+  );
+}
+
+function formatUnifiedFileLabel(file: UnifiedDiffFile): string {
+  return file.file.type === "rename"
+    ? `${file.file.oldPath} -> ${file.file.newPath}`
+    : file.displayPath;
+}
+
+function formatCodexFileLabel(file: CodexDiffFile): string {
+  if (file.isReplacement && file.fromPath !== file.toPath) {
+    return `${file.fromPath} -> ${file.toPath}`;
+  }
+  if (file.isNew) {
+    return file.toPath;
+  }
+  if (file.isDeleted) {
+    return file.fromPath;
+  }
+  if (file.fromPath !== file.toPath) {
+    return `${file.fromPath} -> ${file.toPath}`;
+  }
+  return file.displayPath;
+}
+
+function renderUnifiedFileMeta(file: UnifiedDiffFile) {
+  if (file.file.type === "rename") {
+    return (
+      <p className="mt-1 truncate text-[10px] text-t4" title={`${file.file.oldPath} -> ${file.file.newPath}`}>
+        {file.file.oldPath} {"->"} {file.file.newPath}
+      </p>
+    );
+  }
+  return null;
+}
+
+function renderCodexFileMeta(file: CodexDiffFile) {
+  if (file.isReplacement && file.fromPath === file.toPath) {
+    return (
+      <p className="mt-1 truncate text-[10px] text-t4" title={file.displayPath}>
+        Replacement captured as one combined diff entry
+      </p>
+    );
+  }
+  if (file.fromPath !== file.toPath && file.fromPath !== "/dev/null" && file.toPath !== "/dev/null") {
+    return (
+      <p className="mt-1 truncate text-[10px] text-t4" title={`${file.fromPath} -> ${file.toPath}`}>
+        {file.fromPath} {"->"} {file.toPath}
+      </p>
+    );
+  }
+  return null;
 }
 
 function DiffBar({ additions, deletions }: { additions: number; deletions: number }) {
