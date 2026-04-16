@@ -362,6 +362,7 @@ describe("web view models", () => {
           relationType: "implements"
         }
       ],
+      parsedCodeDiffs: [],
       gitLinks: [
         {
           id: "git-1",
@@ -484,6 +485,7 @@ describe("web view models", () => {
         }
       ],
       artifactLinks: [],
+      parsedCodeDiffs: [],
       gitLinks: []
     } satisfies PromptDetail);
 

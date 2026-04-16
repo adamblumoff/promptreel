@@ -63,10 +63,6 @@ function isAbort(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
-async function warmDiffViewer() {
-  await import("./diff-viewer");
-}
-
 const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
 function formatLastSeenLabel(timestamp: string | null): string | null {
@@ -472,24 +468,6 @@ export function App({ viewerMode = "local", account = null }: AppProps) {
       void loadDetail(selectedWorkspaceId, expandedPromptId, true);
     }
   }, [detailsById, expandedPromptId, hostedRefreshTick, isHostedViewer, localEventTouchesSelectedThread, viewerRefreshTick, prompts, selectedWorkspaceId, visible]);
-
-  useEffect(() => {
-    if (!selectedWorkspaceId || !expandedPromptId) return;
-
-    const detail = detailsById[expandedPromptId];
-    if (!detail) return;
-
-    const diffBlobIds = detail.artifacts
-      .filter((artifact) => artifact.type === "code_diff" && artifact.blobId)
-      .map((artifact) => artifact.blobId!);
-
-    if (diffBlobIds.length === 0) return;
-
-    void warmDiffViewer();
-    for (const blobId of diffBlobIds) {
-      void loadBlob(selectedWorkspaceId, blobId);
-    }
-  }, [blobLoadingById, blobCache, detailsById, expandedPromptId, selectedWorkspaceId]);
 
   useEffect(() => {
     if (!selectedWorkspaceId || prompts.length === 0) {

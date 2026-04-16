@@ -5,6 +5,7 @@ import type {
   ArtifactRole,
   ArtifactSubtype,
   ArtifactType,
+  CodeDiffDisplayArtifact,
   GitSurvivalState,
   Health,
   PromptDetail,
@@ -132,8 +133,7 @@ export type PromptDetailViewModel = {
   featuredPlanBlobId: string | null;
   planTraceSteps: string[];
   artifactSummaries: PromptDetailArtifactViewModel[];
-  diffBlobIds: string[];
-  diffFileStats: DiffFileStat[];
+  parsedCodeDiffs: CodeDiffDisplayArtifact[];
   hasCodeDiffArtifacts: boolean;
   gitSummaries: PromptDetailGitLinkViewModel[];
 };
@@ -396,12 +396,7 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
         && artifact.type !== "code_diff"
         && !(featuredPlanArtifactId && artifact.type === "final_output")
     ),
-    diffBlobIds: prompt.artifacts
-      .filter((a) => a.type === "code_diff" && a.blobId)
-      .map((a) => a.blobId!),
-    diffFileStats: prompt.artifacts
-      .filter((artifact) => artifact.type === "code_diff")
-      .flatMap((artifact) => parseArtifactFiles(artifact)),
+    parsedCodeDiffs: prompt.parsedCodeDiffs ?? [],
     hasCodeDiffArtifacts: prompt.artifacts.some((a) => a.type === "code_diff"),
     gitSummaries: prompt.gitLinks.map((gitLink) => ({
       id: gitLink.id,

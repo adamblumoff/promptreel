@@ -50,7 +50,8 @@ export function ExpandedDetail({
   blobCache?: Record<string, string>;
   blobLoadingById?: Record<string, boolean>;
 }) {
-  const hasDiffPane = detail.diffBlobIds.length > 0 || detail.hasCodeDiffArtifacts;
+  const parsedDiffs = detail.parsedCodeDiffs ?? [];
+  const hasDiffPane = parsedDiffs.length > 0 || detail.hasCodeDiffArtifacts;
   const transcriptSectionCount = detail.transcript.length > 0 ? 1 : 0;
   const planSectionCount = detail.featuredPlanArtifact ? 1 : 0;
   const leadingSectionCount = transcriptSectionCount + planSectionCount;
@@ -96,11 +97,7 @@ export function ExpandedDetail({
         <div className="slidein" style={{ animationDelay: leadingSectionCount > 0 ? `${leadingSectionCount * 50}ms` : undefined }}>
           <DiffSection
             promptEventId={detail.id}
-            blobIds={detail.diffBlobIds}
-            fileStats={detail.diffFileStats}
-            onLoadBlob={onLoadBlob}
-            blobCache={blobCache ?? {}}
-            blobLoadingById={blobLoadingById ?? {}}
+            diffs={parsedDiffs}
             hasCodeDiffArtifacts={detail.hasCodeDiffArtifacts}
           />
         </div>
@@ -638,37 +635,14 @@ function formatDecisionTimestamp(timestamp: string): string {
 
 function DiffSection({
   promptEventId,
-  blobIds,
-  fileStats,
-  onLoadBlob,
-  blobCache,
-  blobLoadingById,
+  diffs,
   hasCodeDiffArtifacts,
 }: {
   promptEventId: string;
-  blobIds: string[];
-  fileStats: PromptDetailViewModel["diffFileStats"];
-  onLoadBlob: (blobId: string) => void;
-  blobCache: Record<string, string>;
-  blobLoadingById: Record<string, boolean>;
+  diffs: PromptDetailViewModel["parsedCodeDiffs"];
   hasCodeDiffArtifacts: boolean;
 }) {
   const [open, setOpen] = usePromptDisclosureState(promptEventId, "diff");
-  const pendingBlobIds = open
-    ? blobIds.filter((id) => blobCache[id] === undefined && !blobLoadingById[id])
-    : [];
-  const anyLoading = blobIds.some((id) => blobLoadingById[id]);
-  const combinedPatch = blobIds
-    .map((id) => blobCache[id])
-    .filter((c): c is string => c !== undefined)
-    .join("\n");
-  const isLoading = pendingBlobIds.length > 0 || (anyLoading && !combinedPatch);
-
-  useEffect(() => {
-    for (const blobId of pendingBlobIds) {
-      onLoadBlob(blobId);
-    }
-  }, [onLoadBlob, pendingBlobIds]);
 
   return (
     <div>
@@ -683,32 +657,21 @@ function DiffSection({
             <h3 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-t4 mb-1">Code changes</h3>
             <p className="text-[12px] text-t2">Focused git-style diff review</p>
           </div>
-          {blobIds.length > 0 && (
+          {diffs.length > 0 && (
             <span className="text-[10px] text-t3 bg-white px-1.5 py-px rounded border border-brd">git diff</span>
           )}
         </button>
 
         {open && (
           <div className="p-3 border-t border-brd slidedown">
-            {isLoading && !combinedPatch && (
-              <div className="rounded-xl border border-brd bg-white flex items-center gap-2 py-6 justify-center">
-                <RefreshCw className="size-3.5 spinner text-t4" />
-                <span className="text-[11px] text-t3">Loading diff...</span>
-              </div>
-            )}
-            {combinedPatch && (
+            {diffs.length > 0 && (
               <Suspense fallback={<ContentRendererFallback text="Rendering diff..." />}>
-                <LazyDiffViewer patch={combinedPatch} mode="focused" fileStats={fileStats} />
+                <LazyDiffViewer artifacts={diffs} mode="focused" />
               </Suspense>
             )}
-            {!isLoading && !combinedPatch && hasCodeDiffArtifacts && blobIds.length === 0 && (
+            {!diffs.length && hasCodeDiffArtifacts && (
               <div className="rounded-xl border border-brd bg-white px-4 py-3">
                 <p className="text-[11px] text-t3">Diff content not stored for this artifact.</p>
-              </div>
-            )}
-            {!isLoading && !combinedPatch && blobIds.length > 0 && (
-              <div className="rounded-xl border border-brd bg-white px-4 py-3">
-                <p className="text-[11px] text-t3">Failed to load diff content.</p>
               </div>
             )}
           </div>

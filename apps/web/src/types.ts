@@ -150,6 +150,39 @@ export type GitLink = {
   matchedAt: string;
 };
 
+export type CodeDiffDisplayRow = {
+  kind: "context" | "add" | "del";
+  text: string;
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+};
+
+export type CodeDiffDisplayBlock =
+  | {
+      kind: "collapsed";
+      count: number;
+    }
+  | {
+      kind: "hunk";
+      rows: CodeDiffDisplayRow[];
+    };
+
+export type CodeDiffDisplayFile = {
+  path: string;
+  fromPath: string;
+  toPath: string;
+  changeType: "added" | "modified" | "deleted";
+  additions: number;
+  deletions: number;
+  blocks: CodeDiffDisplayBlock[];
+};
+
+export type CodeDiffDisplayArtifact = {
+  artifactId: string;
+  summary: string;
+  files: CodeDiffDisplayFile[];
+};
+
 export type PromptDetail = Omit<PromptListItem, "filesTouched" | "filesTouchedCount" | "childCount" | "artifactCount" | "primaryArtifactType" | "primaryArtifactSummary" | "hasCodeDiff" | "isLiveDerived"> & {
   promptText: string;
   transcript: Array<
@@ -173,6 +206,7 @@ export type PromptDetail = Omit<PromptListItem, "filesTouched" | "filesTouchedCo
   artifacts: Artifact[];
   artifactLinks: ArtifactLink[];
   gitLinks: GitLink[];
+  parsedCodeDiffs: CodeDiffDisplayArtifact[];
 };
 
 export type WorkspaceIngestionStatus = {
