@@ -666,7 +666,7 @@ export class PromptreelStore {
     ).all(promptId) as unknown as GitLinkRecord[];
     const transcript = this.getPromptTranscript(db, workspaceId, prompt);
     db.close();
-    return { ...prompt, transcript, artifacts, artifactLinks, gitLinks };
+    return { ...prompt, transcript, artifacts, artifactLinks, gitLinks, parsedCodeDiffs: [] };
   }
 
   upsertArtifact(workspaceId: string, artifact: ArtifactRecord): void {

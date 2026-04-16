@@ -5,6 +5,10 @@ import { execFileSync } from "node:child_process";
 import { createTwoFilesPatch, parsePatch } from "diff";
 import type {
   ArtifactRecord,
+  CodeDiffDisplayArtifact,
+  CodeDiffDisplayBlock,
+  CodeDiffDisplayFile,
+  CodeDiffDisplayRow,
   CodeDiffResult,
   WorkspaceFileState,
   WorkspaceSnapshotData
@@ -243,6 +247,35 @@ export function parseStoredCodeDiffPatch(
   return parseUnifiedDiffToCodeDiff(patch);
 }
 
+export function buildCodeDiffDisplay(
+  patch: string,
+  sourceFormat?: CodeDiffArtifactMetadata["sourceFormat"] | null
+): CodeDiffDisplayFile[] {
+  if (sourceFormat === "codex_apply_patch") {
+    return buildCodexDiffDisplay(patch);
+  }
+  if (sourceFormat === "unified_diff") {
+    return buildUnifiedDiffDisplay(patch);
+  }
+  if (patch.includes("*** Begin Patch") || patch.includes("*** Update File:") || patch.includes("*** Add File:")) {
+    return buildCodexDiffDisplay(patch);
+  }
+  return buildUnifiedDiffDisplay(patch);
+}
+
+export function buildCodeDiffDisplayArtifact(input: {
+  artifactId: string;
+  summary: string;
+  patch: string;
+  sourceFormat?: CodeDiffArtifactMetadata["sourceFormat"] | null;
+}): CodeDiffDisplayArtifact {
+  return {
+    artifactId: input.artifactId,
+    summary: input.summary,
+    files: buildCodeDiffDisplay(input.patch, input.sourceFormat)
+  };
+}
+
 export function parseUnifiedDiffToCodeDiff(output: string): CodeDiffResult | null {
   const diffBody = sanitizeUnifiedDiffText(output);
   if (!diffBody) {
@@ -434,8 +467,7 @@ function sanitizeUnifiedDiffText(output: string): string | null {
 
 function isCapturedDiffNoise(line: string): boolean {
   return (
-    line.trim() === ""
-    || line.startsWith("Chunk ID: ")
+    line.startsWith("Chunk ID: ")
     || line.startsWith("Wall time: ")
     || line.startsWith("Process exited with code ")
     || line.startsWith("Original token count: ")
@@ -591,4 +623,287 @@ function countPatchDeltaLines(patch: string): { additions: number; deletions: nu
   }
 
   return { additions, deletions, hunkCount };
+}
+
+function buildUnifiedDiffDisplay(output: string): CodeDiffDisplayFile[] {
+  const diffBody = sanitizeUnifiedDiffText(output);
+  if (!diffBody) {
+    return [];
+  }
+
+  try {
+    return parsePatch(diffBody).map((parsed) => {
+      const fromPath = normalizePatchFileName(parsed.oldFileName);
+      const toPath = normalizePatchFileName(parsed.newFileName);
+      const path = toPath === "/dev/null" ? fromPath : toPath;
+      const blocks: CodeDiffDisplayBlock[] = [];
+      const stats = summarizeParsedPatchFile(parsed);
+      let previousOldLine: number | null = null;
+
+      for (const hunk of parsed.hunks ?? []) {
+        const oldStart = typeof hunk.oldStart === "number" ? hunk.oldStart : null;
+        if (oldStart && oldStart > 1 && previousOldLine === null) {
+          blocks.push({ kind: "collapsed", count: oldStart - 1 });
+        } else if (oldStart && previousOldLine && oldStart > previousOldLine + 1) {
+          blocks.push({ kind: "collapsed", count: oldStart - previousOldLine - 1 });
+        }
+
+        let oldLine = oldStart ?? null;
+        let newLine = typeof hunk.newStart === "number" ? hunk.newStart : null;
+        const rows: CodeDiffDisplayRow[] = [];
+
+        for (const line of hunk.lines ?? []) {
+          if (line === "\\ No newline at end of file") {
+            continue;
+          }
+          if (line.startsWith("+")) {
+            rows.push({
+              kind: "add",
+              text: line.slice(1),
+              oldLineNumber: null,
+              newLineNumber: newLine,
+            });
+            newLine = newLine === null ? null : newLine + 1;
+            continue;
+          }
+          if (line.startsWith("-")) {
+            rows.push({
+              kind: "del",
+              text: line.slice(1),
+              oldLineNumber: oldLine,
+              newLineNumber: null,
+            });
+            oldLine = oldLine === null ? null : oldLine + 1;
+            continue;
+          }
+          if (line.startsWith(" ")) {
+            rows.push({
+              kind: "context",
+              text: line.slice(1),
+              oldLineNumber: oldLine,
+              newLineNumber: newLine,
+            });
+            oldLine = oldLine === null ? null : oldLine + 1;
+            newLine = newLine === null ? null : newLine + 1;
+          }
+        }
+
+        previousOldLine = oldLine === null ? previousOldLine : oldLine - 1;
+        blocks.push(...collapseDisplayRows(rows, true));
+      }
+
+      return {
+        path,
+        fromPath,
+        toPath,
+        changeType: fromPath === "/dev/null" ? "added" : toPath === "/dev/null" ? "deleted" : "modified",
+        additions: stats.additions,
+        deletions: stats.deletions,
+        blocks,
+      } satisfies CodeDiffDisplayFile;
+    });
+  } catch {
+    return [];
+  }
+}
+
+function buildCodexDiffDisplay(input: string): CodeDiffDisplayFile[] {
+  const files: Array<CodeDiffDisplayFile & { isNew: boolean; isDeleted: boolean }> = [];
+  const lines = input.split(/\r?\n/);
+  let current: (CodeDiffDisplayFile & { isNew: boolean; isDeleted: boolean; sections: CodeDiffDisplayRow[][] }) | null = null;
+
+  const flushCurrent = () => {
+    if (!current) {
+      return;
+    }
+    current.blocks = current.sections.flatMap((rows) => collapseDisplayRows(rows, false));
+    files.push({
+      path: current.path,
+      fromPath: current.fromPath,
+      toPath: current.toPath,
+      changeType: current.changeType,
+      additions: current.additions,
+      deletions: current.deletions,
+      blocks: current.blocks,
+      isNew: current.isNew,
+      isDeleted: current.isDeleted,
+    });
+    current = null;
+  };
+
+  const beginSection = () => {
+    if (!current) {
+      return;
+    }
+    current.sections.push([]);
+  };
+
+  const pushRow = (row: CodeDiffDisplayRow) => {
+    if (!current) {
+      return;
+    }
+    if (current.sections.length === 0) {
+      current.sections.push([]);
+    }
+    current.sections[current.sections.length - 1]!.push(row);
+  };
+
+  for (const line of lines) {
+    if (line === "*** Begin Patch" || line === "*** End Patch") {
+      flushCurrent();
+      continue;
+    }
+
+    if (line.startsWith("*** Add File: ")) {
+      flushCurrent();
+      const path = normalizeDiffPath(line.slice("*** Add File: ".length));
+      current = {
+        path,
+        fromPath: "/dev/null",
+        toPath: path,
+        changeType: "added",
+        additions: 0,
+        deletions: 0,
+        blocks: [],
+        isNew: true,
+        isDeleted: false,
+        sections: [],
+      };
+      continue;
+    }
+
+    if (line.startsWith("*** Delete File: ")) {
+      flushCurrent();
+      const path = normalizeDiffPath(line.slice("*** Delete File: ".length));
+      current = {
+        path,
+        fromPath: path,
+        toPath: "/dev/null",
+        changeType: "deleted",
+        additions: 0,
+        deletions: 0,
+        blocks: [],
+        isNew: false,
+        isDeleted: true,
+        sections: [],
+      };
+      continue;
+    }
+
+    if (line.startsWith("*** Update File: ")) {
+      flushCurrent();
+      const path = normalizeDiffPath(line.slice("*** Update File: ".length));
+      current = {
+        path,
+        fromPath: path,
+        toPath: path,
+        changeType: "modified",
+        additions: 0,
+        deletions: 0,
+        blocks: [],
+        isNew: false,
+        isDeleted: false,
+        sections: [],
+      };
+      continue;
+    }
+
+    if (!current) {
+      continue;
+    }
+
+    if (line === "@@") {
+      beginSection();
+      continue;
+    }
+    if (line.startsWith("+")) {
+      current.additions += 1;
+      pushRow({ kind: "add", text: line.slice(1), oldLineNumber: null, newLineNumber: null });
+      continue;
+    }
+    if (line.startsWith("-")) {
+      current.deletions += 1;
+      pushRow({ kind: "del", text: line.slice(1), oldLineNumber: null, newLineNumber: null });
+      continue;
+    }
+    if (line.startsWith(" ")) {
+      pushRow({ kind: "context", text: line.slice(1), oldLineNumber: null, newLineNumber: null });
+    }
+  }
+
+  flushCurrent();
+
+  const grouped = new Map<string, Array<CodeDiffDisplayFile & { isNew: boolean; isDeleted: boolean }>>();
+  for (const file of files) {
+    grouped.set(file.path, [...(grouped.get(file.path) ?? []), file]);
+  }
+
+  return [...grouped.values()].map((entries) => {
+    const first = entries[0]!;
+    const additions = entries.reduce((sum, file) => sum + file.additions, 0);
+    const deletions = entries.reduce((sum, file) => sum + file.deletions, 0);
+    const isAddedOnly = entries.every((file) => file.isNew);
+    const isDeletedOnly = entries.every((file) => file.isDeleted);
+    return {
+      path: first.path,
+      fromPath: isAddedOnly ? "/dev/null" : first.fromPath,
+      toPath: isDeletedOnly ? "/dev/null" : first.toPath,
+      changeType: isAddedOnly ? "added" : isDeletedOnly ? "deleted" : "modified",
+      additions,
+      deletions,
+      blocks: entries.flatMap((file) => file.blocks),
+    } satisfies CodeDiffDisplayFile;
+  });
+}
+
+function collapseDisplayRows(rows: CodeDiffDisplayRow[], includeBoundaryCollapse: boolean): CodeDiffDisplayBlock[] {
+  const changeIndexes = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => row.kind !== "context")
+    .map(({ index }) => index);
+
+  if (changeIndexes.length === 0) {
+    return rows.length > 0 ? [{ kind: "collapsed", count: rows.length }] : [];
+  }
+
+  const radius = 3;
+  const ranges = changeIndexes
+    .map((index) => ({
+      start: Math.max(0, index - radius),
+      end: Math.min(rows.length - 1, index + radius),
+    }))
+    .sort((left, right) => left.start - right.start);
+
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (!previous || range.start > previous.end + 1) {
+      merged.push({ ...range });
+    } else {
+      previous.end = Math.max(previous.end, range.end);
+    }
+  }
+
+  const blocks: CodeDiffDisplayBlock[] = [];
+  let cursor = 0;
+
+  for (const range of merged) {
+    if (range.start > cursor && includeBoundaryCollapse) {
+      blocks.push({ kind: "collapsed", count: range.start - cursor });
+    }
+    if (range.start > cursor && !includeBoundaryCollapse && range.start - cursor > 0) {
+      blocks.push({ kind: "collapsed", count: range.start - cursor });
+    }
+    blocks.push({
+      kind: "hunk",
+      rows: rows.slice(range.start, range.end + 1),
+    });
+    cursor = range.end + 1;
+  }
+
+  if (cursor < rows.length) {
+    blocks.push({ kind: "collapsed", count: rows.length - cursor });
+  }
+
+  return blocks;
 }

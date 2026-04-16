@@ -53,6 +53,7 @@ import {
   verifyClerkSessionToken,
 } from "./daemon-auth.js";
 import { buildViewerStatus, listLocalWorkspaceItems } from "./daemon-viewer.js";
+import { buildCodeDiffDisplayArtifact, type CodeDiffArtifactMetadata } from "@promptreel/git-integration";
 
 loadDaemonEnvFiles();
 
@@ -136,6 +137,39 @@ export function buildServer() {
       throw httpError(401, "Unable to verify cloud viewer");
     }
     return cloudUser;
+  };
+
+  const buildPromptDetailWithParsedDiffs = async (
+    prompt: PromptEventResponse["prompt"],
+    workspaceId: string,
+    readBlob: (blobId: string) => Promise<string>
+  ): Promise<PromptEventResponse["prompt"]> => {
+    const parsedCodeDiffs = await Promise.all(
+      prompt.artifacts
+        .filter((artifact) => artifact.type === "code_diff" && artifact.blobId)
+        .map(async (artifact) => {
+          let metadata: CodeDiffArtifactMetadata | null = null;
+          if (artifact.metadataJson) {
+            try {
+              metadata = JSON.parse(artifact.metadataJson) as CodeDiffArtifactMetadata;
+            } catch {
+              metadata = null;
+            }
+          }
+          const patch = await readBlob(artifact.blobId!);
+          return buildCodeDiffDisplayArtifact({
+            artifactId: artifact.id,
+            summary: artifact.summary,
+            patch,
+            sourceFormat: metadata?.sourceFormat ?? null,
+          });
+        })
+    );
+
+    return {
+      ...prompt,
+      parsedCodeDiffs,
+    };
   };
 
   const toPromptSearchLookupKey = (prompt: Pick<PromptEventListItem, "id" | "threadId" | "sessionId">): string =>
@@ -337,7 +371,15 @@ export function buildServer() {
       if (!prompt) {
         throw notFound("Prompt not found");
       }
-      return { prompt };
+      return {
+        prompt: await buildPromptDetailWithParsedDiffs(
+          prompt,
+          workspaceId,
+          cloudUser
+            ? (blobId) => cloudStore.readCloudBlob(cloudUser.id, workspaceId, blobId)
+            : async (blobId) => store.readBlob(workspaceId, blobId)
+        )
+      };
     }
   );
 
