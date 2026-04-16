@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { createTwoFilesPatch } from "diff";
+import { createTwoFilesPatch, parsePatch } from "diff";
 import type {
   ArtifactRecord,
   CodeDiffResult,
@@ -16,7 +16,10 @@ type FileChange = CodeDiffResult["files"][number];
 export interface CodeDiffArtifactMetadata {
   source?: "apply_patch" | "git_diff_output" | "app_server_diff" | "snapshot_diff";
   sourceFormat?: "codex_apply_patch" | "unified_diff";
+  parserVersion?: number;
 }
+
+export const CURRENT_CODE_DIFF_PARSER_VERSION = 2;
 
 function git(repoPath: string, args: string[]): string {
   try {
@@ -105,7 +108,7 @@ export function buildCodeDiff(
   const afterFiles = new Map(after.files.map((file) => [file.path, file]));
   const allPaths = new Set([...beforeFiles.keys(), ...afterFiles.keys()]);
   const patches: string[] = [];
-  const files: Array<{ path: string; changeType: "added" | "modified" | "deleted" }> = [];
+  const files: CodeDiffResult["files"] = [];
 
   for (const path of [...allPaths].sort()) {
     const left = beforeFiles.get(path);
@@ -116,10 +119,10 @@ export function buildCodeDiff(
       continue;
     }
     const changeType = !left ? "added" : !right ? "deleted" : "modified";
-    files.push({ path, changeType });
-    patches.push(
-      createTwoFilesPatch(path, path, beforeContent, afterContent, left?.status ?? "before", right?.status ?? "after")
-    );
+    const patch = createTwoFilesPatch(path, path, beforeContent, afterContent, left?.status ?? "before", right?.status ?? "after");
+    const delta = countPatchDeltaLines(patch);
+    files.push({ path, changeType, additions: delta.additions, deletions: delta.deletions, hunkCount: delta.hunkCount });
+    patches.push(patch);
   }
 
   if (patches.length === 0) {
@@ -135,118 +138,146 @@ export function buildCodeDiff(
 }
 
 export function parseApplyPatchToCodeDiff(input: string): CodeDiffResult | null {
-  const files: FileChange[] = [];
+  const files: Array<FileChange & { additions?: number; deletions?: number; hunkCount?: number }> = [];
   const lines = input.split(/\r?\n/);
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    if (line.startsWith("*** Add File: ")) {
-      files.push({
-        path: normalizeDiffPath(line.slice("*** Add File: ".length)),
-        changeType: "added"
-      });
-      continue;
-    }
-    if (line.startsWith("*** Delete File: ")) {
-      files.push({
-        path: normalizeDiffPath(line.slice("*** Delete File: ".length)),
-        changeType: "deleted"
-      });
-      continue;
-    }
-    if (!line.startsWith("*** Update File: ")) {
-      continue;
-    }
-
-    const sourcePath = normalizeDiffPath(line.slice("*** Update File: ".length));
-    const moveLine = lines[index + 1] ?? "";
-    if (moveLine.startsWith("*** Move to: ")) {
-      files.push({ path: sourcePath, changeType: "deleted" });
-      files.push({
-        path: normalizeDiffPath(moveLine.slice("*** Move to: ".length)),
-        changeType: "added"
-      });
-      index += 1;
-      continue;
-    }
-
-    files.push({ path: sourcePath, changeType: "modified" });
-  }
-
-  return toCodeDiffResult(input, files);
-}
-
-export function parseUnifiedDiffToCodeDiff(output: string): CodeDiffResult | null {
-  const startIndex = output.search(/^diff --git /m);
-  if (startIndex < 0) {
-    return null;
-  }
-
-  const diffBody = output.slice(startIndex);
-  const files: FileChange[] = [];
-  let current: {
-    oldPath: string;
-    newPath: string;
-    changeType: FileChange["changeType"];
-  } | null = null;
+  let current:
+    | (FileChange & {
+        additions: number;
+        deletions: number;
+        hunkCount: number;
+      })
+    | null = null;
 
   const flushCurrent = () => {
     if (!current) {
       return;
     }
-    if (current.changeType === "added") {
-      files.push({ path: current.newPath, changeType: "added" });
-    } else if (current.changeType === "deleted") {
-      files.push({ path: current.oldPath, changeType: "deleted" });
-    } else {
-      files.push({ path: current.newPath || current.oldPath, changeType: "modified" });
-    }
+    files.push(current);
     current = null;
   };
 
-  for (const line of diffBody.split(/\r?\n/)) {
-    if (line.startsWith("diff --git ")) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.startsWith("*** Add File: ")) {
       flushCurrent();
-      const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
-      if (!match) {
-        continue;
-      }
       current = {
-        oldPath: normalizeDiffPath(match[1] ?? ""),
-        newPath: normalizeDiffPath(match[2] ?? ""),
-        changeType: "modified"
+        path: normalizeDiffPath(line.slice("*** Add File: ".length)),
+        changeType: "added",
+        additions: 0,
+        deletions: 0,
+        hunkCount: 0
       };
       continue;
     }
-    if (!current) {
+    if (line.startsWith("*** Delete File: ")) {
+      flushCurrent();
+      current = {
+        path: normalizeDiffPath(line.slice("*** Delete File: ".length)),
+        changeType: "deleted",
+        additions: 0,
+        deletions: 0,
+        hunkCount: 0
+      };
       continue;
     }
-    if (line.startsWith("new file mode ")) {
-      current.changeType = "added";
+    if (!line.startsWith("*** Update File: ")) {
+      if (!current) {
+        continue;
+      }
+      if (line === "@@") {
+        current.hunkCount += 1;
+        continue;
+      }
+      if (line.startsWith("+")) {
+        current.additions += 1;
+        continue;
+      }
+      if (line.startsWith("-")) {
+        current.deletions += 1;
+      }
       continue;
     }
-    if (line.startsWith("deleted file mode ")) {
-      current.changeType = "deleted";
+
+    flushCurrent();
+    const sourcePath = normalizeDiffPath(line.slice("*** Update File: ".length));
+    const moveLine = lines[index + 1] ?? "";
+    if (moveLine.startsWith("*** Move to: ")) {
+      files.push({ path: sourcePath, changeType: "deleted", additions: 0, deletions: 0, hunkCount: 0 });
+      files.push({
+        path: normalizeDiffPath(moveLine.slice("*** Move to: ".length)),
+        changeType: "added",
+        additions: 0,
+        deletions: 0,
+        hunkCount: 0
+      });
+      index += 1;
       continue;
     }
-    if (line === "--- /dev/null") {
-      current.changeType = "added";
-      continue;
-    }
-    if (line === "+++ /dev/null") {
-      current.changeType = "deleted";
-      continue;
-    }
-    if (line.startsWith("rename from ")) {
-      current.oldPath = normalizeDiffPath(line.slice("rename from ".length));
-      continue;
-    }
-    if (line.startsWith("rename to ")) {
-      current.newPath = normalizeDiffPath(line.slice("rename to ".length));
-    }
+
+    current = {
+      path: sourcePath,
+      changeType: "modified",
+      additions: 0,
+      deletions: 0,
+      hunkCount: 0
+    };
   }
 
   flushCurrent();
+  return toCodeDiffResult(input, files);
+}
+
+export function parseStoredCodeDiffPatch(
+  patch: string,
+  sourceFormat?: CodeDiffArtifactMetadata["sourceFormat"] | null
+): CodeDiffResult | null {
+  if (sourceFormat === "codex_apply_patch") {
+    return parseApplyPatchToCodeDiff(patch);
+  }
+  if (sourceFormat === "unified_diff") {
+    return parseUnifiedDiffToCodeDiff(patch);
+  }
+  if (patch.includes("*** Begin Patch") || patch.includes("*** Update File:") || patch.includes("*** Add File:")) {
+    return parseApplyPatchToCodeDiff(patch);
+  }
+  return parseUnifiedDiffToCodeDiff(patch);
+}
+
+export function parseUnifiedDiffToCodeDiff(output: string): CodeDiffResult | null {
+  const diffBody = sanitizeUnifiedDiffText(output);
+  if (!diffBody) {
+    return null;
+  }
+
+  const sections = collectUnifiedDiffSections(diffBody);
+  const statsBySectionKey = new Map<string, { additions: number; deletions: number; hunkCount: number }>();
+  try {
+    const parsedFiles = parsePatch(diffBody);
+    for (const parsed of parsedFiles) {
+      const oldPath = normalizePatchFileName(parsed.oldFileName);
+      const newPath = normalizePatchFileName(parsed.newFileName);
+      const stats = summarizeParsedPatchFile(parsed);
+      statsBySectionKey.set(buildSectionKey(oldPath, newPath), stats);
+    }
+  } catch {
+    // Some historical blobs include terminal transcript wrappers between diff
+    // sections. We still return section-level file data when patch parsing fails.
+  }
+
+  const files = sections.map((section) => {
+    const stats = statsBySectionKey.get(buildSectionKey(section.oldPath, section.newPath))
+      ?? { additions: 0, deletions: 0, hunkCount: 0 };
+    return {
+      path: section.changeType === "deleted" ? section.oldPath : (section.newPath || section.oldPath),
+      oldPath: section.oldPath || undefined,
+      newPath: section.newPath || undefined,
+      changeType: section.changeType,
+      additions: stats.additions,
+      deletions: stats.deletions,
+      hunkCount: stats.hunkCount
+    };
+  });
+
   return toCodeDiffResult(output, files);
 }
 
@@ -275,6 +306,7 @@ export function buildCodeDiffArtifact(
     metadataJson: JSON.stringify({
       generatedAt: nowIso(),
       patchIdentity: diff.patchIdentity,
+      parserVersion: CURRENT_CODE_DIFF_PARSER_VERSION,
       ...metadata
     })
   };
@@ -308,13 +340,10 @@ function mergeFileChanges(files: FileChange[]): FileChange[] {
     const existingIndex = indexByPath.get(normalizedPath);
     if (existingIndex === undefined) {
       indexByPath.set(normalizedPath, merged.length);
-      merged.push({ path: normalizedPath, changeType: file.changeType });
+      merged.push({ ...file, path: normalizedPath });
       continue;
     }
-    merged[existingIndex] = {
-      path: normalizedPath,
-      changeType: file.changeType
-    };
+    merged[existingIndex] = { ...file, path: normalizedPath };
   }
 
   return merged;
@@ -336,4 +365,230 @@ function joinPatchSegments(segments: string[]): string {
 
 function normalizeDiffPath(path: string): string {
   return path.trim().replace(/^["']|["']$/g, "").replace(/\\/g, "/");
+}
+
+function normalizePatchFileName(path: string | undefined): string {
+  if (!path) {
+    return "";
+  }
+  if (path === "/dev/null") {
+    return path;
+  }
+  return normalizeDiffPath(path.replace(/^[ab]\//, ""));
+}
+
+function sanitizeUnifiedDiffText(output: string): string | null {
+  const kept: string[] = [];
+  let inDiff = false;
+  let inHunk = false;
+  let inBinaryPatch = false;
+
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith("diff --git ")) {
+      kept.push(line);
+      inDiff = true;
+      inHunk = false;
+      inBinaryPatch = false;
+      continue;
+    }
+
+    if (!inDiff) {
+      continue;
+    }
+
+    if (isCapturedDiffNoise(line)) {
+      inHunk = false;
+      inBinaryPatch = false;
+      continue;
+    }
+
+    if (inBinaryPatch) {
+      kept.push(line);
+      continue;
+    }
+
+    if (line.startsWith("@@ ")) {
+      kept.push(line);
+      inHunk = true;
+      continue;
+    }
+
+    if (inHunk) {
+      if (/^[ +\\-]/.test(line) || line === "\\ No newline at end of file") {
+        kept.push(line);
+        continue;
+      }
+      inHunk = false;
+    }
+
+    if (isUnifiedDiffMetadata(line)) {
+      kept.push(line);
+      if (line === "GIT binary patch") {
+        inBinaryPatch = true;
+      }
+    }
+  }
+
+  return kept.some((line) => line.startsWith("diff --git ")) ? kept.join("\n") : null;
+}
+
+function isCapturedDiffNoise(line: string): boolean {
+  return (
+    line.trim() === ""
+    || line.startsWith("Chunk ID: ")
+    || line.startsWith("Wall time: ")
+    || line.startsWith("Process exited with code ")
+    || line.startsWith("Original token count: ")
+    || line === "Output:"
+    || line.startsWith("warning: ")
+  );
+}
+
+function isUnifiedDiffMetadata(line: string): boolean {
+  return (
+    line.startsWith("index ")
+    || line.startsWith("old mode ")
+    || line.startsWith("new mode ")
+    || line.startsWith("deleted file mode ")
+    || line.startsWith("new file mode ")
+    || line.startsWith("copy from ")
+    || line.startsWith("copy to ")
+    || line.startsWith("rename from ")
+    || line.startsWith("rename to ")
+    || line.startsWith("similarity index ")
+    || line.startsWith("dissimilarity index ")
+    || line.startsWith("--- ")
+    || line.startsWith("+++ ")
+    || line.startsWith("Binary files ")
+    || line === "GIT binary patch"
+    || line.startsWith("literal ")
+    || line.startsWith("delta ")
+  );
+}
+
+function buildSectionKey(oldPath: string, newPath: string): string {
+  return `${oldPath}::${newPath}`;
+}
+
+function summarizeParsedPatchFile(parsed: {
+  hunks?: Array<{ lines?: string[] }>;
+}): { additions: number; deletions: number; hunkCount: number } {
+  let additions = 0;
+  let deletions = 0;
+  let hunkCount = 0;
+
+  for (const hunk of parsed.hunks ?? []) {
+    hunkCount += 1;
+    for (const line of hunk.lines ?? []) {
+      if (line.startsWith("+")) {
+        additions += 1;
+        continue;
+      }
+      if (line.startsWith("-")) {
+        deletions += 1;
+      }
+    }
+  }
+
+  return { additions, deletions, hunkCount };
+}
+
+function collectUnifiedDiffSections(diffBody: string): Array<{
+  oldPath: string;
+  newPath: string;
+  changeType: FileChange["changeType"];
+}> {
+  const sections: Array<{
+    oldPath: string;
+    newPath: string;
+    changeType: FileChange["changeType"];
+  }> = [];
+  let current:
+    | {
+        oldPath: string;
+        newPath: string;
+        changeType: FileChange["changeType"];
+      }
+    | null = null;
+
+  const flushCurrent = () => {
+    if (!current) {
+      return;
+    }
+    sections.push(current);
+    current = null;
+  };
+
+  for (const line of diffBody.split(/\r?\n/)) {
+    if (line.startsWith("diff --git ")) {
+      flushCurrent();
+      const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+      if (!match) {
+        continue;
+      }
+      current = {
+        oldPath: normalizeDiffPath(match[1] ?? ""),
+        newPath: normalizeDiffPath(match[2] ?? ""),
+        changeType: "modified"
+      };
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    if (line.startsWith("new file mode ")) {
+      current.changeType = "added";
+      continue;
+    }
+    if (line.startsWith("deleted file mode ")) {
+      current.changeType = "deleted";
+      continue;
+    }
+    if (line === "--- /dev/null") {
+      current.changeType = "added";
+      current.oldPath = "/dev/null";
+      continue;
+    }
+    if (line === "+++ /dev/null") {
+      current.changeType = "deleted";
+      current.newPath = "/dev/null";
+      continue;
+    }
+    if (line.startsWith("rename from ")) {
+      current.oldPath = normalizeDiffPath(line.slice("rename from ".length));
+      continue;
+    }
+    if (line.startsWith("rename to ")) {
+      current.newPath = normalizeDiffPath(line.slice("rename to ".length));
+      continue;
+    }
+  }
+
+  flushCurrent();
+  return sections;
+}
+
+function countPatchDeltaLines(patch: string): { additions: number; deletions: number; hunkCount: number } {
+  let additions = 0;
+  let deletions = 0;
+  let hunkCount = 0;
+
+  for (const line of patch.split(/\r?\n/)) {
+    if (line.startsWith("@@")) {
+      hunkCount += 1;
+      continue;
+    }
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      continue;
+    }
+    if (line.startsWith("+")) {
+      additions += 1;
+      continue;
+    }
+    if (line.startsWith("-")) {
+      deletions += 1;
+    }
+  }
+
+  return { additions, deletions, hunkCount };
 }

@@ -669,6 +669,20 @@ export class PromptreelStore {
     return { ...prompt, transcript, artifacts, artifactLinks, gitLinks };
   }
 
+  upsertArtifact(workspaceId: string, artifact: ArtifactRecord): void {
+    this.ensureWorkspaceSchema(workspaceId);
+    const db = this.openWorkspace(workspaceId);
+    try {
+      db.prepare(
+        `INSERT OR REPLACE INTO artifacts
+         (id, prompt_event_id, type, role, summary, blob_id, file_stats_json, metadata_json)
+         VALUES (:id, :promptEventId, :type, :role, :summary, :blobId, :fileStatsJson, :metadataJson)`
+      ).run(asSqlParams(artifact));
+    } finally {
+      db.close();
+    }
+  }
+
   getFileHistory(workspaceId: string, filePath: string): PromptEventListItem[] {
     return this.listPrompts(workspaceId).filter((prompt) => prompt.filesTouched.includes(filePath));
   }

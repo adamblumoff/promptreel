@@ -253,7 +253,15 @@ export interface PromptEventListItem {
 
 export interface CodeDiffResult {
   patch: string;
-  files: Array<{ path: string; changeType: "added" | "modified" | "deleted" }>;
+  files: Array<{
+    path: string;
+    changeType: "added" | "modified" | "deleted";
+    oldPath?: string;
+    newPath?: string;
+    additions?: number;
+    deletions?: number;
+    hunkCount?: number;
+  }>;
   patchIdentity: string;
 }
 

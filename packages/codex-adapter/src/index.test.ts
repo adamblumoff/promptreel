@@ -478,6 +478,7 @@ describe("importCodexSessions", () => {
     expect(prompts[0]?.filesTouched).toEqual(["src/helper.ts"]);
     expect(diffArtifact?.metadataJson).toContain("\"source\":\"apply_patch\"");
     expect(diffArtifact?.metadataJson).toContain("\"sourceFormat\":\"codex_apply_patch\"");
+    expect(diffArtifact?.metadataJson).toContain("\"parserVersion\":2");
     expect(store.readBlob(workspace.id, diffArtifact?.blobId ?? "")).toBe(patch);
   });
 
@@ -569,6 +570,7 @@ index 1111111..2222222 100644
     expect(prompt.hasCodeDiff).toBe(true);
     expect(prompt.filesTouched).toEqual(["src/app.ts"]);
     expect(diffArtifact.metadataJson).toContain("\"source\":\"git_diff_output\"");
+    expect(diffArtifact.metadataJson).toContain("\"parserVersion\":2");
     expect(store.readBlob(workspace.id, diffArtifact.blobId ?? "")).toBe(gitDiffOutput);
     expect(commandArtifacts).toHaveLength(0);
   });

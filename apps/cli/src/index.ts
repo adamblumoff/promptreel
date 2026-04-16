@@ -15,8 +15,9 @@ import type {
   CliLoginStartResponse,
 } from "@promptreel/api-contracts";
 import { importCodexSessionsForRepo, runLiveDoctor } from "@promptreel/codex-adapter";
+import { CURRENT_CODE_DIFF_PARSER_VERSION, parseStoredCodeDiffPatch, type CodeDiffArtifactMetadata } from "@promptreel/git-integration";
 import { PromptreelStore, type CloudAuthState } from "@promptreel/storage";
-import { createId, nowIso, type WorkspaceListItem } from "@promptreel/domain";
+import { createId, nowIso, type ArtifactRecord, type WorkspaceListItem } from "@promptreel/domain";
 import {
   printBlock,
   printBootstrapSyncResult,
@@ -111,6 +112,258 @@ function buildBootstrapBundle(store: PromptreelStore, workspaceId: string): Clou
     prompts,
     promptDetails,
     blobs: [...blobMap.entries()].map(([blobId, content]) => ({ blobId, content })),
+  };
+}
+
+type BootstrapSyncOptions = { workspace?: string };
+const CLOUD_BOOTSTRAP_TARGET_BYTES = 8 * 1024 * 1024;
+
+function createEmptyBootstrapBundle(workspace: CloudBootstrapSyncRequest["workspace"]): CloudBootstrapSyncRequest {
+  return {
+    workspace,
+    threads: [],
+    prompts: [],
+    promptDetails: [],
+    blobs: [],
+  };
+}
+
+function getBootstrapBundleSize(bundle: CloudBootstrapSyncRequest): number {
+  return Buffer.byteLength(JSON.stringify(bundle));
+}
+
+function buildBootstrapChunks(bundle: CloudBootstrapSyncRequest): CloudBootstrapSyncRequest[] {
+  const chunks: CloudBootstrapSyncRequest[] = [];
+  const appendCategoryChunks = <T,>(
+    items: T[],
+    applyItem: (target: CloudBootstrapSyncRequest, item: T) => void
+  ) => {
+    if (items.length === 0) {
+      return;
+    }
+
+    let current = createEmptyBootstrapBundle(bundle.workspace);
+    for (const item of items) {
+      const candidate = {
+        workspace: current.workspace,
+        threads: [...current.threads],
+        prompts: [...current.prompts],
+        promptDetails: [...current.promptDetails],
+        blobs: [...current.blobs],
+      };
+      applyItem(candidate, item);
+      if (getBootstrapBundleSize(candidate) > CLOUD_BOOTSTRAP_TARGET_BYTES) {
+        if (
+          current.threads.length === 0
+          && current.prompts.length === 0
+          && current.promptDetails.length === 0
+          && current.blobs.length === 0
+        ) {
+          throw new Error("Single bootstrap sync item exceeds request size budget.");
+        }
+        chunks.push(current);
+        current = createEmptyBootstrapBundle(bundle.workspace);
+        applyItem(current, item);
+        if (getBootstrapBundleSize(current) > CLOUD_BOOTSTRAP_TARGET_BYTES) {
+          throw new Error("Single bootstrap sync item exceeds request size budget.");
+        }
+        continue;
+      }
+      current = candidate;
+    }
+
+    if (
+      current.threads.length > 0
+      || current.prompts.length > 0
+      || current.promptDetails.length > 0
+      || current.blobs.length > 0
+    ) {
+      chunks.push(current);
+    }
+  };
+
+  appendCategoryChunks(bundle.threads, (target, thread) => {
+    target.threads.push(thread);
+  });
+  appendCategoryChunks(bundle.prompts, (target, prompt) => {
+    target.prompts.push(prompt);
+  });
+  appendCategoryChunks(bundle.promptDetails, (target, detail) => {
+    target.promptDetails.push(detail);
+  });
+  appendCategoryChunks(bundle.blobs, (target, blob) => {
+    target.blobs.push(blob);
+  });
+
+  if (chunks.length === 0) {
+    return [createEmptyBootstrapBundle(bundle.workspace)];
+  }
+  return chunks;
+}
+
+async function resolveCloudAuthForWrite(): Promise<CloudAuthState> {
+  const existingAuthState = store.getCloudAuthState();
+  const authState = existingAuthState?.daemonToken
+    ? (await resolveAuthenticatedCloudUser(existingAuthState)).authState
+    : existingAuthState;
+  if (!authState?.daemonToken) {
+    throw new Error("Not logged in. Run `pl login` first.");
+  }
+  return authState;
+}
+
+function resolveWorkspaceIds(options: BootstrapSyncOptions): string[] {
+  const workspaceIds = options.workspace
+    ? [options.workspace]
+    : store.listWorkspaces().map((workspace) => workspace.id);
+
+  if (workspaceIds.length === 0) {
+    throw new Error("No workspaces available.");
+  }
+
+  return workspaceIds;
+}
+
+async function bootstrapSyncWorkspaces(options: BootstrapSyncOptions): Promise<{
+  workspaceCount: number;
+  synced: CloudBootstrapSyncResponse[];
+}> {
+  const authState = await resolveCloudAuthForWrite();
+  const workspaceIds = resolveWorkspaceIds(options);
+  const synced: CloudBootstrapSyncResponse[] = [];
+  const syncScope = buildCloudSyncScope(authState);
+
+  for (const workspaceId of workspaceIds) {
+    const bundle = buildBootstrapBundle(store, workspaceId);
+    const chunks = buildBootstrapChunks(bundle);
+    for (const chunk of chunks) {
+      await postJson<CloudBootstrapSyncResponse, CloudBootstrapSyncRequest>(
+        authState.apiBaseUrl,
+        "/cloud/sync/bootstrap",
+        chunk,
+        authState.daemonToken
+      );
+    }
+    store.upsertSyncRecords(
+      workspaceId,
+      syncScope,
+      CLOUD_SYNC_PROMPT_RECORD_TYPE,
+      bundle.promptDetails.map((detail) => ({
+        recordId: detail.id,
+        recordHash: getPromptSyncFingerprint(detail),
+      }))
+    );
+    store.upsertSyncRecords(
+      workspaceId,
+      syncScope,
+      CLOUD_SYNC_BLOB_RECORD_TYPE,
+      bundle.blobs.map((blob) => ({
+        recordId: blob.blobId,
+        recordHash: blob.blobId,
+      }))
+    );
+    store.setIngestCursor(
+      workspaceId,
+      buildCloudSyncCursorKey(syncScope),
+      JSON.stringify({ lastSyncedAt: nowIso() })
+    );
+    synced.push({
+      ok: true,
+      workspaceId,
+      threadCount: bundle.threads.length,
+      promptCount: bundle.promptDetails.length,
+      blobCount: bundle.blobs.length,
+    });
+  }
+
+  return {
+    workspaceCount: synced.length,
+    synced,
+  };
+}
+
+function parseArtifactMetadata(artifact: ArtifactRecord): Record<string, unknown> {
+  if (!artifact.metadataJson) {
+    return {};
+  }
+  try {
+    return JSON.parse(artifact.metadataJson) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function backfillCodeDiffArtifacts(workspaceIds: string[]): {
+  workspaceCount: number;
+  promptCount: number;
+  artifactCount: number;
+  skippedArtifactCount: number;
+} {
+  let promptCount = 0;
+  let artifactCount = 0;
+  let skippedArtifactCount = 0;
+
+  for (const workspaceId of workspaceIds) {
+    const prompts = store.listPrompts(workspaceId);
+    for (const prompt of prompts) {
+      const detail = store.getPromptDetail(workspaceId, prompt.id);
+      if (!detail) {
+        continue;
+      }
+      promptCount += 1;
+      for (const artifact of detail.artifacts) {
+        if (artifact.type !== "code_diff" || !artifact.blobId) {
+          continue;
+        }
+        const metadata = parseArtifactMetadata(artifact);
+        const sourceFormat = typeof metadata.sourceFormat === "string"
+          ? (metadata.sourceFormat as CodeDiffArtifactMetadata["sourceFormat"])
+          : null;
+        const parserVersion = typeof metadata.parserVersion === "number" ? metadata.parserVersion : null;
+        const patch = store.readBlob(workspaceId, artifact.blobId);
+        let parsed = null;
+        try {
+          parsed = parseStoredCodeDiffPatch(patch, sourceFormat);
+        } catch (error) {
+          skippedArtifactCount += 1;
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(`Skipping code diff artifact ${artifact.id} in ${workspaceId}/${prompt.id}: ${message}`);
+          continue;
+        }
+        if (!parsed) {
+          skippedArtifactCount += 1;
+          continue;
+        }
+        const nextMetadata = {
+          ...metadata,
+          patchIdentity: parsed.patchIdentity,
+          parserVersion: CURRENT_CODE_DIFF_PARSER_VERSION,
+        };
+        const nextArtifact: ArtifactRecord = {
+          ...artifact,
+          summary: `${parsed.files.length} file(s) changed`,
+          fileStatsJson: JSON.stringify(parsed.files),
+          metadataJson: JSON.stringify(nextMetadata),
+        };
+        const artifactChanged =
+          parserVersion !== CURRENT_CODE_DIFF_PARSER_VERSION
+          || artifact.summary !== nextArtifact.summary
+          || artifact.fileStatsJson !== nextArtifact.fileStatsJson
+          || artifact.metadataJson !== nextArtifact.metadataJson;
+        if (!artifactChanged) {
+          continue;
+        }
+        store.upsertArtifact(workspaceId, nextArtifact);
+        artifactCount += 1;
+      }
+    }
+  }
+
+  return {
+    workspaceCount: workspaceIds.length,
+    promptCount,
+    artifactCount,
+    skippedArtifactCount,
   };
 }
 
@@ -326,63 +579,30 @@ program
   .addCommand(
     new Command("bootstrap")
       .option("--workspace <workspaceId>", "Sync a single workspace id")
-      .action(async (options: { workspace?: string }) => {
-        const existingAuthState = store.getCloudAuthState();
-        const authState = existingAuthState?.daemonToken
-          ? (await resolveAuthenticatedCloudUser(existingAuthState)).authState
-          : existingAuthState;
-        if (!authState?.daemonToken) {
-          throw new Error("Not logged in. Run `pl login` first.");
+      .action(async (options: BootstrapSyncOptions) => {
+        printBootstrapSyncResult(await bootstrapSyncWorkspaces(options));
+      })
+  );
+
+program
+  .command("diffs")
+  .description("Inspect and repair stored code diffs")
+  .addCommand(
+    new Command("backfill")
+      .option("--workspace <workspaceId>", "Repair a single workspace id")
+      .option("--sync-cloud", "After local repair, push the repaired prompt details and blobs to Promptreel Cloud")
+      .action(async (options: BootstrapSyncOptions & { syncCloud?: boolean }) => {
+        const workspaceIds = resolveWorkspaceIds(options);
+        const result = backfillCodeDiffArtifacts(workspaceIds);
+        printBlock([
+          `Backfilled code diff artifacts for ${result.workspaceCount} workspace${result.workspaceCount === 1 ? "" : "s"}.`,
+          `Prompts scanned: ${result.promptCount}`,
+          `Artifacts updated: ${result.artifactCount}`,
+          result.skippedArtifactCount > 0 ? `Artifacts skipped: ${result.skippedArtifactCount}` : null,
+        ]);
+        if (options.syncCloud) {
+          printBootstrapSyncResult(await bootstrapSyncWorkspaces(options));
         }
-
-        const workspaceIds = options.workspace
-          ? [options.workspace]
-          : store.listWorkspaces().map((workspace) => workspace.id);
-
-        if (workspaceIds.length === 0) {
-          throw new Error("No workspaces available to sync.");
-        }
-
-        const synced: CloudBootstrapSyncResponse[] = [];
-        const syncScope = buildCloudSyncScope(authState);
-        for (const workspaceId of workspaceIds) {
-          const bundle = buildBootstrapBundle(store, workspaceId);
-          const result = await postJson<CloudBootstrapSyncResponse, CloudBootstrapSyncRequest>(
-            authState.apiBaseUrl,
-            "/cloud/sync/bootstrap",
-            bundle,
-            authState.daemonToken
-          );
-          store.upsertSyncRecords(
-            workspaceId,
-            syncScope,
-            CLOUD_SYNC_PROMPT_RECORD_TYPE,
-            bundle.promptDetails.map((detail) => ({
-              recordId: detail.id,
-              recordHash: getPromptSyncFingerprint(detail),
-            }))
-          );
-          store.upsertSyncRecords(
-            workspaceId,
-            syncScope,
-            CLOUD_SYNC_BLOB_RECORD_TYPE,
-            bundle.blobs.map((blob) => ({
-              recordId: blob.blobId,
-              recordHash: blob.blobId,
-            }))
-          );
-          store.setIngestCursor(
-            workspaceId,
-            buildCloudSyncCursorKey(syncScope),
-            JSON.stringify({ lastSyncedAt: nowIso() })
-          );
-          synced.push(result);
-        }
-
-        printBootstrapSyncResult({
-          workspaceCount: synced.length,
-          synced,
-        });
       })
   );
 

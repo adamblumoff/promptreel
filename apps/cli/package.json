@@ -16,6 +16,7 @@
     "@promptreel/api-contracts": "workspace:*",
     "@promptreel/codex-adapter": "workspace:*",
     "@promptreel/domain": "workspace:*",
+    "@promptreel/git-integration": "workspace:*",
     "@promptreel/storage": "workspace:*",
     "commander": "^14.0.1"
   }
