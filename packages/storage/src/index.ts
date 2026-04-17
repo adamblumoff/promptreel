@@ -512,6 +512,28 @@ export class PromptreelStore {
     return brotliDecompressSync(readFileSync(filePath)).toString("utf8");
   }
 
+  getSnapshotData(workspaceId: string, snapshotId: string): WorkspaceSnapshotData | null {
+    this.ensureWorkspaceSchema(workspaceId);
+    const db = this.openWorkspace(workspaceId);
+    try {
+      const snapshot = db.prepare(
+        `SELECT blob_id AS blobId
+         FROM workspace_snapshots
+         WHERE id = ?`
+      ).get(snapshotId) as { blobId: string } | undefined;
+      if (!snapshot?.blobId) {
+        return null;
+      }
+      try {
+        return JSON.parse(this.readBlob(workspaceId, snapshot.blobId)) as WorkspaceSnapshotData;
+      } catch {
+        return null;
+      }
+    } finally {
+      db.close();
+    }
+  }
+
   listPrompts(workspaceId: string, threadId?: string | null): PromptEventListItem[] {
     this.ensureWorkspaceSchema(workspaceId);
     const db = this.openWorkspace(workspaceId);
@@ -564,7 +586,7 @@ export class PromptreelStore {
     const result = prompts.map((prompt) => {
       const artifacts = artifactsByPrompt.get(prompt.id) ?? [];
       const files = new Set<string>();
-      const diffSummary = summarizeCodeDiffArtifacts(this, workspaceId, artifacts);
+      const diffSummary = summarizeCodeDiffArtifacts(artifacts);
       const primaryArtifact =
         artifacts.find((artifact) => artifact.id === prompt.primaryArtifactId)
         ?? artifacts.find((artifact) => artifact.role === "primary")
@@ -678,6 +700,61 @@ export class PromptreelStore {
          (id, prompt_event_id, type, role, summary, blob_id, file_stats_json, metadata_json)
          VALUES (:id, :promptEventId, :type, :role, :summary, :blobId, :fileStatsJson, :metadataJson)`
       ).run(asSqlParams(artifact));
+    } finally {
+      db.close();
+    }
+  }
+
+  deleteArtifactsByTypeForPrompt(workspaceId: string, promptEventId: string, type: ArtifactRecord["type"]): void {
+    this.ensureWorkspaceSchema(workspaceId);
+    const db = this.openWorkspace(workspaceId);
+    try {
+      const artifactIds = (
+        db.prepare(
+          `SELECT id
+           FROM artifacts
+           WHERE prompt_event_id = ? AND type = ?`
+        ).all(promptEventId, type) as Array<{ id: string }>
+      ).map((row) => row.id);
+      if (artifactIds.length === 0) {
+        return;
+      }
+      db.prepare(
+        `DELETE FROM artifact_links
+         WHERE from_artifact_id IN (${artifactIds.map(() => "?").join(",")})
+            OR to_artifact_id IN (${artifactIds.map(() => "?").join(",")})`
+      ).run(...artifactIds, ...artifactIds);
+      db.prepare(
+        `DELETE FROM artifacts
+         WHERE prompt_event_id = ? AND type = ?`
+      ).run(promptEventId, type);
+    } finally {
+      db.close();
+    }
+  }
+
+  deleteGitLinksForPrompt(workspaceId: string, promptEventId: string): void {
+    this.ensureWorkspaceSchema(workspaceId);
+    const db = this.openWorkspace(workspaceId);
+    try {
+      db.prepare(
+        `DELETE FROM git_links
+         WHERE prompt_event_id = ?`
+      ).run(promptEventId);
+    } finally {
+      db.close();
+    }
+  }
+
+  updatePromptPrimaryArtifactId(workspaceId: string, promptEventId: string, primaryArtifactId: string | null): void {
+    this.ensureWorkspaceSchema(workspaceId);
+    const db = this.openWorkspace(workspaceId);
+    try {
+      db.prepare(
+        `UPDATE prompt_events
+         SET primary_artifact_id = ?
+         WHERE id = ?`
+      ).run(primaryArtifactId, promptEventId);
     } finally {
       db.close();
     }
@@ -1637,41 +1714,25 @@ export function safeJsonParse<T>(input: string | null | undefined, fallback: T):
 }
 
 function summarizeCodeDiffArtifacts(
-  store: PromptreelStore,
-  workspaceId: string,
   artifacts: ArtifactRecord[]
 ): { additions: number; deletions: number } {
   let additions = 0;
   let deletions = 0;
 
   for (const artifact of artifacts) {
-    if (artifact.type !== "code_diff" || !artifact.blobId) {
+    if (artifact.type !== "code_diff" || !artifact.fileStatsJson) {
       continue;
     }
 
-    const patch = store.readBlob(workspaceId, artifact.blobId);
-    const summary = countDiffPatchLines(patch);
-    additions += summary.additions;
-    deletions += summary.deletions;
-  }
-
-  return { additions, deletions };
-}
-
-function countDiffPatchLines(patch: string): { additions: number; deletions: number } {
-  let additions = 0;
-  let deletions = 0;
-
-  for (const line of patch.split(/\r?\n/)) {
-    if (line.startsWith("+++") || line.startsWith("---")) {
+    const metadata = safeJsonParse<{ sourceFormat?: string }>(artifact.metadataJson, {});
+    if (metadata.sourceFormat && metadata.sourceFormat !== "unified_diff") {
       continue;
     }
-    if (line.startsWith("+")) {
-      additions += 1;
-      continue;
-    }
-    if (line.startsWith("-")) {
-      deletions += 1;
+
+    const fileStats = safeJsonParse<Array<{ additions?: number; deletions?: number }>>(artifact.fileStatsJson, []);
+    for (const file of fileStats) {
+      additions += typeof file.additions === "number" ? file.additions : 0;
+      deletions += typeof file.deletions === "number" ? file.deletions : 0;
     }
   }
 

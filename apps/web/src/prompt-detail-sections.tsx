@@ -51,11 +51,10 @@ export function ExpandedDetail({
   blobLoadingById?: Record<string, boolean>;
 }) {
   const parsedDiffs = detail.parsedCodeDiffs ?? [];
-  const hasDiffPane = parsedDiffs.length > 0 || detail.hasCodeDiffArtifacts;
   const transcriptSectionCount = detail.transcript.length > 0 ? 1 : 0;
   const planSectionCount = detail.featuredPlanArtifact ? 1 : 0;
   const leadingSectionCount = transcriptSectionCount + planSectionCount;
-  const detailSectionCount = leadingSectionCount + (hasDiffPane ? 1 : 0);
+  const detailSectionCount = leadingSectionCount + 1;
 
   return (
     <div className="px-5 py-5 flex flex-col gap-5">
@@ -93,15 +92,14 @@ export function ExpandedDetail({
         </div>
       )}
 
-      {hasDiffPane && (
-        <div className="slidein" style={{ animationDelay: leadingSectionCount > 0 ? `${leadingSectionCount * 50}ms` : undefined }}>
-          <DiffSection
-            promptEventId={detail.id}
-            diffs={parsedDiffs}
-            hasCodeDiffArtifacts={detail.hasCodeDiffArtifacts}
-          />
-        </div>
-      )}
+      <div className="slidein" style={{ animationDelay: leadingSectionCount > 0 ? `${leadingSectionCount * 50}ms` : undefined }}>
+        <DiffSection
+          promptEventId={detail.id}
+          promptStatus={detail.status}
+          diffs={parsedDiffs}
+          hasCodeDiffArtifacts={detail.hasCodeDiffArtifacts}
+        />
+      </div>
 
       {detail.gitSummaries.length > 0 && (
         <div className="slidein" style={{ animationDelay: `${detailSectionCount * 50}ms` }}>
@@ -635,10 +633,12 @@ function formatDecisionTimestamp(timestamp: string): string {
 
 function DiffSection({
   promptEventId,
+  promptStatus,
   diffs,
   hasCodeDiffArtifacts,
 }: {
   promptEventId: string;
+  promptStatus: PromptDetailViewModel["status"];
   diffs: PromptDetailViewModel["parsedCodeDiffs"];
   hasCodeDiffArtifacts: boolean;
 }) {
@@ -669,9 +669,19 @@ function DiffSection({
                 <LazyDiffViewer artifacts={diffs} mode="focused" />
               </Suspense>
             )}
-            {!diffs.length && hasCodeDiffArtifacts && (
+            {!diffs.length && promptStatus === "in_progress" && (
               <div className="rounded-xl border border-brd bg-white px-4 py-3">
-                <p className="text-[11px] text-t3">Diff content not stored for this artifact.</p>
+                <p className="text-[11px] text-t3">No verified code changes yet for this prompt. Live diffs are calculated from workspace state as edits land.</p>
+              </div>
+            )}
+            {!diffs.length && promptStatus !== "in_progress" && hasCodeDiffArtifacts && (
+              <div className="rounded-xl border border-brd bg-white px-4 py-3">
+                <p className="text-[11px] text-t3">This stored diff artifact is not canonical under the snapshot-based model.</p>
+              </div>
+            )}
+            {!diffs.length && promptStatus !== "in_progress" && !hasCodeDiffArtifacts && (
+              <div className="rounded-xl border border-brd bg-white px-4 py-3">
+                <p className="text-[11px] text-t3">No code diff was captured for this prompt.</p>
               </div>
             )}
           </div>

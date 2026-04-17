@@ -66,12 +66,47 @@ export function DiffViewer({
     );
   }
 
+  if (files.length === 1) {
+    return (
+      <SingleFileDiffViewer
+        file={files[0]!}
+        totalAdditions={totalAdditions}
+        totalDeletions={totalDeletions}
+      />
+    );
+  }
+
   return (
     <FocusedDiffViewer
       files={files}
       totalAdditions={totalAdditions}
       totalDeletions={totalDeletions}
     />
+  );
+}
+
+function SingleFileDiffViewer({
+  file,
+  totalAdditions,
+  totalDeletions,
+}: {
+  file: DiffViewerFile;
+  totalAdditions: number;
+  totalDeletions: number;
+}) {
+  return (
+    <div className="rounded-xl border border-brd bg-white overflow-hidden">
+      <div className="flex items-center gap-3 px-3 py-2.5 bg-gz-1 border-b border-brd">
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-medium text-t2">1 file changed</p>
+          <code className="mt-0.5 block truncate text-[11px] font-mono text-t1" title={file.path}>
+            {file.path}
+          </code>
+        </div>
+        <DiffStatLine additions={totalAdditions} deletions={totalDeletions} />
+      </div>
+      <DiffFileSurface file={file} maxHeightClass="max-h-[640px]" />
+    </div>
   );
 }
 

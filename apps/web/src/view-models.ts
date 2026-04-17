@@ -10,6 +10,7 @@ import type {
   Health,
   PromptDetail,
   PromptListItem,
+  PromptStatus,
   ThreadSummary,
   Workspace,
   WorkspaceIngestionStatus
@@ -101,6 +102,7 @@ export type FileGroupViewModel = {
 
 export type PromptDetailViewModel = {
   id: string;
+  status: PromptStatus;
   promptText: string;
   transcript: Array<
     | {
@@ -371,6 +373,7 @@ export function toPromptDetailViewModel(prompt: PromptDetail): PromptDetailViewM
 
   return {
     id: prompt.id,
+    status: prompt.status,
     promptText: prompt.promptText,
     transcript: prompt.transcript.map((entry) => ({
       ...entry,

@@ -7,7 +7,6 @@ import type {
   ArtifactClassification,
   ArtifactLinkRecord,
   ArtifactRecord,
-  CodeDiffResult,
   IngestionStatus,
   LiveDoctorResult,
   PromptMode,
@@ -32,11 +31,7 @@ import {
   buildCodeDiff,
   buildCodeDiffArtifact,
   captureWorkspaceSnapshot,
-  createPlaceholderSnapshot,
-  mergeCodeDiffs,
-  parseApplyPatchToCodeDiff,
-  parseUnifiedDiffToCodeDiff,
-  repoRelativePath
+  createPlaceholderSnapshot
 } from "@promptreel/git-integration";
 import {
   PromptreelStore,
@@ -100,12 +95,6 @@ type PlanDecisionMetadata = {
   askedAt: string;
   answeredAt: string;
   promptEventId: string;
-};
-
-type HistoricalRecoveredDiff = {
-  diff: CodeDiffResult;
-  source: "apply_patch" | "git_diff_output";
-  sourceFormat: "codex_apply_patch" | "unified_diff";
 };
 
 type SessionMeta = {
@@ -894,54 +883,6 @@ function normalizeSessionToolEvents(window: SessionLine[]): SessionToolEvent[] {
   return ordered;
 }
 
-function recoverHistoricalCodeDiff(toolEvents: SessionToolEvent[]): HistoricalRecoveredDiff | null {
-  const applyPatchDiffs = toolEvents
-    .filter((event) => isSuccessfulApplyPatchEvent(event))
-    .flatMap((event) => {
-      const parsed = parseApplyPatchToCodeDiff(event.input ?? "");
-      return parsed ? [parsed] : [];
-    });
-
-  if (applyPatchDiffs.length > 0) {
-    return {
-      diff: mergeCodeDiffs(applyPatchDiffs),
-      source: "apply_patch",
-      sourceFormat: "codex_apply_patch"
-    };
-  }
-
-  const gitDiffOutputs = toolEvents
-    .filter((event) => isGitDiffCommandEvent(event))
-    .flatMap((event) => {
-      const parsed = event.output ? parseUnifiedDiffToCodeDiff(event.output) : null;
-      return parsed ? [parsed] : [];
-    });
-
-  if (gitDiffOutputs.length > 0) {
-    return {
-      diff: mergeCodeDiffs(gitDiffOutputs),
-      source: "git_diff_output",
-      sourceFormat: "unified_diff"
-    };
-  }
-
-  return null;
-}
-
-function isSuccessfulApplyPatchEvent(event: SessionToolEvent): boolean {
-  return (
-    event.kind === "custom_tool_call"
-    && event.name === "apply_patch"
-    && Boolean(event.input?.trim())
-    && (event.status === null || event.status === "completed")
-    && !isApplyPatchFailure(event.output)
-  );
-}
-
-function isApplyPatchFailure(output: string | null): boolean {
-  return output?.trimStart().startsWith("apply_patch verification failed") ?? false;
-}
-
 function isGitDiffCommandEvent(event: SessionToolEvent): boolean {
   if (event.kind !== "function_call") {
     return false;
@@ -1083,28 +1024,6 @@ function createLiveCommandArtifact(
   };
 }
 
-function normalizeRecoveredDiffPaths(diff: CodeDiffResult, repoPath: string | null): CodeDiffResult {
-  return {
-    ...diff,
-    files: diff.files.map((file) => ({
-      ...file,
-      path: normalizeRecoveredFilePath(file.path, repoPath)
-    }))
-  };
-}
-
-function normalizeRecoveredFilePath(filePath: string, repoPath: string | null): string {
-  if (!repoPath || !isAbsolute(filePath)) {
-    return filePath.replace(/\\/g, "/");
-  }
-  const normalizedAbsolutePath = normalize(filePath);
-  const normalizedRepoPath = normalize(repoPath);
-  if (!normalizedAbsolutePath.toLowerCase().startsWith(normalizedRepoPath.toLowerCase())) {
-    return filePath.replace(/\\/g, "/");
-  }
-  return repoRelativePath(repoPath, normalizedAbsolutePath);
-}
-
 function safeParseJsonRecord(value: string | null): Record<string, unknown> | null {
   if (!value) {
     return null;
@@ -1124,9 +1043,54 @@ function createHistoricalSnapshots(
   store: PromptreelStore,
   workspaceId: string,
   executionPath: string | null,
-  seed: string
-): WorkspaceSnapshot[] {
+  seed: string,
+  promptId: string,
+  tailOpenPrompt: boolean
+): {
+  snapshots: WorkspaceSnapshot[];
+  baselineSnapshotId: string;
+  endSnapshotId: string;
+  baselineData: ReturnType<typeof createPlaceholderSnapshot>;
+  endData: ReturnType<typeof createPlaceholderSnapshot>;
+} {
   const snapshotPath = executionPath ?? process.cwd();
+  if (tailOpenPrompt && executionPath) {
+    const currentData = captureWorkspaceSnapshot(snapshotPath);
+    const existingPrompt = store.getPromptDetail(workspaceId, promptId);
+    const existingBaselineData = existingPrompt?.baselineSnapshotId
+      ? store.getSnapshotData(workspaceId, existingPrompt.baselineSnapshotId)
+      : null;
+    const reuseExistingBaseline = Boolean(
+      existingPrompt?.status === "in_progress"
+      && existingPrompt.baselineSnapshotId
+      && existingBaselineData
+      && !isHistoricalPlaceholderSnapshotData(existingBaselineData)
+    );
+
+    const snapshots: WorkspaceSnapshot[] = [];
+    let baselineSnapshotId = existingPrompt?.baselineSnapshotId ?? stableId("snapshot", `${seed}:baseline`);
+    let baselineData = currentData;
+
+    if (!reuseExistingBaseline) {
+      const baselineSnapshot = store.createSnapshot(workspaceId, currentData);
+      baselineSnapshotId = baselineSnapshot.id;
+      snapshots.push(baselineSnapshot);
+    } else {
+      baselineData = existingBaselineData!;
+    }
+
+    const endSnapshot = store.createSnapshot(workspaceId, currentData);
+    snapshots.push(endSnapshot);
+
+    return {
+      snapshots,
+      baselineSnapshotId,
+      endSnapshotId: endSnapshot.id,
+      baselineData,
+      endData: currentData
+    };
+  }
+
   const note = JSON.stringify(
     createPlaceholderSnapshot(snapshotPath, "historical import cannot reconstruct exact workspace state"),
     null,
@@ -1134,28 +1098,48 @@ function createHistoricalSnapshots(
   );
   const baselineBlobId = store.writeBlob(workspaceId, note);
   const endBlobId = store.writeBlob(workspaceId, note);
-  return [
-    {
-      id: stableId("snapshot", `${seed}:baseline`),
-      workspaceId,
-      capturedAt: nowIso(),
-      headSha: null,
-      branchName: null,
-      dirtyFileHashes: {},
-      gitStatusSummary: "historical import placeholder",
-      blobId: baselineBlobId
-    },
-    {
-      id: stableId("snapshot", `${seed}:end`),
-      workspaceId,
-      capturedAt: nowIso(),
-      headSha: null,
-      branchName: null,
-      dirtyFileHashes: {},
-      gitStatusSummary: "historical import placeholder",
-      blobId: endBlobId
-    }
-  ];
+  const placeholderData = createPlaceholderSnapshot(snapshotPath, "historical import cannot reconstruct exact workspace state");
+  return {
+    snapshots: [
+      {
+        id: stableId("snapshot", `${seed}:baseline`),
+        workspaceId,
+        capturedAt: nowIso(),
+        headSha: null,
+        branchName: null,
+        dirtyFileHashes: {},
+        gitStatusSummary: "historical import placeholder",
+        blobId: baselineBlobId
+      },
+      {
+        id: stableId("snapshot", `${seed}:end`),
+        workspaceId,
+        capturedAt: nowIso(),
+        headSha: null,
+        branchName: null,
+        dirtyFileHashes: {},
+        gitStatusSummary: "historical import placeholder",
+        blobId: endBlobId
+      }
+    ],
+    baselineSnapshotId: stableId("snapshot", `${seed}:baseline`),
+    endSnapshotId: stableId("snapshot", `${seed}:end`),
+    baselineData: placeholderData,
+    endData: placeholderData
+  };
+}
+
+function isHistoricalPlaceholderSnapshotData(
+  snapshot: ReturnType<typeof createPlaceholderSnapshot> | null
+): boolean {
+  return Boolean(
+    snapshot
+    && (
+      snapshot.note === "historical import cannot reconstruct exact workspace state"
+      || snapshot.gitStatusSummary === "historical import placeholder"
+      || snapshot.gitStatusSummary === "historical import cannot reconstruct exact workspace state"
+    )
+  );
 }
 
 function accumulateWorkspaceResult(
@@ -1283,7 +1267,14 @@ function persistHistoricalPromptWindow(
   const promptSeed = `${file.filePath}:${promptIndex}`;
   const promptId = buildHistoricalPromptId(file.filePath, promptIndex);
   const promptMode = readHistoricalPromptMode(window);
-  const snapshots = createHistoricalSnapshots(store, workspaceId, resolvedFolderPath, promptSeed);
+  const snapshotState = createHistoricalSnapshots(
+    store,
+    workspaceId,
+    resolvedFolderPath,
+    promptSeed,
+    promptId,
+    tailOpenPrompt
+  );
   const prompt: PromptEventRecord = {
     id: promptId,
     workspaceId,
@@ -1305,8 +1296,8 @@ function persistHistoricalPromptWindow(
     promptText,
     promptSummary: summarizePrompt(promptText),
     primaryArtifactId: null,
-    baselineSnapshotId: snapshots[0].id,
-    endSnapshotId: snapshots[1].id
+    baselineSnapshotId: snapshotState.baselineSnapshotId,
+    endSnapshotId: snapshotState.endSnapshotId
   };
 
   const artifacts: ArtifactRecord[] = [];
@@ -1352,15 +1343,16 @@ function persistHistoricalPromptWindow(
     });
   }
 
-  const recoveredDiff = recoverHistoricalCodeDiff(toolEvents);
-  if (recoveredDiff) {
-    const normalizedDiff = normalizeRecoveredDiffPaths(recoveredDiff.diff, resolvedFolderPath);
-    const diffArtifact = buildCodeDiffArtifact(promptId, normalizedDiff, {
-      source: recoveredDiff.source,
-      sourceFormat: recoveredDiff.sourceFormat
+  const liveWorkspaceDiff = tailOpenPrompt
+    ? buildCodeDiff(snapshotState.baselineData, snapshotState.endData)
+    : null;
+  if (liveWorkspaceDiff) {
+    const diffArtifact = buildCodeDiffArtifact(promptId, liveWorkspaceDiff, {
+      source: "snapshot_diff",
+      sourceFormat: "unified_diff"
     });
     diffArtifact.id = stableId("artifact", `${promptSeed}:code_diff`);
-    diffArtifact.blobId = store.writeBlob(workspaceId, recoveredDiff.diff.patch);
+    diffArtifact.blobId = store.writeBlob(workspaceId, liveWorkspaceDiff.patch);
     artifacts.push(diffArtifact);
   }
 
@@ -1368,7 +1360,7 @@ function persistHistoricalPromptWindow(
     ...createHistoricalCommandArtifacts(store, workspaceId, promptId, promptSeed, toolEvents)
   );
 
-  const primaryType = choosePrimaryArtifactType(Boolean(planArtifactContent), Boolean(recoveredDiff), Boolean(finalText));
+  const primaryType = choosePrimaryArtifactType(Boolean(planArtifactContent), Boolean(liveWorkspaceDiff), Boolean(finalText));
   if (primaryType) {
     const primary = artifacts.find((artifact) => artifact.type === primaryType);
     if (primary) {
@@ -1394,7 +1386,7 @@ function persistHistoricalPromptWindow(
 
   store.persistPromptBundle(workspaceId, {
     prompt,
-    snapshots,
+    snapshots: snapshotState.snapshots,
     artifacts,
     artifactLinks,
     gitLinks: [],
@@ -2511,7 +2503,6 @@ export async function runLiveDoctor(
     const startedAt = nowIso();
     let turnId: string | null = null;
     let finalText = "";
-    let latestDiff = "";
     let planSteps: string[] = [];
     let promptMode: PromptMode = "default";
     let completed = false;
@@ -2547,8 +2538,6 @@ export async function runLiveDoctor(
           planSteps = Array.isArray(notification.params.plan)
             ? notification.params.plan.map((step) => String((step as { step: string }).step))
             : [];
-        } else if (notification.method === "turn/diff/updated") {
-          latestDiff = String(notification.params.diff ?? "");
         } else if (notification.method === "item/completed") {
           const item = notification.params.item as Record<string, unknown> | undefined;
           if (item?.type === "commandExecution") {
@@ -2630,25 +2619,18 @@ export async function runLiveDoctor(
       JSON.parse(store.readBlob(repo.id, baselineSnapshot.blobId)) as ReturnType<typeof captureWorkspaceSnapshot>,
       JSON.parse(store.readBlob(repo.id, endSnapshot.blobId)) as ReturnType<typeof captureWorkspaceSnapshot>
     );
-    const chosenDiff = latestDiff.trim()
-      ? {
-          patch: latestDiff,
-          files: [],
-          patchIdentity: hashValue(latestDiff)
-        }
-      : localDiff;
-    if (chosenDiff) {
-      const diffArtifact = buildCodeDiffArtifact(promptEventId, chosenDiff, {
-        source: latestDiff.trim() ? "app_server_diff" : "snapshot_diff",
+    if (localDiff) {
+      const diffArtifact = buildCodeDiffArtifact(promptEventId, localDiff, {
+        source: "snapshot_diff",
         sourceFormat: "unified_diff"
       });
-      diffArtifact.blobId = store.writeBlob(repo.id, chosenDiff.patch);
+      diffArtifact.blobId = store.writeBlob(repo.id, localDiff.patch);
       artifacts.push(diffArtifact);
       gitLinks.push({
         id: createId("gitlink"),
         promptEventId,
         commitSha: endSnapshot.headSha,
-        patchIdentity: chosenDiff.patchIdentity,
+        patchIdentity: localDiff.patchIdentity,
         survivalState: endSnapshot.headSha && endSnapshot.headSha !== baselineSnapshot.headSha ? "survived" : "uncommitted",
         matchedAt: nowIso()
       });
@@ -2659,7 +2641,7 @@ export async function runLiveDoctor(
       artifacts.push(artifact);
     }
 
-    const primaryType = choosePrimaryArtifactType(Boolean(livePlanArtifactContent), Boolean(chosenDiff), Boolean(finalText.trim()));
+    const primaryType = choosePrimaryArtifactType(Boolean(livePlanArtifactContent), Boolean(localDiff), Boolean(finalText.trim()));
     if (primaryType) {
       const primary = artifacts.find((artifact) => artifact.type === primaryType);
       if (primary) {

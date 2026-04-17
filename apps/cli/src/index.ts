@@ -15,9 +15,12 @@ import type {
   CliLoginStartResponse,
 } from "@promptreel/api-contracts";
 import { importCodexSessionsForRepo, runLiveDoctor } from "@promptreel/codex-adapter";
-import { CURRENT_CODE_DIFF_PARSER_VERSION, parseStoredCodeDiffPatch, type CodeDiffArtifactMetadata } from "@promptreel/git-integration";
+import {
+  buildCodeDiff,
+  buildCodeDiffArtifact,
+} from "@promptreel/git-integration";
 import { PromptreelStore, type CloudAuthState } from "@promptreel/storage";
-import { createId, nowIso, type ArtifactRecord, type WorkspaceListItem } from "@promptreel/domain";
+import { choosePrimaryArtifactType, createId, nowIso, type ArtifactRecord, type WorkspaceListItem, type WorkspaceSnapshotData } from "@promptreel/domain";
 import {
   printBlock,
   printBootstrapSyncResult,
@@ -282,15 +285,79 @@ async function bootstrapSyncWorkspaces(options: BootstrapSyncOptions): Promise<{
   };
 }
 
-function parseArtifactMetadata(artifact: ArtifactRecord): Record<string, unknown> {
-  if (!artifact.metadataJson) {
-    return {};
+function isHistoricalPlaceholderSnapshot(snapshot: WorkspaceSnapshotData | null): boolean {
+  if (!snapshot) {
+    return true;
   }
-  try {
-    return JSON.parse(artifact.metadataJson) as Record<string, unknown>;
-  } catch {
-    return {};
+  return snapshot.note === "historical import cannot reconstruct exact workspace state"
+    || snapshot.gitStatusSummary === "historical import cannot reconstruct exact workspace state"
+    || snapshot.gitStatusSummary === "historical import placeholder";
+}
+
+function buildCanonicalSnapshotDiffArtifact(
+  workspaceId: string,
+  detail: ReturnType<PromptreelStore["getPromptDetail"]>
+): ArtifactRecord | null {
+  if (!detail?.baselineSnapshotId || !detail.endSnapshotId) {
+    return null;
   }
+  const baselineSnapshot = store.getSnapshotData(workspaceId, detail.baselineSnapshotId);
+  const endSnapshot = store.getSnapshotData(workspaceId, detail.endSnapshotId);
+  if (!baselineSnapshot || !endSnapshot) {
+    return null;
+  }
+  if (isHistoricalPlaceholderSnapshot(baselineSnapshot) || isHistoricalPlaceholderSnapshot(endSnapshot)) {
+    return null;
+  }
+  const diff = buildCodeDiff(baselineSnapshot, endSnapshot);
+  if (!diff) {
+    return null;
+  }
+  const existingDiffArtifact = detail.artifacts.find((artifact) => artifact.type === "code_diff") ?? null;
+  const nextArtifact = buildCodeDiffArtifact(detail.id, diff, {
+    source: "snapshot_diff",
+    sourceFormat: "unified_diff",
+  });
+  nextArtifact.id = existingDiffArtifact?.id ?? createId("artifact");
+  nextArtifact.role = existingDiffArtifact?.role ?? "secondary";
+  nextArtifact.blobId = store.writeBlob(workspaceId, diff.patch);
+  if (existingDiffArtifact?.metadataJson && nextArtifact.metadataJson) {
+    try {
+      const existingMetadata = JSON.parse(existingDiffArtifact.metadataJson) as { generatedAt?: string };
+      const nextMetadata = JSON.parse(nextArtifact.metadataJson) as { generatedAt?: string };
+      if (existingMetadata.generatedAt) {
+        nextArtifact.metadataJson = JSON.stringify({
+          ...nextMetadata,
+          generatedAt: existingMetadata.generatedAt,
+        });
+      }
+    } catch {
+      // Ignore invalid legacy metadata and keep the freshly generated snapshot metadata.
+    }
+  }
+  return nextArtifact;
+}
+
+function chooseNextPrimaryArtifactId(artifacts: ArtifactRecord[]): string | null {
+  const primaryType = choosePrimaryArtifactType(
+    artifacts.some((artifact) => artifact.type === "plan"),
+    artifacts.some((artifact) => artifact.type === "code_diff"),
+    artifacts.some((artifact) => artifact.type === "final_output")
+  );
+  if (!primaryType) {
+    return null;
+  }
+  return artifacts.find((artifact) => artifact.type === primaryType)?.id ?? null;
+}
+
+function artifactsMatch(left: ArtifactRecord | null, right: ArtifactRecord | null): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+  return left.summary === right.summary
+    && left.blobId === right.blobId
+    && left.fileStatsJson === right.fileStatsJson
+    && left.metadataJson === right.metadataJson;
 }
 
 function backfillCodeDiffArtifacts(workspaceIds: string[]): {
@@ -311,51 +378,33 @@ function backfillCodeDiffArtifacts(workspaceIds: string[]): {
         continue;
       }
       promptCount += 1;
-      for (const artifact of detail.artifacts) {
-        if (artifact.type !== "code_diff" || !artifact.blobId) {
-          continue;
-        }
-        const metadata = parseArtifactMetadata(artifact);
-        const sourceFormat = typeof metadata.sourceFormat === "string"
-          ? (metadata.sourceFormat as CodeDiffArtifactMetadata["sourceFormat"])
-          : null;
-        const parserVersion = typeof metadata.parserVersion === "number" ? metadata.parserVersion : null;
-        const patch = store.readBlob(workspaceId, artifact.blobId);
-        let parsed = null;
-        try {
-          parsed = parseStoredCodeDiffPatch(patch, sourceFormat);
-        } catch (error) {
-          skippedArtifactCount += 1;
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn(`Skipping code diff artifact ${artifact.id} in ${workspaceId}/${prompt.id}: ${message}`);
-          continue;
-        }
-        if (!parsed) {
-          skippedArtifactCount += 1;
-          continue;
-        }
-        const nextMetadata = {
-          ...metadata,
-          patchIdentity: parsed.patchIdentity,
-          parserVersion: CURRENT_CODE_DIFF_PARSER_VERSION,
-        };
-        const nextArtifact: ArtifactRecord = {
-          ...artifact,
-          summary: `${parsed.files.length} file(s) changed`,
-          fileStatsJson: JSON.stringify(parsed.files),
-          metadataJson: JSON.stringify(nextMetadata),
-        };
-        const artifactChanged =
-          parserVersion !== CURRENT_CODE_DIFF_PARSER_VERSION
-          || artifact.summary !== nextArtifact.summary
-          || artifact.fileStatsJson !== nextArtifact.fileStatsJson
-          || artifact.metadataJson !== nextArtifact.metadataJson;
-        if (!artifactChanged) {
-          continue;
-        }
-        store.upsertArtifact(workspaceId, nextArtifact);
-        artifactCount += 1;
+      const existingDiffArtifacts = detail.artifacts.filter((artifact) => artifact.type === "code_diff");
+      const existingCanonicalArtifact = existingDiffArtifacts[0] ?? null;
+      const nextDiffArtifact = buildCanonicalSnapshotDiffArtifact(workspaceId, detail);
+      const nextArtifacts = [
+        ...detail.artifacts.filter((artifact) => artifact.type !== "code_diff"),
+        ...(nextDiffArtifact ? [nextDiffArtifact] : []),
+      ];
+      const nextPrimaryArtifactId = chooseNextPrimaryArtifactId(nextArtifacts);
+      const primaryChanged = detail.primaryArtifactId !== nextPrimaryArtifactId;
+      const diffChanged =
+        existingDiffArtifacts.length > 1
+        || !artifactsMatch(existingCanonicalArtifact, nextDiffArtifact);
+
+      if (!nextDiffArtifact) {
+        skippedArtifactCount += 1;
       }
+      if (!diffChanged && !primaryChanged) {
+        continue;
+      }
+
+      store.deleteArtifactsByTypeForPrompt(workspaceId, prompt.id, "code_diff");
+      store.deleteGitLinksForPrompt(workspaceId, prompt.id);
+      if (nextDiffArtifact) {
+        store.upsertArtifact(workspaceId, nextDiffArtifact);
+      }
+      store.updatePromptPrimaryArtifactId(workspaceId, prompt.id, nextPrimaryArtifactId);
+      artifactCount += 1;
     }
   }
 

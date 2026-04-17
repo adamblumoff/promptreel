@@ -18,8 +18,8 @@ import { createId, hashValue, nowIso } from "@promptreel/domain";
 type FileChange = CodeDiffResult["files"][number];
 
 export interface CodeDiffArtifactMetadata {
-  source?: "apply_patch" | "git_diff_output" | "app_server_diff" | "snapshot_diff";
-  sourceFormat?: "codex_apply_patch" | "unified_diff";
+  source?: "git_diff_output" | "app_server_diff" | "snapshot_diff";
+  sourceFormat?: "unified_diff" | "codex_apply_patch";
   parserVersion?: number;
 }
 
@@ -34,6 +34,18 @@ function git(repoPath: string, args: string[]): string {
     }).trim();
   } catch {
     return "";
+  }
+}
+
+function gitRead(repoPath: string, args: string[]): string | null {
+  try {
+    return execFileSync("git", args, {
+      cwd: repoPath,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+  } catch {
+    return null;
   }
 }
 
@@ -110,20 +122,30 @@ export function buildCodeDiff(
 ): CodeDiffResult | null {
   const beforeFiles = new Map(before.files.map((file) => [file.path, file]));
   const afterFiles = new Map(after.files.map((file) => [file.path, file]));
-  const allPaths = new Set([...beforeFiles.keys(), ...afterFiles.keys()]);
+  const allPaths = new Set([
+    ...beforeFiles.keys(),
+    ...afterFiles.keys(),
+    ...listChangedPathsBetweenHeads(before, after)
+  ]);
   const patches: string[] = [];
   const files: CodeDiffResult["files"] = [];
+  const gitContentCache = new Map<string, string | null>();
 
   for (const path of [...allPaths].sort()) {
-    const left = beforeFiles.get(path);
-    const right = afterFiles.get(path);
-    const beforeContent = left?.content ?? "";
-    const afterContent = right?.content ?? "";
-    if (beforeContent === afterContent && left?.status === right?.status) {
+    const beforeContent = resolveSnapshotFileContent(before, beforeFiles, path, gitContentCache);
+    const afterContent = resolveSnapshotFileContent(after, afterFiles, path, gitContentCache);
+    if (beforeContent === afterContent) {
       continue;
     }
-    const changeType = !left ? "added" : !right ? "deleted" : "modified";
-    const patch = createTwoFilesPatch(path, path, beforeContent, afterContent, left?.status ?? "before", right?.status ?? "after");
+    const changeType = beforeContent === null ? "added" : afterContent === null ? "deleted" : "modified";
+    const patch = createTwoFilesPatch(
+      path,
+      path,
+      beforeContent ?? "",
+      afterContent ?? "",
+      beforeContent === null ? "missing" : before.headSha ?? "before",
+      afterContent === null ? "missing" : after.headSha ?? "after"
+    );
     const delta = countPatchDeltaLines(patch);
     files.push({ path, changeType, additions: delta.additions, deletions: delta.deletions, hunkCount: delta.hunkCount });
     patches.push(patch);
@@ -139,6 +161,42 @@ export function buildCodeDiff(
     files,
     patchIdentity: hashValue(patch)
   };
+}
+
+function listChangedPathsBetweenHeads(before: WorkspaceSnapshotData, after: WorkspaceSnapshotData): string[] {
+  if (!before.headSha || !after.headSha || before.headSha === after.headSha) {
+    return [];
+  }
+  const output = git(before.repoPath, ["diff", "--name-only", "--find-renames", before.headSha, after.headSha]);
+  if (!output) {
+    return [];
+  }
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function resolveSnapshotFileContent(
+  snapshot: WorkspaceSnapshotData,
+  dirtyFiles: Map<string, WorkspaceFileState>,
+  path: string,
+  cache: Map<string, string | null>
+): string | null {
+  const dirtyFile = dirtyFiles.get(path);
+  if (dirtyFile) {
+    return dirtyFile.content;
+  }
+  if (!snapshot.headSha) {
+    return null;
+  }
+  const cacheKey = `${snapshot.repoPath}:${snapshot.headSha}:${path}`;
+  if (cache.has(cacheKey)) {
+    return cache.get(cacheKey) ?? null;
+  }
+  const content = gitRead(snapshot.repoPath, ["show", `${snapshot.headSha}:${path}`]);
+  cache.set(cacheKey, content);
+  return content;
 }
 
 export function parseApplyPatchToCodeDiff(input: string): CodeDiffResult | null {
@@ -235,14 +293,11 @@ export function parseStoredCodeDiffPatch(
   patch: string,
   sourceFormat?: CodeDiffArtifactMetadata["sourceFormat"] | null
 ): CodeDiffResult | null {
-  if (sourceFormat === "codex_apply_patch") {
-    return parseApplyPatchToCodeDiff(patch);
-  }
   if (sourceFormat === "unified_diff") {
     return parseUnifiedDiffToCodeDiff(patch);
   }
-  if (patch.includes("*** Begin Patch") || patch.includes("*** Update File:") || patch.includes("*** Add File:")) {
-    return parseApplyPatchToCodeDiff(patch);
+  if (sourceFormat === "codex_apply_patch") {
+    return null;
   }
   return parseUnifiedDiffToCodeDiff(patch);
 }
@@ -251,14 +306,11 @@ export function buildCodeDiffDisplay(
   patch: string,
   sourceFormat?: CodeDiffArtifactMetadata["sourceFormat"] | null
 ): CodeDiffDisplayFile[] {
-  if (sourceFormat === "codex_apply_patch") {
-    return buildCodexDiffDisplay(patch);
-  }
   if (sourceFormat === "unified_diff") {
     return buildUnifiedDiffDisplay(patch);
   }
-  if (patch.includes("*** Begin Patch") || patch.includes("*** Update File:") || patch.includes("*** Add File:")) {
-    return buildCodexDiffDisplay(patch);
+  if (sourceFormat === "codex_apply_patch") {
+    return [];
   }
   return buildUnifiedDiffDisplay(patch);
 }
@@ -411,13 +463,17 @@ function normalizePatchFileName(path: string | undefined): string {
 }
 
 function sanitizeUnifiedDiffText(output: string): string | null {
+  if (containsTruncatedCapturedOutput(output)) {
+    return null;
+  }
+
   const kept: string[] = [];
   let inDiff = false;
   let inHunk = false;
   let inBinaryPatch = false;
 
   for (const line of output.split(/\r?\n/)) {
-    if (line.startsWith("diff --git ")) {
+    if (line.startsWith("diff --git ") || line.startsWith("Index: ")) {
       kept.push(line);
       inDiff = true;
       inHunk = false;
@@ -462,7 +518,16 @@ function sanitizeUnifiedDiffText(output: string): string | null {
     }
   }
 
-  return kept.some((line) => line.startsWith("diff --git ")) ? kept.join("\n") : null;
+  return kept.some((line) => line.startsWith("diff --git ") || line.startsWith("Index: ")) ? kept.join("\n") : null;
+}
+
+function containsTruncatedCapturedOutput(output: string): boolean {
+  return output.split(/\r?\n/).some((line) => {
+    if (!/tokens truncated/i.test(line)) {
+      return false;
+    }
+    return !/^[ +\\-]/.test(line) && !line.startsWith("@@ ");
+  });
 }
 
 function isCapturedDiffNoise(line: string): boolean {
@@ -478,7 +543,9 @@ function isCapturedDiffNoise(line: string): boolean {
 
 function isUnifiedDiffMetadata(line: string): boolean {
   return (
-    line.startsWith("index ")
+    line.startsWith("Index: ")
+    || /^=+$/.test(line)
+    || line.startsWith("index ")
     || line.startsWith("old mode ")
     || line.startsWith("new mode ")
     || line.startsWith("deleted file mode ")
