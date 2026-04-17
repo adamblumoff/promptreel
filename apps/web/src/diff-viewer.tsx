@@ -301,6 +301,8 @@ function DiffLineRow({
   row: CodeDiffDisplayRow;
   showLineNumbers: boolean;
 }) {
+  const lineNumber = row.newLineNumber ?? row.oldLineNumber ?? "";
+
   return (
     <tr
       className={cn(
@@ -310,14 +312,9 @@ function DiffLineRow({
       )}
     >
       {showLineNumbers && (
-        <>
-          <td className="w-[1px] whitespace-nowrap text-right select-none px-2 py-0 text-t4 border-r border-brd align-top">
-            {row.oldLineNumber ?? ""}
-          </td>
-          <td className="w-[1px] whitespace-nowrap text-right select-none px-2 py-0 text-t4 border-r border-brd align-top">
-            {row.newLineNumber ?? ""}
-          </td>
-        </>
+        <td className="w-[1px] whitespace-nowrap text-right select-none px-2 py-0 text-t4 border-r border-brd align-top">
+          {lineNumber}
+        </td>
       )}
       <td className="px-3 py-0 whitespace-pre">
         <span
@@ -353,7 +350,7 @@ function CollapsedRowsRow({
 }) {
   return (
     <tr className="bg-white">
-      <td colSpan={showLineNumbers ? 3 : 1} className="px-3 py-2">
+      <td colSpan={showLineNumbers ? 2 : 1} className="px-3 py-2">
         <div className="rounded-md bg-gz-1 px-3 py-1 text-[11px] text-t2">
           {count} unmodified line{count === 1 ? "" : "s"}
         </div>
