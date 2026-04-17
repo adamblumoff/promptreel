@@ -18,6 +18,7 @@ import type {
 } from "@promptreel/domain";
 import {
   choosePrimaryArtifactType,
+  type CodeDiffResult,
   createId,
   extractPlan,
   hashValue,
@@ -31,7 +32,9 @@ import {
   buildCodeDiff,
   buildCodeDiffArtifact,
   captureWorkspaceSnapshot,
-  createPlaceholderSnapshot
+  createPlaceholderSnapshot,
+  parseUnifiedDiffToCodeDiff,
+  repoRelativePath
 } from "@promptreel/git-integration";
 import {
   PromptreelStore,
@@ -72,6 +75,12 @@ type SessionToolEvent = {
   input: string | null;
   arguments: string | null;
   output: string | null;
+};
+
+type HistoricalRecoveredDiff = {
+  diff: CodeDiffResult;
+  source: "git_diff_output";
+  sourceFormat: "unified_diff";
 };
 
 type SessionAgentMessage = {
@@ -883,6 +892,59 @@ function normalizeSessionToolEvents(window: SessionLine[]): SessionToolEvent[] {
   return ordered;
 }
 
+function recoverHistoricalCodeDiff(
+  toolEvents: SessionToolEvent[],
+  repoPath: string | null
+): HistoricalRecoveredDiff | null {
+  for (let index = toolEvents.length - 1; index >= 0; index -= 1) {
+    const event = toolEvents[index];
+    if (!isGitDiffCommandEvent(event) || !event.output) {
+      continue;
+    }
+    const parsed = parseUnifiedDiffToCodeDiff(event.output);
+    if (!parsed) {
+      continue;
+    }
+    return {
+      diff: normalizeRecoveredDiffPaths(parsed, repoPath),
+      source: "git_diff_output",
+      sourceFormat: "unified_diff",
+    };
+  }
+  return null;
+}
+
+export function recoverHistoricalCodeDiffFromSessionLines(
+  lines: Array<{ timestamp: string; type: string; payload?: Record<string, unknown> }>,
+  repoPath: string | null
+): HistoricalRecoveredDiff | null {
+  return recoverHistoricalCodeDiff(normalizeSessionToolEvents(lines as SessionLine[]), repoPath);
+}
+
+function normalizeRecoveredDiffPaths(diff: CodeDiffResult, repoPath: string | null): CodeDiffResult {
+  return {
+    ...diff,
+    files: diff.files.map((file) => ({
+      ...file,
+      path: normalizeRecoveredFilePath(file.path, repoPath),
+      oldPath: file.oldPath ? normalizeRecoveredFilePath(file.oldPath, repoPath) : file.oldPath,
+      newPath: file.newPath ? normalizeRecoveredFilePath(file.newPath, repoPath) : file.newPath,
+    }))
+  };
+}
+
+function normalizeRecoveredFilePath(filePath: string, repoPath: string | null): string {
+  if (!repoPath || !isAbsolute(filePath)) {
+    return filePath.replace(/\\/g, "/");
+  }
+  const normalizedAbsolutePath = normalize(filePath);
+  const normalizedRepoPath = normalize(repoPath);
+  if (!normalizedAbsolutePath.toLowerCase().startsWith(normalizedRepoPath.toLowerCase())) {
+    return filePath.replace(/\\/g, "/");
+  }
+  return repoRelativePath(repoPath, normalizedAbsolutePath);
+}
+
 function isGitDiffCommandEvent(event: SessionToolEvent): boolean {
   if (event.kind !== "function_call") {
     return false;
@@ -1343,16 +1405,26 @@ function persistHistoricalPromptWindow(
     });
   }
 
-  const liveWorkspaceDiff = tailOpenPrompt
-    ? buildCodeDiff(snapshotState.baselineData, snapshotState.endData)
-    : null;
-  if (liveWorkspaceDiff) {
-    const diffArtifact = buildCodeDiffArtifact(promptId, liveWorkspaceDiff, {
-      source: "snapshot_diff",
-      sourceFormat: "unified_diff"
+  const recoveredDiff = tailOpenPrompt
+    ? (() => {
+        const liveWorkspaceDiff = buildCodeDiff(snapshotState.baselineData, snapshotState.endData);
+        if (!liveWorkspaceDiff) {
+          return null;
+        }
+        return {
+          diff: liveWorkspaceDiff,
+          source: "snapshot_diff" as const,
+          sourceFormat: "unified_diff" as const,
+        };
+      })()
+    : recoverHistoricalCodeDiff(toolEvents, resolvedFolderPath);
+  if (recoveredDiff) {
+    const diffArtifact = buildCodeDiffArtifact(promptId, recoveredDiff.diff, {
+      source: recoveredDiff.source,
+      sourceFormat: recoveredDiff.sourceFormat
     });
     diffArtifact.id = stableId("artifact", `${promptSeed}:code_diff`);
-    diffArtifact.blobId = store.writeBlob(workspaceId, liveWorkspaceDiff.patch);
+    diffArtifact.blobId = store.writeBlob(workspaceId, recoveredDiff.diff.patch);
     artifacts.push(diffArtifact);
   }
 
@@ -1360,7 +1432,7 @@ function persistHistoricalPromptWindow(
     ...createHistoricalCommandArtifacts(store, workspaceId, promptId, promptSeed, toolEvents)
   );
 
-  const primaryType = choosePrimaryArtifactType(Boolean(planArtifactContent), Boolean(liveWorkspaceDiff), Boolean(finalText));
+  const primaryType = choosePrimaryArtifactType(Boolean(planArtifactContent), Boolean(recoveredDiff), Boolean(finalText));
   if (primaryType) {
     const primary = artifacts.find((artifact) => artifact.type === primaryType);
     if (primary) {

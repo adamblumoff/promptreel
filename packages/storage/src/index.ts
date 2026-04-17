@@ -691,6 +691,82 @@ export class PromptreelStore {
     return { ...prompt, transcript, artifacts, artifactLinks, gitLinks, parsedCodeDiffs: [] };
   }
 
+  getPromptRawEventLines(
+    workspaceId: string,
+    promptId: string
+  ): Array<{ timestamp: string; type: string; payload?: Record<string, unknown> }> {
+    this.ensureWorkspaceSchema(workspaceId);
+    const db = this.openWorkspace(workspaceId);
+    try {
+      const prompt = db.prepare(
+        `SELECT
+           id,
+           thread_id AS threadId,
+           session_id AS sessionId,
+           started_at AS startedAt,
+           ended_at AS endedAt
+         FROM prompt_events
+         WHERE id = ?`
+      ).get(promptId) as
+        | {
+            id: string;
+            threadId: string | null;
+            sessionId: string | null;
+            startedAt: string;
+            endedAt: string | null;
+          }
+        | undefined;
+      if (!prompt) {
+        return [];
+      }
+
+      const rawRows = db.prepare(
+        `SELECT
+           occurred_at AS occurredAt,
+           payload_blob_id AS payloadBlobId
+         FROM raw_events
+         WHERE repo_id = ?
+           AND (
+             (? IS NOT NULL AND thread_id = ?)
+             OR (? IS NULL AND session_id = ?)
+           )
+           AND occurred_at >= ?
+           AND (? IS NULL OR occurred_at <= ?)
+         ORDER BY occurred_at ASC, rowid ASC`
+      ).all(
+        workspaceId,
+        prompt.threadId,
+        prompt.threadId,
+        prompt.threadId,
+        prompt.sessionId,
+        prompt.startedAt,
+        prompt.endedAt,
+        prompt.endedAt
+      ) as Array<{ occurredAt: string; payloadBlobId: string }>;
+
+      return rawRows.flatMap((row) => {
+        try {
+          const payload = JSON.parse(this.readBlob(workspaceId, row.payloadBlobId)) as {
+            type?: unknown;
+            payload?: Record<string, unknown>;
+          };
+          if (!payload || typeof payload !== "object" || typeof payload.type !== "string") {
+            return [];
+          }
+          return [{
+            timestamp: row.occurredAt,
+            type: payload.type,
+            payload: payload.payload,
+          }];
+        } catch {
+          return [];
+        }
+      });
+    } finally {
+      db.close();
+    }
+  }
+
   upsertArtifact(workspaceId: string, artifact: ArtifactRecord): void {
     this.ensureWorkspaceSchema(workspaceId);
     const db = this.openWorkspace(workspaceId);

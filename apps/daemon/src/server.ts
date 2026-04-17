@@ -168,7 +168,7 @@ export function buildServer() {
 
     return {
       ...prompt,
-      parsedCodeDiffs: parsedCodeDiffs.filter((artifact) => artifact.files.length > 0),
+      parsedCodeDiffs: parsedCodeDiffs.filter((artifact) => artifact.files.length > 0 || artifact.renderPatch.trim().length > 0),
     };
   };
 

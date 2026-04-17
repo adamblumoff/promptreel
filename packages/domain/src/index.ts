@@ -214,23 +214,6 @@ export interface PromptTranscriptActivity {
 
 export type PromptTranscriptEntry = PromptTranscriptMessage | PromptTranscriptActivity;
 
-export interface CodeDiffDisplayRow {
-  kind: "context" | "add" | "del";
-  text: string;
-  oldLineNumber: number | null;
-  newLineNumber: number | null;
-}
-
-export type CodeDiffDisplayBlock =
-  | {
-      kind: "collapsed";
-      count: number;
-    }
-  | {
-      kind: "hunk";
-      rows: CodeDiffDisplayRow[];
-    };
-
 export interface CodeDiffDisplayFile {
   path: string;
   fromPath: string;
@@ -238,12 +221,12 @@ export interface CodeDiffDisplayFile {
   changeType: "added" | "modified" | "deleted";
   additions: number;
   deletions: number;
-  blocks: CodeDiffDisplayBlock[];
 }
 
 export interface CodeDiffDisplayArtifact {
   artifactId: string;
   summary: string;
+  renderPatch: string;
   files: CodeDiffDisplayFile[];
 }
 

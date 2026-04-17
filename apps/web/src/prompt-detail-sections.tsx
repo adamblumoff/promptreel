@@ -676,7 +676,7 @@ function DiffSection({
             )}
             {!diffs.length && promptStatus !== "in_progress" && hasCodeDiffArtifacts && (
               <div className="rounded-xl border border-brd bg-white px-4 py-3">
-                <p className="text-[11px] text-t3">This stored diff artifact is not canonical under the snapshot-based model.</p>
+                <p className="text-[11px] text-t3">A code diff artifact exists for this prompt, but it could not be rendered cleanly.</p>
               </div>
             )}
             {!diffs.length && promptStatus !== "in_progress" && !hasCodeDiffArtifacts && (

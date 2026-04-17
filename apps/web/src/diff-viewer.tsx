@@ -1,21 +1,37 @@
+import { parsePatchFiles } from "@pierre/diffs";
+import { FileDiff, type FileDiffMetadata } from "@pierre/diffs/react";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import type {
   CodeDiffDisplayArtifact,
-  CodeDiffDisplayBlock,
   CodeDiffDisplayFile,
-  CodeDiffDisplayRow,
 } from "./types";
 
-type DiffViewerFile = {
+type DiffViewerFile = CodeDiffDisplayFile & {
   id: string;
   artifactId: string;
-  path: string;
-  changeType: CodeDiffDisplayFile["changeType"];
-  additions: number;
-  deletions: number;
-  blocks: CodeDiffDisplayBlock[];
+  fileDiff: FileDiffMetadata | null;
 };
+
+type RenderablePatch =
+  | {
+      kind: "files";
+      files: FileDiffMetadata[];
+    }
+  | {
+      kind: "raw";
+      text: string;
+      reason: string;
+    };
+
+type RawPatchEntry = {
+  artifactId: string;
+  summary: string;
+  text: string;
+  reason: string;
+};
+
+const DIFF_THEME = "pierre-light";
 
 export function DiffViewer({
   artifacts,
@@ -24,23 +40,9 @@ export function DiffViewer({
   artifacts: CodeDiffDisplayArtifact[];
   mode?: "stacked" | "focused";
 }) {
-  const files = useMemo<DiffViewerFile[]>(
-    () =>
-      artifacts.flatMap((artifact) =>
-        artifact.files.map((file, index) => ({
-          id: `${artifact.artifactId}:${file.path}:${index}`,
-          artifactId: artifact.artifactId,
-          path: file.path,
-          changeType: file.changeType,
-          additions: file.additions,
-          deletions: file.deletions,
-          blocks: file.blocks,
-        }))
-      ),
-    [artifacts]
-  );
+  const { files, rawPatches } = useMemo(() => buildDiffViewerState(artifacts), [artifacts]);
 
-  if (files.length === 0) {
+  if (files.length === 0 && rawPatches.length === 0) {
     return (
       <div className="rounded-xl border border-brd bg-white px-4 py-3 text-[11px] text-t3">
         No diff content was captured for this prompt.
@@ -50,6 +52,10 @@ export function DiffViewer({
 
   const totalAdditions = files.reduce((sum, file) => sum + file.additions, 0);
   const totalDeletions = files.reduce((sum, file) => sum + file.deletions, 0);
+
+  if (files.length === 0) {
+    return <RawPatchFallbackList entries={rawPatches} />;
+  }
 
   if (mode === "stacked") {
     return (
@@ -62,27 +68,166 @@ export function DiffViewer({
         {files.map((file) => (
           <StackedDiffFileCard key={file.id} file={file} />
         ))}
+        {rawPatches.length > 0 && <RawPatchFallbackList entries={rawPatches} />}
       </div>
     );
   }
 
   if (files.length === 1) {
     return (
-      <SingleFileDiffViewer
-        file={files[0]!}
-        totalAdditions={totalAdditions}
-        totalDeletions={totalDeletions}
-      />
+      <div className="flex flex-col gap-3">
+        <SingleFileDiffViewer
+          file={files[0]!}
+          totalAdditions={totalAdditions}
+          totalDeletions={totalDeletions}
+        />
+        {rawPatches.length > 0 && <RawPatchFallbackList entries={rawPatches} />}
+      </div>
     );
   }
 
   return (
-    <FocusedDiffViewer
-      files={files}
-      totalAdditions={totalAdditions}
-      totalDeletions={totalDeletions}
-    />
+    <div className="flex flex-col gap-3">
+      <FocusedDiffViewer
+        files={files}
+        totalAdditions={totalAdditions}
+        totalDeletions={totalDeletions}
+      />
+      {rawPatches.length > 0 && <RawPatchFallbackList entries={rawPatches} />}
+    </div>
   );
+}
+
+function buildDiffViewerState(artifacts: CodeDiffDisplayArtifact[]): {
+  files: DiffViewerFile[];
+  rawPatches: RawPatchEntry[];
+} {
+  const files: DiffViewerFile[] = [];
+  const rawPatches: RawPatchEntry[] = [];
+
+  for (const artifact of artifacts) {
+    const renderablePatch = getRenderablePatch(artifact.renderPatch, artifact.artifactId);
+    if (!renderablePatch) {
+      continue;
+    }
+
+    if (renderablePatch.kind === "raw") {
+      rawPatches.push({
+        artifactId: artifact.artifactId,
+        summary: artifact.summary,
+        text: renderablePatch.text,
+        reason: renderablePatch.reason,
+      });
+      continue;
+    }
+
+    for (const [index, file] of artifact.files.entries()) {
+      files.push({
+        ...file,
+        id: `${artifact.artifactId}:${file.path}:${index}`,
+        artifactId: artifact.artifactId,
+        fileDiff: findMatchingFileDiff(renderablePatch.files, file),
+      });
+    }
+  }
+
+  return { files, rawPatches };
+}
+
+function getRenderablePatch(
+  patch: string | undefined,
+  cacheScope: string,
+): RenderablePatch | null {
+  if (!patch) {
+    return null;
+  }
+
+  const normalizedPatch = patch.trim();
+  if (!normalizedPatch) {
+    return null;
+  }
+
+  try {
+    const parsedPatches = parsePatchFiles(
+      normalizedPatch,
+      buildPatchCacheKey(normalizedPatch, cacheScope),
+    );
+    const files = parsedPatches.flatMap((parsedPatch) => parsedPatch.files);
+    if (files.length > 0) {
+      return { kind: "files", files };
+    }
+
+    return {
+      kind: "raw",
+      text: normalizedPatch,
+      reason: "Unsupported diff format. Showing raw patch.",
+    };
+  } catch {
+    return {
+      kind: "raw",
+      text: normalizedPatch,
+      reason: "Failed to parse patch. Showing raw patch.",
+    };
+  }
+}
+
+function findMatchingFileDiff(
+  fileDiffs: FileDiffMetadata[],
+  file: CodeDiffDisplayFile,
+): FileDiffMetadata | null {
+  const normalizedPath = normalizeDiffPath(file.path);
+  const normalizedFromPath = normalizeDiffPath(file.fromPath);
+  const normalizedToPath = normalizeDiffPath(file.toPath);
+
+  return (
+    fileDiffs.find((candidate) => {
+      const candidatePath = normalizeDiffPath(resolveFileDiffPath(candidate));
+      const candidateFromPath = normalizeDiffPath(candidate.prevName);
+      const candidateToPath = normalizeDiffPath(candidate.name);
+      return (
+        candidatePath === normalizedPath
+        || candidateToPath === normalizedToPath
+        || candidateFromPath === normalizedFromPath
+        || (
+          normalizedFromPath
+          && normalizedToPath
+          && candidateFromPath === normalizedFromPath
+          && candidateToPath === normalizedToPath
+        )
+      );
+    })
+    ?? null
+  );
+}
+
+function resolveFileDiffPath(fileDiff: FileDiffMetadata): string {
+  const rawPath = fileDiff.type === "deleted"
+    ? (fileDiff.prevName ?? fileDiff.name ?? "")
+    : (fileDiff.name ?? fileDiff.prevName ?? "");
+  return normalizeDiffPath(rawPath);
+}
+
+function normalizeDiffPath(path: string | null | undefined): string {
+  if (!path) {
+    return "";
+  }
+  return path.replace(/^[ab]\//, "").replace(/\\/g, "/");
+}
+
+function buildPatchCacheKey(patch: string, scope = "diff-viewer"): string {
+  const normalizedPatch = patch.trim();
+  const primary = fnv1a32(normalizedPatch).toString(36);
+  const secondary = fnv1a32(normalizedPatch, 0x9e3779b9, 0x85ebca6b).toString(36);
+  return `${scope}:${normalizedPatch.length}:${primary}:${secondary}`;
+}
+
+function fnv1a32(input: string, seed = 0x811c9dc5, multiplier = 0x01000193): number {
+  let hash = seed >>> 0;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, multiplier) >>> 0;
+  }
+  return hash >>> 0;
 }
 
 function SingleFileDiffViewer({
@@ -95,8 +240,8 @@ function SingleFileDiffViewer({
   totalDeletions: number;
 }) {
   return (
-    <div className="rounded-xl border border-brd bg-white overflow-hidden">
-      <div className="flex items-center gap-3 px-3 py-2.5 bg-gz-1 border-b border-brd">
+    <div className="overflow-hidden rounded-xl border border-brd bg-white">
+      <div className="flex items-center gap-3 border-b border-brd bg-gz-1 px-3 py-2.5">
         <div className="min-w-0 flex-1">
           <p className="text-[11px] font-medium text-t2">1 file changed</p>
           <code className="mt-0.5 block truncate text-[11px] font-mono text-t1" title={file.path}>
@@ -133,7 +278,7 @@ function FocusedDiffViewer({
   }
 
   return (
-    <div className="rounded-xl border border-brd bg-white overflow-hidden">
+    <div className="overflow-hidden rounded-xl border border-brd bg-white">
       <DiffSummaryBar
         fileCount={files.length}
         additions={totalAdditions}
@@ -153,7 +298,9 @@ function FocusedDiffViewer({
                   onClick={() => setActiveId(file.id)}
                   className={cn(
                     "w-full rounded-lg border px-2.5 py-2 text-left transition-colors",
-                    isActive ? "border-brd-strong bg-gz-1" : "border-transparent bg-transparent hover:bg-gz-1"
+                    isActive
+                      ? "border-brd-strong bg-gz-1"
+                      : "border-transparent bg-transparent hover:bg-gz-1",
                   )}
                 >
                   <div className="mb-1 flex items-center gap-2">
@@ -171,7 +318,7 @@ function FocusedDiffViewer({
         </div>
 
         <div className="min-w-0">
-          <div className="flex items-center gap-2 px-3 py-2 border-b border-brd bg-white">
+          <div className="flex items-center gap-2 border-b border-brd bg-white px-3 py-2">
             <code className="min-w-0 flex-1 truncate text-[11px] font-mono font-medium text-t1" title={activeFile.path}>
               {activeFile.path}
             </code>
@@ -188,16 +335,18 @@ function StackedDiffFileCard({ file }: { file: DiffViewerFile }) {
   const [open, setOpen] = useState(true);
 
   return (
-    <div className="rounded-lg border border-brd overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-brd">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="w-full flex items-center gap-2.5 px-3 py-2 bg-gz-1 border-0 border-b border-brd text-left cursor-pointer hover:bg-gz-2 transition-colors"
+        className="w-full cursor-pointer border-0 border-b border-brd bg-gz-1 px-3 py-2 text-left transition-colors hover:bg-gz-2"
       >
-        <code className="min-w-0 flex-1 truncate text-[12px] font-mono text-t1">{file.path}</code>
-        {file.changeType === "added" && <DiffBadge tone="green" label="new" />}
-        {file.changeType === "deleted" && <DiffBadge tone="red" label="deleted" />}
-        <DiffStatLine additions={file.additions} deletions={file.deletions} compact />
+        <div className="flex items-center gap-2.5">
+          <code className="min-w-0 flex-1 truncate text-[12px] font-mono text-t1">{file.path}</code>
+          {file.changeType === "added" && <DiffBadge tone="green" label="new" />}
+          {file.changeType === "deleted" && <DiffBadge tone="red" label="deleted" />}
+          <DiffStatLine additions={file.additions} deletions={file.deletions} compact />
+        </div>
       </button>
       {open && <DiffFileSurface file={file} />}
     </div>
@@ -216,12 +365,12 @@ function DiffSummaryBar({
   activePath?: string;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-gz-1 border-b border-brd">
+    <div className="flex items-center justify-between gap-3 border-b border-brd bg-gz-1 px-3 py-2.5">
       <div className="min-w-0">
         <p className="text-[11px] font-medium text-t2">
           {fileCount} file{fileCount === 1 ? "" : "s"} changed
         </p>
-        {activePath && <p className="text-[10px] text-t4 truncate">{activePath}</p>}
+        {activePath && <p className="truncate text-[10px] text-t4">{activePath}</p>}
       </div>
       <DiffStatLine additions={additions} deletions={deletions} />
     </div>
@@ -235,13 +384,7 @@ function DiffFileSurface({
   file: DiffViewerFile;
   maxHeightClass?: string;
 }) {
-  const showLineNumbers = file.blocks.some(
-    (block) =>
-      block.kind === "hunk"
-      && block.rows.some((row) => row.oldLineNumber !== null || row.newLineNumber !== null)
-  );
-
-  if (file.blocks.length === 0) {
+  if (!file.fileDiff) {
     return (
       <div className={cn("bg-white px-4 py-6 text-[12px] text-t3", maxHeightClass)}>
         No line-level diff content is available for this file.
@@ -250,112 +393,37 @@ function DiffFileSurface({
   }
 
   return (
-    <div className={cn("overflow-x-auto bg-white", maxHeightClass)}>
-      <table className="w-full border-collapse text-[11px] leading-[18px] font-mono">
-        <tbody>
-          {file.blocks.map((block, blockIndex) =>
-            block.kind === "collapsed" ? (
-              <CollapsedRowsRow
-                key={`${file.id}:collapsed:${blockIndex}`}
-                count={block.count}
-                showLineNumbers={showLineNumbers}
-              />
-            ) : (
-              <HunkRows
-                key={`${file.id}:hunk:${blockIndex}`}
-                rows={block.rows}
-                showLineNumbers={showLineNumbers}
-              />
-            )
-          )}
-        </tbody>
-      </table>
+    <div className={cn("overflow-auto bg-white px-3 py-3", maxHeightClass)}>
+      <FileDiff
+        fileDiff={file.fileDiff}
+        options={{
+          diffStyle: "unified",
+          lineDiffType: "none",
+          overflow: "wrap",
+          theme: DIFF_THEME,
+          themeType: "light",
+          disableFileHeader: true,
+        }}
+      />
     </div>
   );
 }
 
-function HunkRows({
-  rows,
-  showLineNumbers,
-}: {
-  rows: CodeDiffDisplayRow[];
-  showLineNumbers: boolean;
-}) {
+function RawPatchFallbackList({ entries }: { entries: RawPatchEntry[] }) {
   return (
-    <>
-      {rows.map((row, index) => (
-        <DiffLineRow
-          key={`${row.kind}-${row.oldLineNumber ?? "x"}-${row.newLineNumber ?? "x"}-${index}`}
-          row={row}
-          showLineNumbers={showLineNumbers}
-        />
-      ))}
-    </>
-  );
-}
-
-function DiffLineRow({
-  row,
-  showLineNumbers,
-}: {
-  row: CodeDiffDisplayRow;
-  showLineNumbers: boolean;
-}) {
-  const lineNumber = row.newLineNumber ?? row.oldLineNumber ?? "";
-
-  return (
-    <tr
-      className={cn(
-        row.kind === "add" && "bg-[rgba(22,163,74,0.06)]",
-        row.kind === "del" && "bg-[rgba(220,38,38,0.05)]",
-        row.kind === "context" && "bg-white"
-      )}
-    >
-      {showLineNumbers && (
-        <td className="w-[1px] whitespace-nowrap text-right select-none px-2 py-0 text-t4 border-r border-brd align-top">
-          {lineNumber}
-        </td>
-      )}
-      <td className="px-3 py-0 whitespace-pre">
-        <span
-          className={cn(
-            "select-none inline-block w-3 text-center",
-            row.kind === "add" && "text-green",
-            row.kind === "del" && "text-red",
-            row.kind === "context" && "text-t4"
-          )}
-        >
-          {row.kind === "add" ? "+" : row.kind === "del" ? "-" : " "}
-        </span>
-        <span
-          className={cn(
-            row.kind === "add" && "text-green/80",
-            row.kind === "del" && "text-red/80",
-            row.kind === "context" && "text-t2"
-          )}
-        >
-          {row.text}
-        </span>
-      </td>
-    </tr>
-  );
-}
-
-function CollapsedRowsRow({
-  count,
-  showLineNumbers,
-}: {
-  count: number;
-  showLineNumbers: boolean;
-}) {
-  return (
-    <tr className="bg-white">
-      <td colSpan={showLineNumbers ? 2 : 1} className="px-3 py-2">
-        <div className="rounded-md bg-gz-1 px-3 py-1 text-[11px] text-t2">
-          {count} unmodified line{count === 1 ? "" : "s"}
+    <div className="flex flex-col gap-3">
+      {entries.map((entry) => (
+        <div key={entry.artifactId} className="overflow-hidden rounded-xl border border-brd bg-white">
+          <div className="border-b border-brd bg-gz-1 px-3 py-2.5">
+            <p className="text-[11px] font-medium text-t2">{entry.summary}</p>
+            <p className="mt-0.5 text-[10px] text-t4">{entry.reason}</p>
+          </div>
+          <pre className="max-h-[640px] overflow-auto whitespace-pre-wrap break-words bg-white px-4 py-4 font-mono text-[11px] leading-5 text-t2">
+            {entry.text}
+          </pre>
         </div>
-      </td>
-    </tr>
+      ))}
+    </div>
   );
 }
 
@@ -369,9 +437,17 @@ function DiffStatLine({
   compact?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-2 shrink-0">
-      {additions > 0 && <span className={cn("font-mono text-green", compact ? "text-[10px]" : "text-[10px]")}>+{additions}</span>}
-      {deletions > 0 && <span className={cn("font-mono text-red", compact ? "text-[10px]" : "text-[10px]")}>-{deletions}</span>}
+    <div className="flex shrink-0 items-center gap-2">
+      {additions > 0 && (
+        <span className={cn("font-mono text-green", compact ? "text-[10px]" : "text-[10px]")}>
+          +{additions}
+        </span>
+      )}
+      {deletions > 0 && (
+        <span className={cn("font-mono text-red", compact ? "text-[10px]" : "text-[10px]")}>
+          -{deletions}
+        </span>
+      )}
       <DiffBar additions={additions} deletions={deletions} />
     </div>
   );
@@ -381,8 +457,8 @@ function DiffBadge({ tone, label }: { tone: "green" | "red"; label: string }) {
   return (
     <span
       className={cn(
-        "text-[9px] font-semibold uppercase tracking-wider px-1.5 py-px rounded",
-        tone === "green" ? "text-green bg-green-dim" : "text-red bg-red-dim"
+        "rounded px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider",
+        tone === "green" ? "bg-green-dim text-green" : "bg-red-dim text-red",
       )}
     >
       {label}

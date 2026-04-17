@@ -14,7 +14,11 @@ import type {
   CliLoginStartRequest,
   CliLoginStartResponse,
 } from "@promptreel/api-contracts";
-import { importCodexSessionsForRepo, runLiveDoctor } from "@promptreel/codex-adapter";
+import {
+  importCodexSessionsForRepo,
+  recoverHistoricalCodeDiffFromSessionLines,
+  runLiveDoctor
+} from "@promptreel/codex-adapter";
 import {
   buildCodeDiff,
   buildCodeDiffArtifact,
@@ -294,30 +298,53 @@ function isHistoricalPlaceholderSnapshot(snapshot: WorkspaceSnapshotData | null)
     || snapshot.gitStatusSummary === "historical import placeholder";
 }
 
-function buildCanonicalSnapshotDiffArtifact(
+function buildCanonicalCodeDiffArtifact(
   workspaceId: string,
   detail: ReturnType<PromptreelStore["getPromptDetail"]>
 ): ArtifactRecord | null {
-  if (!detail?.baselineSnapshotId || !detail.endSnapshotId) {
-    return null;
-  }
-  const baselineSnapshot = store.getSnapshotData(workspaceId, detail.baselineSnapshotId);
-  const endSnapshot = store.getSnapshotData(workspaceId, detail.endSnapshotId);
-  if (!baselineSnapshot || !endSnapshot) {
-    return null;
-  }
-  if (isHistoricalPlaceholderSnapshot(baselineSnapshot) || isHistoricalPlaceholderSnapshot(endSnapshot)) {
-    return null;
-  }
-  const diff = buildCodeDiff(baselineSnapshot, endSnapshot);
-  if (!diff) {
+  if (!detail) {
     return null;
   }
   const existingDiffArtifact = detail.artifacts.find((artifact) => artifact.type === "code_diff") ?? null;
-  const nextArtifact = buildCodeDiffArtifact(detail.id, diff, {
-    source: "snapshot_diff",
-    sourceFormat: "unified_diff",
-  });
+  let diff = null as ReturnType<typeof buildCodeDiff> | null;
+  let metadata: { source: "snapshot_diff" | "git_diff_output"; sourceFormat: "unified_diff" } | null = null;
+
+  if (detail?.baselineSnapshotId && detail.endSnapshotId) {
+    const baselineSnapshot = store.getSnapshotData(workspaceId, detail.baselineSnapshotId);
+    const endSnapshot = store.getSnapshotData(workspaceId, detail.endSnapshotId);
+    if (
+      baselineSnapshot
+      && endSnapshot
+      && !isHistoricalPlaceholderSnapshot(baselineSnapshot)
+      && !isHistoricalPlaceholderSnapshot(endSnapshot)
+    ) {
+      diff = buildCodeDiff(baselineSnapshot, endSnapshot);
+      if (diff) {
+        metadata = {
+          source: "snapshot_diff",
+          sourceFormat: "unified_diff",
+        };
+      }
+    }
+  }
+
+  if (!diff) {
+    const rawLines = store.getPromptRawEventLines(workspaceId, detail.id);
+    const recovered = recoverHistoricalCodeDiffFromSessionLines(rawLines, detail.executionPath);
+    if (recovered) {
+      diff = recovered.diff;
+      metadata = {
+        source: recovered.source,
+        sourceFormat: recovered.sourceFormat,
+      };
+    }
+  }
+
+  if (!diff || !metadata) {
+    return null;
+  }
+
+  const nextArtifact = buildCodeDiffArtifact(detail.id, diff, metadata);
   nextArtifact.id = existingDiffArtifact?.id ?? createId("artifact");
   nextArtifact.role = existingDiffArtifact?.role ?? "secondary";
   nextArtifact.blobId = store.writeBlob(workspaceId, diff.patch);
@@ -380,7 +407,7 @@ function backfillCodeDiffArtifacts(workspaceIds: string[]): {
       promptCount += 1;
       const existingDiffArtifacts = detail.artifacts.filter((artifact) => artifact.type === "code_diff");
       const existingCanonicalArtifact = existingDiffArtifacts[0] ?? null;
-      const nextDiffArtifact = buildCanonicalSnapshotDiffArtifact(workspaceId, detail);
+      const nextDiffArtifact = buildCanonicalCodeDiffArtifact(workspaceId, detail);
       const nextArtifacts = [
         ...detail.artifacts.filter((artifact) => artifact.type !== "code_diff"),
         ...(nextDiffArtifact ? [nextDiffArtifact] : []),
